@@ -1,0 +1,15 @@
+[submodule "vendor/pgr"]
+	path = vendor/pgr
+	url = https://github.com/entireio/pgr
+[submodule "vendor/CoderBhaiya"]
+	path = vendor/CoderBhaiya
+	url = https://github.com/mozzlestudios/CoderBhaiya
+[submodule "vendor/nanocode"]
+	path = vendor/nanocode
+	url = https://github.com/1rgs/nanocode
+[submodule "vendor/pyflue"]
+	path = vendor/pyflue
+	url = https://github.com/SuperagenticAI/pyflue
+[submodule "vendor/pydantic-ai"]
+	path = vendor/pydantic-ai
+	url = https://github.com/pydantic/pydantic-ai
