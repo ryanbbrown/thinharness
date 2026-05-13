@@ -13,6 +13,16 @@ from .tools import Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
 
 
+DEFAULT_SYSTEM_PROMPT = """You are a filesystem automation agent working inside the workspace root.
+
+Use search to find symbols, definitions, references, filenames, and repeated patterns.
+Use read to inspect bounded file sections before editing.
+Use edit for targeted replacements and write for creating or replacing files.
+Start narrow, broaden only if needed, and prefer bounded reads over full-file reads.
+
+When finished, respond concisely with what changed and any verification run."""
+
+
 @dataclass
 class HarnessConfig:
     """Configuration for Harness."""
@@ -21,7 +31,7 @@ class HarnessConfig:
     root: str | Path = "."
     api_key: str | None = None
     base_url: str | None = None
-    system_prompt: str = "You are a concise filesystem automation agent. Use tools to inspect files before changing them."
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     skills_dir: str | Path | None = None
     output_dir: str | Path | None = None
     max_turns: int = 32
