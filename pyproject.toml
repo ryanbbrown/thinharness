@@ -3,20 +3,20 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "filesystem-harness"
+name = "thinharness"
 version = "0.1.0"
-description = "Minimal filesystem agent harness for OpenAI-compatible Responses APIs."
+description = "Minimal filesystem agent harness with provider-backed Responses-like models."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "test-repo-1 maintainers"}]
+authors = [{name = "thinharness maintainers"}]
 keywords = ["agents", "responses-api", "filesystem", "skills", "harness"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
-include = ["filesystem_harness*"]
+include = ["thinharness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

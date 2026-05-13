@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from filesystem_harness import (
+from thinharness import (
     AnthropicMessagesModel,
     AnthropicProvider,
     Harness,
@@ -15,8 +15,8 @@ from filesystem_harness import (
     ToolSpec,
     parse_model_ref,
 )
-from filesystem_harness.providers import ToolOutput
-from filesystem_harness.tools import FileTools
+from thinharness.providers import ToolOutput
+from thinharness.tools import FileTools
 
 
 class FakeClient:
@@ -146,7 +146,7 @@ def test_anthropic_provider_model_tool_loop(monkeypatch) -> None:
         assert payload["messages"][-1]["content"][0]["type"] == "tool_result"
         return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
 
-    monkeypatch.setattr("filesystem_harness.providers._post_json", fake_post)
+    monkeypatch.setattr("thinharness.providers._post_json", fake_post)
     provider = AnthropicProvider(api_key="key")
     model = AnthropicMessagesModel("claude-test", provider=provider)
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
@@ -179,7 +179,7 @@ def test_openrouter_provider_model_tool_loop(monkeypatch) -> None:
         assert payload["messages"][-1]["role"] == "tool"
         return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
 
-    monkeypatch.setattr("filesystem_harness.providers._post_json", fake_post)
+    monkeypatch.setattr("thinharness.providers._post_json", fake_post)
     provider = OpenRouterProvider(api_key="key")
     model = OpenRouterModel("openai/test", provider=provider)
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]

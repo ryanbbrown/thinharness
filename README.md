@@ -1,4 +1,4 @@
-# Filesystem Harness
+# thinharness
 
 A minimal SDK-only filesystem harness for agents using provider-native tool APIs.
 
@@ -16,7 +16,7 @@ The harness provides:
 ## Usage
 
 ```python
-from filesystem_harness import Harness, HarnessConfig
+from thinharness import Harness, HarnessConfig
 
 harness = Harness(HarnessConfig(root=".", model="openai:gpt-5.2"))
 result = harness.run("Read README.md and summarize it.")
@@ -36,7 +36,7 @@ Model refs must include a provider prefix. API keys are read from `OPENAI_API_KE
 Custom providers let you keep the model protocol while changing transport details:
 
 ```python
-from filesystem_harness import Harness, OpenAIProvider, OpenAIResponsesModel
+from thinharness import Harness, OpenAIProvider, OpenAIResponsesModel
 
 provider = OpenAIProvider(base_url="https://company.internal/llm/v1", api_key="...")
 model = OpenAIResponsesModel("gpt-5.2", provider=provider)
