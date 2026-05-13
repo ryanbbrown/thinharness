@@ -13,6 +13,7 @@ from thinharness import (
     OpenRouterProvider,
     SkillRegistry,
     ToolSpec,
+    TracingOptions,
     parse_model_ref,
 )
 from thinharness.providers import ToolOutput
@@ -39,6 +40,56 @@ class FakeClient:
                 }],
             }
         return {"id": "resp_2", "output_text": "done"}
+
+
+class FakeSpan:
+    def __init__(self, name, attributes, parent=None) -> None:
+        self.name = name
+        self.attributes = dict(attributes or {})
+        self.parent = parent
+        self.status = None
+        self.exceptions = []
+        self.ended = False
+
+    def set_attributes(self, attributes) -> None:
+        self.attributes.update(attributes)
+
+    def set_attribute(self, key, value) -> None:
+        self.attributes[key] = value
+
+    def set_status(self, status) -> None:
+        self.status = status
+
+    def record_exception(self, exc) -> None:
+        self.exceptions.append(exc)
+
+    def end(self) -> None:
+        self.ended = True
+
+
+class FakeSpanContext:
+    def __init__(self, tracer, span) -> None:
+        self.tracer = tracer
+        self.span = span
+
+    def __enter__(self):
+        self.tracer.stack.append(self.span)
+        return self.span
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.tracer.stack.pop()
+        self.span.end()
+
+
+class FakeTracer:
+    def __init__(self) -> None:
+        self.stack = []
+        self.spans = []
+
+    def start_as_current_span(self, name, **kwargs):
+        span = FakeSpan(name, kwargs.get("attributes"), self.stack[-1] if self.stack else None)
+        self.spans.append(span)
+        return FakeSpanContext(self, span)
 
 
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
@@ -111,6 +162,46 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert client.payloads[1]["previous_response_id"] == "resp_1"
     assert client.payloads[1]["input"][0]["type"] == "function_call_output"
     assert "hello" in client.payloads[1]["input"][0]["output"]
+
+
+def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
+    tracer = FakeTracer()
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
+        client=FakeClient(),
+        tracing=TracingOptions(
+            tracer=tracer,
+            agent_name="test-agent",
+            capture_messages=True,
+            capture_tool_args=True,
+            capture_tool_results=True,
+        ),
+    )
+
+    result = harness.run("read hello", metadata={"conversation_id": "conv-1"})
+
+    assert result.text == "done"
+    assert [span.name for span in tracer.spans] == [
+        "invoke_agent test-agent",
+        "chat test-model",
+        "execute_tool read",
+        "chat test-model",
+    ]
+    root, first_chat, tool, second_chat = tracer.spans
+    assert first_chat.parent is root
+    assert tool.parent is root
+    assert second_chat.parent is root
+    assert root.attributes["gen_ai.operation.name"] == "invoke_agent"
+    assert root.attributes["gen_ai.conversation.id"] == "conv-1"
+    assert root.attributes["gen_ai.completion"] == "done"
+    assert first_chat.attributes["gen_ai.provider.name"] == "OpenAI"
+    assert first_chat.attributes["gen_ai.request.model"] == "test-model"
+    assert tool.attributes["gen_ai.tool.name"] == "read"
+    assert tool.attributes["gen_ai.tool.call.id"] == "call_1"
+    assert tool.attributes["gen_ai.tool.call.arguments"] == '{"path":"hello.txt"}'
+    assert "hello" in tool.attributes["gen_ai.tool.call.result"]
+    assert second_chat.attributes["gen_ai.completion"] == "done"
 
 
 def test_custom_tool_is_exposed_and_callable(tmp_path: Path) -> None:

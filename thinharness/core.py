@@ -11,6 +11,7 @@ from .providers import Model, ProviderError, ResponsesClient, ToolOutput, infer_
 from .skills import SkillRegistry
 from .tools import Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
+from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
 
 DEFAULT_SYSTEM_PROMPT = """You are a filesystem automation agent working inside the workspace root.
@@ -41,6 +42,7 @@ class HarnessConfig:
     rg_timeout: int = 30
     temperature: float | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
+    tracing: TracingOptions | None = None
 
 
 @dataclass
@@ -67,6 +69,7 @@ class Harness:
         adapter: Model | None = None,
         client: ResponsesClient | Any | None = None,
         tools: list[ToolSpec | Json] | None = None,
+        tracing: TracingOptions | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
         self.root = Path(self.config.root).expanduser().resolve()
@@ -94,33 +97,59 @@ class Harness:
         for tool in tools or []:
             self.add_tool(tool)
         self._tool_map = {tool.name: tool for tool in self.tools}
+        self.tracing = tracing or self.config.tracing
 
     def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         responses: list[Json] = []
         tool_calls: list[Json] = []
+        run_tracer = RunTracer(self.tracing)
 
-        try:
-            turn = self.model.start(
-                prompt=prompt,
-                instructions=self.system_instructions(),
-                tools=self.tool_schemas(),
-                metadata=metadata,
-                previous_response_id=previous_response_id,
-            )
-            for _ in range(self.config.max_turns):
-                responses.append(turn.raw)
-                if not turn.tool_calls:
-                    return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
-                outputs = []
-                for call in turn.tool_calls:
-                    output = self._call_output(call.name, call.arguments)
-                    tool_calls.append({"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output})
-                    outputs.append(ToolOutput(call.id, output))
-                turn = self.model.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
-        except ProviderError as exc:
-            raise HarnessError(str(exc)) from exc
-        raise HarnessError(f"model did not finish within max_turns={self.config.max_turns}")
+        with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
+            try:
+                with run_tracer.model(self.model) as model_span:
+                    try:
+                        turn = self.model.start(
+                            prompt=prompt,
+                            instructions=self.system_instructions(),
+                            tools=self.tool_schemas(),
+                            metadata=metadata,
+                            previous_response_id=previous_response_id,
+                        )
+                    except Exception as exc:
+                        model_span.record_exception(exc)
+                        model_span.set_error(str(exc), type(exc).__name__)
+                        raise
+                    annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+                for _ in range(self.config.max_turns):
+                    responses.append(turn.raw)
+                    if not turn.tool_calls:
+                        agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
+                        return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
+                    outputs = []
+                    for call in turn.tool_calls:
+                        output = self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
+                        tool_calls.append({"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output})
+                        outputs.append(ToolOutput(call.id, output))
+                    with run_tracer.model(self.model) as model_span:
+                        try:
+                            turn = self.model.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                        except Exception as exc:
+                            model_span.record_exception(exc)
+                            model_span.set_error(str(exc), type(exc).__name__)
+                            raise
+                        annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+            except ProviderError as exc:
+                agent_span.record_exception(exc)
+                agent_span.set_error(str(exc), type(exc).__name__)
+                raise HarnessError(str(exc)) from exc
+            except Exception as exc:
+                agent_span.record_exception(exc)
+                agent_span.set_error(str(exc), type(exc).__name__)
+                raise
+            error = HarnessError(f"model did not finish within max_turns={self.config.max_turns}")
+            agent_span.set_error(str(error), type(error).__name__)
+            raise error
 
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
@@ -155,3 +184,13 @@ class Harness:
             return call_tool(spec, arguments or {})
         except Exception as exc:
             return f"error: {type(exc).__name__}: {exc}"
+
+    def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str) -> str:
+        """Execute one model tool call with tracing."""
+        with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
+            output = self._call_output(name, arguments)
+            if self.tracing and self.tracing.capture_tool_results:
+                span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
+            if output.startswith("error:"):
+                span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
+            return output

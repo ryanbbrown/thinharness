@@ -7,6 +7,7 @@ The harness provides:
 - A small provider-agnostic tool loop.
 - Responses-like model classes for OpenAI Responses, Anthropic Messages, and OpenRouter.
 - Provider classes for auth, base URLs, client injection, and gateway/proxy customization.
+- OpenTelemetry-compatible tracing for agent runs, model calls, and tool calls.
 - Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, and `glob`.
 - Agent-oriented code search adapted from `pgr`, backed by `rg --json`.
 - Contained path handling for structured filesystem tools.
@@ -58,6 +59,21 @@ harness = Harness(model=model)
 ```
 
 The implementation is a Python port of the core `pgr` search behavior. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.
+
+## Tracing
+
+Pass an OpenTelemetry tracer to emit spans for the harness run, model calls, and tool executions:
+
+```python
+from thinharness import Harness, HarnessConfig, TracingOptions, create_otlp_tracing
+
+otlp = create_otlp_tracing(service_name="my-agent")
+harness = Harness(HarnessConfig(root=".", tracing=TracingOptions(tracer=otlp.tracer)))
+result = harness.run("Read README.md and summarize it.")
+otlp.force_flush()
+```
+
+Install the optional tracing dependencies with `pip install "thinharness[tracing]"`.
 
 ## Development
 

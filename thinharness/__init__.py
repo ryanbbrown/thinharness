@@ -19,6 +19,7 @@ from .providers import (
 )
 from .skills import Skill, SkillRegistry
 from .tools import FileTools, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
+from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
 __all__ = [
     "FileTools",
@@ -43,9 +44,12 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "ToolOutput",
+    "OtlpTracing",
+    "TracingOptions",
     "builtin_tools",
     "call_tool",
     "contained_path",
+    "create_otlp_tracing",
     "infer_model",
     "parse_model_ref",
 ]
