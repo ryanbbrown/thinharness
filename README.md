@@ -8,7 +8,7 @@ The harness provides:
 - Responses-like model classes for OpenAI Responses, Anthropic Messages, and OpenRouter.
 - Provider classes for auth, base URLs, client injection, and gateway/proxy customization.
 - OpenTelemetry-compatible tracing for agent runs, model calls, and tool calls.
-- Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, and `glob`.
+- Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search`.
 - Agent-oriented code search adapted from `pgr`, backed by `rg --json`.
 - Contained path handling for structured filesystem tools.
 - Frontmatter-based skill discovery with `skill_read` and `skill_run`.
@@ -64,6 +64,8 @@ Files up to `max_read_bytes` use the fast whole-file read path, then apply `offs
 
 `builtin_tools` selects harness-provided tools by lowercase name. `None` exposes all built-ins, `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Skill access is selected the same way with `skill_read` and `skill_run`.
 
+Built-in tools return JSON strings with `ok`, `content`, and `metadata` fields. Failed tools return `ok: false` instead of raising through the model loop when the failure is part of normal tool execution, such as invalid arguments, missing files, ripgrep errors, or timeouts.
+
 Custom tools can use a Pydantic args model as the source of truth for validation and provider JSON Schema:
 
 ```python
@@ -101,11 +103,23 @@ The implementation is a Python port of the core `pgr` search behavior. See [THIR
 
 `max_search_line_chars` only affects `search` match previews. `jsonl_search` uses `fields` for field-level projection and truncation, plus `max_tool_chars` for the total output size.
 
+Search ranking and scope are configurable. By default, pgr-style ranking shows likely definitions first, then source files before tests before low-priority directories such as `vendor`, `examples`, `fixtures`, and `node_modules`. Exclude globs are passed to ripgrep, so excluded paths are not searched at all.
+
+```python
+HarnessConfig(
+    search_exclude_globs=["vendor/**", "node_modules/**"],
+    search_low_priority_dirs=["examples", "fixtures", "third_party"],
+    search_test_dirs=["tests", "specs"],
+)
+```
+
 ## Skills
 
 Skills are Markdown files with intentionally small frontmatter. Use flat `key: value` metadata such as `name` and `description`; values may be plain strings, quoted strings, booleans, or JSON literals. Nested YAML is not supported.
 
 `skills_dir` may be one path or a list of paths. The directories are treated as one skill namespace, so duplicate skill names raise an error. Use `selected_skills` to expose only specific skill names. If `skills_dir` or `selected_skills` is configured and matching skills are available, `builtin_tools` must explicitly include `skill_read` or `skill_run`.
+
+`skill_run` executes local scripts from the selected skill directory without sandboxing. Only expose it when those scripts are trusted for the workspace.
 
 ## Tracing
 
@@ -121,6 +135,10 @@ otlp.force_flush()
 ```
 
 Install the optional tracing dependencies with `pip install "thinharness[tracing]"`.
+
+## Runtime model
+
+Provider model instances keep conversation state while a run is in progress. Treat a `Harness` instance as single-run/single-thread unless you provide a stateless custom model.
 
 ## Development
 

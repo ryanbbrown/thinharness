@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import urllib.error
 from pathlib import Path
 
@@ -170,6 +171,37 @@ def test_search_line_preview_limit_is_search_only(tmp_path: Path) -> None:
     assert "target = 'xx..." in result.content
 
 
+def test_search_excludes_and_priority_are_configurable(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "custom_low").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def Target():\n    pass\n", encoding="utf-8")
+    (tmp_path / "vendor" / "lib.py").write_text("def Target():\n    pass\n", encoding="utf-8")
+    (tmp_path / "custom_low" / "lib.py").write_text("def Target():\n    pass\n", encoding="utf-8")
+
+    excluded = FileTools(tmp_path, search_exclude_globs=["vendor/**"]).search({"query": "Target"})
+    assert excluded.ok
+    assert "vendor/lib.py" not in excluded.content
+    assert excluded.metadata["cmd"][:4] == ["rg", "--json", "--glob", "!vendor/**"]
+
+    ranked = FileTools(tmp_path, search_low_priority_dirs=["custom_low"]).search({"query": "Target"})
+    assert ranked.ok
+    assert "custom_low/lib.py\n  why: definition, low-priority" in ranked.content
+    assert "vendor/lib.py\n  why: definition, source" in ranked.content
+
+
+def test_search_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(kwargs.get("args", "rg"), timeout=1)
+
+    monkeypatch.setattr("subprocess.run", timeout)
+    result = FileTools(tmp_path).search({"query": "Target", "timeout": 1})
+
+    assert not result.ok
+    assert result.content == "ripgrep timed out after 1s"
+    assert result.metadata["timeout"] == 1
+
+
 def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
     rows = [
         {"id": 1, "user": {"name": "alice", "tags": ["admin", "ops"]}, "msg": "login ok"},
@@ -217,6 +249,35 @@ def test_jsonl_search_reports_ripgrep_errors(tmp_path: Path) -> None:
     assert "ripgrep failed" in result.content
 
 
+def test_jsonl_search_limits_display_without_losing_counts(tmp_path: Path) -> None:
+    data = tmp_path / "events.jsonl"
+    data.write_text(
+        "\n".join(json.dumps({"id": i, "msg": "hit"}) for i in range(1, 5)) + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({"path_glob": "*.jsonl", "max_matches_per_file": 2})
+
+    assert result.ok
+    assert "rows_matched: 4" in result.content
+    assert 'events.jsonl:1: {"id": 1, "msg": "hit"}' in result.content
+    assert 'events.jsonl:2: {"id": 2, "msg": "hit"}' in result.content
+    assert "events.jsonl:3" not in result.content
+    assert "... 2 more row(s) in events.jsonl" in result.content
+
+
+def test_jsonl_search_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(kwargs.get("args", "rg"), timeout=1)
+
+    monkeypatch.setattr("subprocess.run", timeout)
+    result = FileTools(tmp_path).jsonl_search({"query": "hit", "path_glob": "*.jsonl", "timeout": 1})
+
+    assert not result.ok
+    assert result.content == "ripgrep timed out after 1s"
+    assert result.metadata["timeout"] == 1
+
+
 def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     (skill / "scripts").mkdir(parents=True)
@@ -231,6 +292,24 @@ def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
     run = registry.skill_run({"skill_name": "demo", "script": "scripts/echo.py", "args": ["there"]})
     assert run.ok
     assert "hi there" in run.content
+
+
+def test_skill_run_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
+    skill = tmp_path / "skills" / "demo"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\n---\nBody", encoding="utf-8")
+    (skill / "scripts" / "slow.py").write_text("print('slow')\n", encoding="utf-8")
+    registry = SkillRegistry(tmp_path / "skills")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(kwargs.get("args", "python"), timeout=1)
+
+    monkeypatch.setattr("subprocess.run", timeout)
+    result = registry.skill_run({"skill_name": "demo", "script": "scripts/slow.py", "timeout": 1})
+
+    assert not result.ok
+    assert result.content == "skill script timed out after 1s"
+    assert result.metadata["timeout"] == 1
 
 
 def test_skill_registry_aggregates_dirs_and_filters_selected_skills(tmp_path: Path) -> None:
@@ -338,6 +417,16 @@ def test_custom_tool_can_use_pydantic_args_model(tmp_path: Path) -> None:
     assert schema["properties"]["count"]["minimum"] == 1
     assert '"echo": "okok"' in harness._call_output("echo_typed", '{"value":"ok","count":2}')
     assert "invalid arguments" in harness._call_output("echo_typed", '{"value":"ok","count":0}')
+
+
+def test_custom_tool_invalid_json_is_structured(tmp_path: Path) -> None:
+    custom = ToolSpec("echo", "Echo input", {"type": "object", "properties": {}}, lambda args: "ok")
+    harness = Harness(HarnessConfig(root=tmp_path), client=FakeClient(), tools=[custom])
+
+    output = json.loads(harness._call_output("echo", "{bad json"))
+
+    assert output["ok"] is False
+    assert "invalid JSON arguments" in output["content"]
 
 
 def test_builtin_tool_selection_is_explicit(tmp_path: Path) -> None:

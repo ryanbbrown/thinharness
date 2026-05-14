@@ -11,7 +11,7 @@ from pydantic.dataclasses import dataclass
 
 from .providers import Model, ProviderError, ResponsesClient, ToolOutput, infer_model
 from .skills import SkillRegistry
-from .tools import Json, ToolSpec, call_tool, object_schema
+from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
@@ -46,6 +46,9 @@ class HarnessConfig:
     max_tool_chars: int = 40_000
     max_search_line_chars: int = 180
     rg_timeout: int = 30
+    search_exclude_globs: list[str] = Field(default_factory=list)
+    search_low_priority_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_LOW_PRIORITY_DIRS))
+    search_test_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_TEST_DIRS))
     temperature: float | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: TracingOptions | None = None
@@ -100,6 +103,9 @@ class Harness:
             max_tool_chars=self.config.max_tool_chars,
             max_search_line_chars=self.config.max_search_line_chars,
             rg_timeout=self.config.rg_timeout,
+            search_exclude_globs=self.config.search_exclude_globs,
+            search_low_priority_dirs=self.config.search_low_priority_dirs,
+            search_test_dirs=self.config.search_test_dirs,
         )
         self._validate_skill_tool_selection()
         builtin = self._select_builtin_tools([*filesystem_tools, *self.skills.specs()], self.config.builtin_tools)

@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.dataclasses import dataclass
 
-from .tools import Json, ToolResult, ToolSpec, coerce_args, contained_path
+from .tools import Json, ToolResult, ToolSpec, coerce_args, contained_path, _timeout_error_message
 
 
 @dataclass(frozen=True)
@@ -109,15 +109,18 @@ class SkillRegistry:
         command = [str(script), *[str(arg) for arg in args.args]]
         if script.suffix == ".py":
             command.insert(0, os.environ.get("PYTHON", "python3"))
-        proc = subprocess.run(
-            command,
-            cwd=skill.root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=args.timeout,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=skill.root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(False, _timeout_error_message("skill script", args.timeout), {"timeout": args.timeout, "cmd": command})
         output = f"exit_code: {proc.returncode}\n{proc.stdout or ''}".strip()
         result = self._truncate(output or "(empty)", args.max_chars)
         result.ok = proc.returncode == 0
@@ -176,7 +179,7 @@ class SkillRegistry:
     def _tree(root: Path, limit: int = 200) -> str:
         """Return a compact recursive file tree."""
         lines: list[str] = []
-        for path in sorted(root.rglob("*"), key=lambda p: str(p).lower()):
+        for path in root.rglob("*"):
             if any(part in {".git", "__pycache__", ".venv"} for part in path.parts):
                 continue
             if len(lines) >= limit:
