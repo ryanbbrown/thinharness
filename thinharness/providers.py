@@ -6,10 +6,17 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from pydantic import Field
+from pydantic.dataclasses import dataclass
+
 from .tools import Json
+
+
+# =============================================================================
+# Normalized model types
+# =============================================================================
 
 
 @dataclass
@@ -26,8 +33,8 @@ class ModelTurn:
     """A normalized model response turn."""
 
     text: str = ""
-    tool_calls: list[ModelToolCall] = field(default_factory=list)
-    raw: Json = field(default_factory=dict)
+    tool_calls: list[ModelToolCall] = Field(default_factory=list)
+    raw: Json = Field(default_factory=dict)
 
 
 @dataclass
@@ -43,17 +50,21 @@ class ModelSettings:
     """Common request settings shared across models."""
 
     temperature: float | None = None
-    extra_body: Json = field(default_factory=dict)
+    extra_body: Json = Field(default_factory=dict)
 
 
 class Model(Protocol):
     """Responses-like model contract consumed by the harness."""
 
-    provider: "Provider"
+    @property
+    def provider(self) -> "Provider":
+        """Return the model provider."""
+        ...
 
     @property
     def api_key(self) -> str | None:
         """Return the model provider API key."""
+        ...
 
     def start(
         self,
@@ -65,13 +76,20 @@ class Model(Protocol):
         previous_response_id: str | None = None,
     ) -> ModelTurn:
         """Start a model run."""
+        ...
 
     def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Continue a model run with tool outputs."""
+        ...
 
 
 class ProviderError(RuntimeError):
     """Raised when a provider request fails."""
+
+
+# =============================================================================
+# Provider transports
+# =============================================================================
 
 
 class ResponsesClient:
@@ -179,6 +197,11 @@ class OpenRouterProvider(Provider):
     def create_chat_completion(self, payload: Json) -> Json:
         """Create an OpenRouter chat completion."""
         return self.post_json("/chat/completions", payload)
+
+
+# =============================================================================
+# Model adapters
+# =============================================================================
 
 
 class OpenAIResponsesModel:
@@ -363,6 +386,11 @@ class OpenRouterModel:
         return ModelTurn(text=str(message.get("content") or ""), tool_calls=_extract_chat_tool_calls(message), raw=response)
 
 
+# =============================================================================
+# Model selection
+# =============================================================================
+
+
 def infer_model(
     model_ref: str,
     *,
@@ -398,15 +426,26 @@ def parse_model_ref(model_ref: str) -> tuple[str, str]:
     return provider, model
 
 
+# =============================================================================
+# HTTP and provider format helpers
+# =============================================================================
+
+
 def _post_json(url: str, payload: Json, headers: Json, timeout: int) -> Json:
     """POST JSON with urllib and decode JSON response."""
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise ProviderError(f"provider error {exc.code}: {body}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ProviderError(f"provider request failed: {exc}") from exc
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ProviderError(f"provider returned invalid JSON: {exc}") from exc
 
 
 def _responses_tool_to_anthropic(tool: Json) -> Json:

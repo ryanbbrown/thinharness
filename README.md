@@ -12,7 +12,7 @@ The harness provides:
 - Agent-oriented code search adapted from `pgr`, backed by `rg --json`.
 - Contained path handling for structured filesystem tools.
 - Frontmatter-based skill discovery with `skill_read` and `skill_run`.
-- Custom JSON-schema tools with Python handlers.
+- Custom Pydantic or JSON-schema tools with Python handlers.
 
 ## Usage
 
@@ -44,6 +44,45 @@ model = OpenAIResponsesModel("gpt-5.2", provider=provider)
 harness = Harness(model=model)
 ```
 
+Useful harness limits live on `HarnessConfig`:
+
+```python
+from pathlib import Path
+
+HarnessConfig(
+    builtin_tools=["read", "search", "skill_read"],
+    skills_dir=[Path(".agents/skills"), Path("vendor/skills")],
+    selected_skills=["python"],
+    max_read_chars=40_000,
+    max_read_bytes=1_000_000,
+    max_tool_chars=40_000,
+    max_search_line_chars=180,
+)
+```
+
+Files up to `max_read_bytes` use the fast whole-file read path, then apply `offset` and `limit` in memory. Larger files must be read with an explicit bounded range, which is streamed so skipped content is not accumulated in memory.
+
+`builtin_tools` selects harness-provided tools by lowercase name. `None` exposes all built-ins, `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Skill access is selected the same way with `skill_read` and `skill_run`.
+
+Custom tools can use a Pydantic args model as the source of truth for validation and provider JSON Schema:
+
+```python
+from pydantic import BaseModel, Field
+from thinharness import Harness, HarnessConfig, ToolSpec
+
+class EchoArgs(BaseModel):
+    value: str
+    count: int = Field(default=1, ge=1)
+
+def echo(args: EchoArgs) -> dict[str, str]:
+    return {"echo": args.value * args.count}
+
+harness = Harness(
+    HarnessConfig(builtin_tools=["read", "search"]),
+    tools=[ToolSpec("echo", "Echo typed input.", EchoArgs, echo)],
+)
+```
+
 ## Search
 
 `search` wraps `rg --json`, groups matches by file, ranks likely definitions and source files first, and formats the result so an agent can decide what to read next.
@@ -59,6 +98,14 @@ harness = Harness(model=model)
 ```
 
 The implementation is a Python port of the core `pgr` search behavior. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.
+
+`max_search_line_chars` only affects `search` match previews. `jsonl_search` uses `fields` for field-level projection and truncation, plus `max_tool_chars` for the total output size.
+
+## Skills
+
+Skills are Markdown files with intentionally small frontmatter. Use flat `key: value` metadata such as `name` and `description`; values may be plain strings, quoted strings, booleans, or JSON literals. Nested YAML is not supported.
+
+`skills_dir` may be one path or a list of paths. The directories are treated as one skill namespace, so duplicate skill names raise an error. Use `selected_skills` to expose only specific skill names. If `skills_dir` or `selected_skills` is configured and matching skills are available, `builtin_tools` must explicitly include `skill_read` or `skill_run`.
 
 ## Tracing
 

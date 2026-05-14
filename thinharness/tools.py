@@ -3,25 +3,34 @@
 from __future__ import annotations
 
 import glob as globlib
+import itertools
 import json
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, Literal, TypeGuard, TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.dataclasses import dataclass
 
 Json = dict[str, Any]
-ToolHandler = Callable[[Json], Any]
+ToolHandler = Callable[[Any], Any]
+T = TypeVar("T", bound=BaseModel)
 
 
-@dataclass(frozen=True)
+# =============================================================================
+# Tool data structures
+# =============================================================================
+
+
+@dataclass(frozen=True, config=ConfigDict(arbitrary_types_allowed=True))
 class ToolSpec:
     """A JSON-schema-described callable exposed to the model."""
 
     name: str
     description: str
-    parameters: Json
+    parameters: Json | type[BaseModel]
     handler: ToolHandler
 
     def response_tool(self) -> Json:
@@ -30,8 +39,14 @@ class ToolSpec:
             "type": "function",
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": tool_parameters(self.parameters),
         }
+
+    def parse_args(self, args: Json) -> Any:
+        """Validate and coerce tool arguments when backed by a Pydantic model."""
+        if _is_args_model(self.parameters):
+            return self.parameters.model_validate(args)
+        return args
 
 
 @dataclass
@@ -40,7 +55,7 @@ class ToolResult:
 
     ok: bool
     content: str
-    metadata: Json = field(default_factory=dict)
+    metadata: Json = Field(default_factory=dict)
 
     def as_json(self) -> str:
         """Serialize the tool result for a function_call_output item."""
@@ -68,6 +83,102 @@ class SearchFile:
     matches: list[SearchMatch]
 
 
+# =============================================================================
+# Built-in tool argument models
+# =============================================================================
+
+
+class StrictArgs(BaseModel):
+    """Base class for tool arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReadArgs(StrictArgs):
+    """Arguments for read."""
+
+    path: str
+    offset: int = Field(default=1, ge=1)
+    limit: int = Field(default=400, ge=1)
+    max_chars: int | None = Field(default=None, ge=1)
+
+
+class WriteArgs(StrictArgs):
+    """Arguments for write."""
+
+    path: str
+    content: str
+    append: bool = False
+
+
+class EditArgs(StrictArgs):
+    """Arguments for edit."""
+
+    path: str
+    old_string: str
+    new_string: str
+    all: bool = False
+    expected_replacements: int | None = Field(default=None, ge=1)
+
+
+class SearchArgs(StrictArgs):
+    """Arguments for search."""
+
+    query: str = Field(description="Regex or literal search string.")
+    path_glob: str = Field(default="", description="Optional glob filter such as **/*.py.")
+    file_type: str = Field(default="", description="Optional ripgrep type such as py, rust, or js.")
+    max_files: int = Field(default=10, ge=1)
+    max_matches_per_file: int = Field(default=3, ge=1)
+    max_line_chars: int | None = Field(default=None, ge=1, description="Search-only matched line preview cap. JSONL field output is controlled by fields.")
+    timeout: int | None = Field(default=None, ge=1)
+    max_chars: int | None = Field(default=None, ge=1)
+
+
+class ListArgs(StrictArgs):
+    """Arguments for list."""
+
+    path: str = "."
+    glob: str = Field(default="", description="Optional glob pattern relative to path.")
+    recursive: bool = False
+    max_results: int = Field(default=200, ge=1)
+
+
+class GlobArgs(StrictArgs):
+    """Arguments for glob."""
+
+    pattern: str
+    path: str = "."
+    include_dirs: bool = False
+    max_results: int = Field(default=200, ge=1)
+
+
+class JsonlWhereFilter(StrictArgs):
+    """One JSONL where filter."""
+
+    field: str
+    op: Literal["eq", "ne", "in", "contains", "regex", "exists"]
+    value: str | None = None
+    values: list[str] | None = None
+
+
+class JsonlSearchArgs(StrictArgs):
+    """Arguments for jsonl_search."""
+
+    query: str = Field(default="", description="Optional ripgrep query. If omitted, scan all rows in scope.")
+    path_glob: str = Field(default="**/*.jsonl", description="Glob filter; defaults to **/*.jsonl.")
+    fields: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict, description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.")
+    where: list[JsonlWhereFilter] = Field(default_factory=list, description="Filters AND-ed together.")
+    max_files: int = Field(default=10, ge=1)
+    max_matches_per_file: int = Field(default=3, ge=1)
+    timeout: int | None = Field(default=None, ge=1)
+    max_chars: int | None = Field(default=None, ge=1)
+
+
+# =============================================================================
+# Built-in filesystem tools
+# =============================================================================
+
+
 class FileTools:
     """Small filesystem tool collection rooted at a workspace directory."""
 
@@ -77,159 +188,99 @@ class FileTools:
         *,
         output_dir: str | Path | None = None,
         max_read_chars: int = 40_000,
+        max_read_bytes: int = 1_000_000,
         max_tool_chars: int = 40_000,
+        max_search_line_chars: int = 180,
         rg_timeout: int = 30,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.output_dir = contained_path(self.root, output_dir or ".fsharness/outputs")
         self.max_read_chars = max_read_chars
+        self.max_read_bytes = max_read_bytes
         self.max_tool_chars = max_tool_chars
+        self.max_search_line_chars = max_search_line_chars
         self.rg_timeout = rg_timeout
+
+    # -------------------------------------------------------------------------
+    # Tool schemas
+    # -------------------------------------------------------------------------
 
     def specs(self) -> list[ToolSpec]:
         """Return built-in filesystem tool specs."""
         return [
-            ToolSpec("read", "Read a UTF-8 text file with line numbers, offset, and limit.", {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 1, "default": 1},
-                    "limit": {"type": "integer", "minimum": 1, "default": 400},
-                    "max_chars": {"type": "integer", "minimum": 1},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            }, self.read),
-            ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "append": {"type": "boolean", "default": False},
-                },
-                "required": ["path", "content"],
-                "additionalProperties": False,
-            }, self.write),
-            ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "old_string": {"type": "string"},
-                    "new_string": {"type": "string"},
-                    "all": {"type": "boolean", "default": False},
-                    "expected_replacements": {"type": "integer", "minimum": 1},
-                },
-                "required": ["path", "old_string", "new_string"],
-                "additionalProperties": False,
-            }, self.edit),
-            ToolSpec("search", "Search code with ripgrep, then rank and format matches for agent follow-up reads.", {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Regex or literal search string."},
-                    "path_glob": {"type": "string", "description": "Optional glob filter such as **/*.py."},
-                    "file_type": {"type": "string", "description": "Optional ripgrep type such as py, rust, or js."},
-                    "max_files": {"type": "integer", "minimum": 1, "default": 10},
-                    "max_matches_per_file": {"type": "integer", "minimum": 1, "default": 3},
-                    "timeout": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 1},
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            }, self.search),
-            ToolSpec("list", "List a directory or glob files under the workspace root.", {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "default": "."},
-                    "glob": {"type": "string", "description": "Optional glob pattern relative to path."},
-                    "recursive": {"type": "boolean", "default": False},
-                    "max_results": {"type": "integer", "minimum": 1, "default": 200},
-                },
-                "additionalProperties": False,
-            }, self.list_files),
-            ToolSpec("glob", "Find files by glob pattern under the workspace root.", {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string", "default": "."},
-                    "include_dirs": {"type": "boolean", "default": False},
-                    "max_results": {"type": "integer", "minimum": 1, "default": 200},
-                },
-                "required": ["pattern"],
-                "additionalProperties": False,
-            }, self.glob),
-            ToolSpec("jsonl_search", "Search JSONL files: optional ripgrep prefilter plus structured field/where filtering. Default scope is **/*.jsonl.", {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Optional ripgrep query. If omitted, scan all rows in scope."},
-                    "path_glob": {"type": "string", "description": "Glob filter; defaults to **/*.jsonl.", "default": "**/*.jsonl"},
-                    "fields": {
-                        "type": "object",
-                        "description": "Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
-                        "additionalProperties": {"type": "integer", "minimum": 0},
-                    },
-                    "where": {
-                        "type": "array",
-                        "description": "Filters AND-ed together. Each: {field, op, value | values}. Ops: eq, ne, in, contains, regex, exists.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "field": {"type": "string"},
-                                "op": {"type": "string", "enum": ["eq", "ne", "in", "contains", "regex", "exists"]},
-                                "value": {"type": "string"},
-                                "values": {"type": "array", "items": {"type": "string"}},
-                            },
-                            "required": ["field", "op"],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "max_files": {"type": "integer", "minimum": 1, "default": 10},
-                    "max_matches_per_file": {"type": "integer", "minimum": 1, "default": 3},
-                    "timeout": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 1},
-                },
-                "additionalProperties": False,
-            }, self.jsonl_search),
+            ToolSpec("read", "Read a UTF-8 text file with line numbers, offset, and limit.", ReadArgs, self.read),
+            ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", WriteArgs, self.write),
+            ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", EditArgs, self.edit),
+            ToolSpec("search", "Search code with ripgrep, then rank and format matches for agent follow-up reads.", SearchArgs, self.search),
+            ToolSpec("list", "List a directory or glob files under the workspace root.", ListArgs, self.list_files),
+            ToolSpec("glob", "Find files by glob pattern under the workspace root.", GlobArgs, self.glob),
+            ToolSpec("jsonl_search", "Search JSONL files: optional ripgrep prefilter plus structured field/where filtering. Default scope is **/*.jsonl.", JsonlSearchArgs, self.jsonl_search),
         ]
 
-    def read(self, args: Json) -> ToolResult:
+    # -------------------------------------------------------------------------
+    # File read/write/edit tools
+    # -------------------------------------------------------------------------
+
+    def read(self, args: ReadArgs | Json) -> ToolResult:
         """Read a contained text file with line numbers."""
-        path = contained_path(self.root, args["path"])
+        args = coerce_args(args, ReadArgs)
+        path = contained_path(self.root, args.path)
         if not path.exists():
             return ToolResult(False, f"file not found: {self._display(path)}", {"path": str(path)})
         if path.is_dir():
             return ToolResult(False, f"path is a directory: {self._display(path)}", {"path": str(path)})
-        offset = max(1, int(args.get("offset", 1)))
-        limit = max(1, int(args.get("limit", 400)))
-        text = path.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        selected = lines[offset - 1: offset - 1 + limit]
+        offset = args.offset
+        limit = args.limit
+        is_bounded_request = "offset" in args.model_fields_set or "limit" in args.model_fields_set
+        size = path.stat().st_size
+        if size > self.max_read_bytes and not is_bounded_request:
+            return ToolResult(
+                False,
+                (
+                    f"file is {size} bytes, over max_read_bytes={self.max_read_bytes}; "
+                    "pass offset and limit to read a bounded range"
+                ),
+                {"path": str(path), "size_bytes": size, "max_read_bytes": self.max_read_bytes},
+            )
+        if size > self.max_read_bytes:
+            selected, total_lines = self._read_large_range(path, offset, limit)
+            note = f"read {len(selected)} line(s) from large file {self._display(path)} starting at line {offset}"
+            if len(selected) == limit:
+                note += " (more lines may be available; increase offset/limit)"
+        else:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            selected = lines[offset - 1: offset - 1 + limit]
+            total_lines = len(lines)
+            note = f"read {len(selected)} of {total_lines} lines from {self._display(path)}"
+            if offset + len(selected) - 1 < total_lines:
+                note += " (more lines available; increase offset/limit)"
+        limit_chars = min(args.max_chars or self.max_read_chars, self.max_read_chars)
         body = "\n".join(f"{i}\t{line}" for i, line in enumerate(selected, start=offset))
-        note = f"read {len(selected)} of {len(lines)} lines from {self._display(path)}"
-        if offset + len(selected) - 1 < len(lines):
-            note += " (more lines available; increase offset/limit)"
-        limit_chars = min(int(args.get("max_chars", self.max_read_chars)), self.max_read_chars)
         result = self._truncate(f"{note}\n{body}" if body else note, prefix="read", max_chars=limit_chars)
-        result.metadata.update({"path": str(path), "total_lines": len(lines), "returned_lines": len(selected)})
+        result.metadata.update({"path": str(path), "total_lines": total_lines, "returned_lines": len(selected), "size_bytes": size})
         return result
 
-    def write(self, args: Json) -> ToolResult:
+    def write(self, args: WriteArgs | Json) -> ToolResult:
         """Write a contained UTF-8 file."""
-        path = contained_path(self.root, args["path"])
-        content = str(args.get("content", ""))
+        args = coerce_args(args, WriteArgs)
+        path = contained_path(self.root, args.path)
+        content = args.content
         path.parent.mkdir(parents=True, exist_ok=True)
-        mode = "a" if args.get("append") else "w"
+        mode = "a" if args.append else "w"
         with path.open(mode, encoding="utf-8") as handle:
             handle.write(content)
-        action = "appended" if args.get("append") else "wrote"
+        action = "appended" if args.append else "wrote"
         return ToolResult(True, f"{action} {len(content.encode('utf-8'))} bytes to {self._display(path)}", {"path": str(path)})
 
-    def edit(self, args: Json) -> ToolResult:
+    def edit(self, args: EditArgs | Json) -> ToolResult:
         """Replace exact text in a contained UTF-8 file."""
-        path = contained_path(self.root, args["path"])
-        old = str(args["old_string"])
-        new = str(args["new_string"])
-        replace_all = bool(args.get("all", False))
+        args = coerce_args(args, EditArgs)
+        path = contained_path(self.root, args.path)
+        old = args.old_string
+        new = args.new_string
+        replace_all = args.all
         if not old:
             return ToolResult(False, "old_string must not be empty")
         if not path.exists():
@@ -238,9 +289,8 @@ class FileTools:
         count = text.count(old)
         if count == 0:
             return ToolResult(False, "old_string not found", {"path": str(path)})
-        expected = args.get("expected_replacements")
-        if expected is not None and count != int(expected):
-            return ToolResult(False, f"expected {expected} replacement(s), found {count}", {"matches": count})
+        if args.expected_replacements is not None and count != args.expected_replacements:
+            return ToolResult(False, f"expected {args.expected_replacements} replacement(s), found {count}", {"matches": count})
         if count > 1 and not replace_all:
             return ToolResult(False, f"old_string appears {count} times; add more context or set all=true", {"matches": count})
         updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
@@ -248,15 +298,21 @@ class FileTools:
         changed = count if replace_all else 1
         return ToolResult(True, f"replaced {changed} occurrence(s) in {self._display(path)}", {"path": str(path), "replacements": changed})
 
-    def search(self, args: Json) -> ToolResult:
+    # -------------------------------------------------------------------------
+    # Search and listing tools
+    # -------------------------------------------------------------------------
+
+    def search(self, args: SearchArgs | Json) -> ToolResult:
         """Search code with pgr-style grouping, ranking, and output shaping."""
-        query = str(args.get("query") or "")
+        args = coerce_args(args, SearchArgs)
+        query = args.query
         if not query:
             return ToolResult(False, "query is required; pass a non-empty query string")
-        path_glob = str(args.get("path_glob") or "")
-        file_type = str(args.get("file_type") or "")
-        max_files = max(1, int(args.get("max_files", 10)))
-        max_matches_per_file = max(1, int(args.get("max_matches_per_file", 3)))
+        path_glob = args.path_glob
+        file_type = args.file_type
+        max_files = args.max_files
+        max_matches_per_file = args.max_matches_per_file
+        max_line_chars = args.max_line_chars or self.max_search_line_chars
         command = ["rg", "--json"]
         if path_glob:
             command.extend(["--glob", path_glob])
@@ -269,36 +325,37 @@ class FileTools:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=int(args.get("timeout", self.rg_timeout)),
+            timeout=args.timeout or self.rg_timeout,
             check=False,
         )
-        if proc.returncode not in (0, 1) and not proc.stdout:
-            return ToolResult(False, self._no_matches_message(query, path_glob, file_type), {"returncode": proc.returncode, "cmd": command})
+        if proc.returncode not in (0, 1):
+            return ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
         files = self._parse_rg_json(proc.stdout or "")
         if not files:
             return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": proc.returncode, "cmd": command, "matches": 0})
         files.sort(key=self._search_file_sort_key)
         total_files = len(files)
         shown_files = files[:max_files]
-        content = self._format_search_output(query, path_glob, file_type, shown_files, total_files, max_files, max_matches_per_file)
-        result = self._truncate(content, prefix="search", max_chars=int(args.get("max_chars", self.max_tool_chars)))
+        content = self._format_search_output(query, path_glob, file_type, shown_files, total_files, max_files, max_matches_per_file, max_line_chars)
+        result = self._truncate(content, prefix="search", max_chars=args.max_chars or self.max_tool_chars)
         result.metadata.update({"returncode": proc.returncode, "cmd": command, "cwd": str(self.root)})
         return result
 
-    def list_files(self, args: Json) -> ToolResult:
+    def list_files(self, args: ListArgs | Json) -> ToolResult:
         """List contained files and directories."""
-        base = contained_path(self.root, args.get("path", "."))
-        max_results = max(1, int(args.get("max_results", 200)))
-        pattern = args.get("glob")
+        args = coerce_args(args, ListArgs)
+        base = contained_path(self.root, args.path)
+        max_results = args.max_results
+        pattern = args.glob
         if pattern:
-            matches = [Path(p) for p in globlib.glob(str(base / str(pattern)), recursive=bool(args.get("recursive", False)))]
+            matches = [Path(p) for p in globlib.glob(str(base / pattern), recursive=args.recursive)]
         else:
             if not base.exists():
                 return ToolResult(False, f"path not found: {self._display(base)}", {"path": str(base)})
             if base.is_file():
                 matches = [base]
             else:
-                iterator = base.rglob("*") if args.get("recursive", False) else base.iterdir()
+                iterator = base.rglob("*") if args.recursive else base.iterdir()
                 matches = list(iterator)
         matches = [path for path in matches if _is_relative_to(path.resolve(), self.root)]
         matches = sorted(matches, key=lambda p: (not p.is_dir(), str(p).lower()))
@@ -308,35 +365,35 @@ class FileTools:
             lines.append(f"... {len(matches) - len(shown)} more result(s) omitted")
         return ToolResult(True, "\n".join(lines) or "no files", {"total": len(matches), "returned": len(shown)})
 
-    def glob(self, args: Json) -> ToolResult:
+    def glob(self, args: GlobArgs | Json) -> ToolResult:
         """Glob for contained files and directories."""
-        base = contained_path(self.root, args.get("path", "."))
-        max_results = max(1, int(args.get("max_results", 200)))
-        include_dirs = bool(args.get("include_dirs", False))
-        matches = [Path(p) for p in globlib.glob(str(base / str(args["pattern"])), recursive=True)]
+        args = coerce_args(args, GlobArgs)
+        base = contained_path(self.root, args.path)
+        max_results = args.max_results
+        matches = [Path(p) for p in globlib.glob(str(base / args.pattern), recursive=True)]
         matches = [path for path in matches if _is_relative_to(path.resolve(), self.root)]
-        matches = [path for path in matches if include_dirs or path.is_file()]
+        matches = [path for path in matches if args.include_dirs or path.is_file()]
         matches.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
         rows = [self._display(path) + ("/" if path.is_dir() else "") for path in matches[:max_results]]
         if len(matches) > max_results:
             rows.append(f"... {len(matches) - max_results} more result(s) omitted")
         return ToolResult(True, "\n".join(rows) or "no files", {"total": len(matches), "returned": min(len(matches), max_results)})
 
-    def jsonl_search(self, args: Json) -> ToolResult:
-        """Filter JSONL files with an optional ripgrep prefilter and structured field/where filtering."""
-        query = str(args.get("query") or "")
-        path_glob = str(args.get("path_glob") or "**/*.jsonl")
-        fields = args.get("fields") or {}
-        where = args.get("where") or []
-        max_files = max(1, int(args.get("max_files", 10)))
-        max_matches_per_file = max(1, int(args.get("max_matches_per_file", 3)))
-        timeout = int(args.get("timeout", self.rg_timeout))
-        limit_chars = int(args.get("max_chars", self.max_tool_chars))
+    # -------------------------------------------------------------------------
+    # JSONL search
+    # -------------------------------------------------------------------------
 
-        if not isinstance(fields, dict):
-            return ToolResult(False, "fields must be an object of {path: max_chars}")
-        if not isinstance(where, list):
-            return ToolResult(False, "where must be a list of filter objects")
+    def jsonl_search(self, args: JsonlSearchArgs | Json) -> ToolResult:
+        """Filter JSONL files with an optional ripgrep prefilter and structured field/where filtering."""
+        args = coerce_args(args, JsonlSearchArgs)
+        query = args.query
+        path_glob = args.path_glob
+        fields = args.fields
+        where = [item.model_dump(exclude_none=True) for item in args.where]
+        max_files = args.max_files
+        max_matches_per_file = args.max_matches_per_file
+        timeout = args.timeout or self.rg_timeout
+        limit_chars = args.max_chars or self.max_tool_chars
 
         candidates, scan_error = self._jsonl_candidates(query, path_glob, timeout)
         if scan_error is not None:
@@ -406,8 +463,8 @@ class FileTools:
                 timeout=timeout,
                 check=False,
             )
-            if proc.returncode not in (0, 1) and not proc.stdout:
-                return [], ToolResult(False, f"ripgrep failed (rc={proc.returncode}): {(proc.stdout or '').strip()[:400]}", {"cmd": command})
+            if proc.returncode not in (0, 1):
+                return [], ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
             files = self._parse_rg_json(proc.stdout or "")
             return [(file.path, match.line_number, match.line_text) for file in files for match in file.matches], None
         matches = [Path(p) for p in globlib.glob(str(self.root / path_glob), recursive=True)]
@@ -419,6 +476,10 @@ class FileTools:
                 for line_number, line_text in enumerate(handle, start=1):
                     candidates.append((rel, line_number, line_text.rstrip("\n")))
         return candidates, None
+
+    # -------------------------------------------------------------------------
+    # Search formatting helpers
+    # -------------------------------------------------------------------------
 
     @staticmethod
     def _no_matches_message(query: str, path_glob: str, file_type: str) -> str:
@@ -470,6 +531,7 @@ class FileTools:
         total_files: int,
         max_files: int,
         max_matches_per_file: int,
+        max_line_chars: int,
     ) -> str:
         """Format grouped and ranked search results for an agent."""
         source_count = sum(1 for file in files if _file_priority(file.path) == 0)
@@ -490,13 +552,27 @@ class FileTools:
             file.matches.sort(key=lambda match: (not match.is_definition, match.line_number))
             block = [file.path, f"  why: {_file_reason(file)}"]
             for match in file.matches[:max_matches_per_file]:
-                line = _truncate_line(match.line_text)
+                line = _truncate_line(match.line_text, max_line_chars)
                 block.append(f"  {match.line_number}-{match.line_number}:")
                 block.append(f"    {match.line_number}| {line}")
             parts.append("\n".join(block) + "\n")
         if total_files > max_files:
             parts.append(f"  note: truncated to top {max_files} files; refine the query or filters to narrow further.")
         return "\n".join(parts)
+
+    # -------------------------------------------------------------------------
+    # Shared file/output helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _read_large_range(path: Path, offset: int, limit: int) -> tuple[list[str], int | None]:
+        """Stream a bounded line range from a large file."""
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            selected = [
+                line.rstrip("\n").rstrip("\r")
+                for line in itertools.islice(handle, offset - 1, offset - 1 + limit)
+            ]
+        return selected, None
 
     def _display(self, path: Path) -> str:
         """Return a workspace-relative display path when possible."""
@@ -522,6 +598,11 @@ class FileTools:
         return ToolResult(True, content, {"truncated": True, "saved_to": str(artifact), "chars": len(text)})
 
 
+# =============================================================================
+# Tool plumbing
+# =============================================================================
+
+
 def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
     """Create the default filesystem tool set."""
     return FileTools(root, **kwargs).specs()
@@ -530,12 +611,23 @@ def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
 def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     """Invoke a tool handler and normalize the result to a string."""
     args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else raw_args
+    if not isinstance(args, dict):
+        return ToolResult(False, "tool arguments must be a JSON object").as_json()
+    try:
+        args = spec.parse_args(args)
+    except ValidationError as exc:
+        return ToolResult(False, f"invalid arguments: {exc}").as_json()
     result = spec.handler(args)
     if isinstance(result, ToolResult):
         return result.as_json()
     if isinstance(result, str):
         return result
     return json.dumps(result, indent=2, sort_keys=True, default=str)
+
+
+# =============================================================================
+# Path and schema helpers
+# =============================================================================
 
 
 def contained_path(root: Path, raw: str | Path) -> Path:
@@ -564,6 +656,81 @@ def object_schema(fields: dict[str, str], required: list[str] | None = None) -> 
     return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
 
 
+def tool_parameters(parameters: Json | type[BaseModel]) -> Json:
+    """Return provider-ready JSON schema for a manual schema or Pydantic model."""
+    if not _is_args_model(parameters):
+        return cast(Json, parameters)
+    schema = parameters.model_json_schema()
+    schema = _inline_schema_refs(schema)
+    _clean_schema(schema)
+    schema.setdefault("type", "object")
+    schema.setdefault("additionalProperties", False)
+    return schema
+
+
+def coerce_args(args: T | Json, model: type[T]) -> T:
+    """Validate dict args when a built-in tool is called directly."""
+    return args if isinstance(args, model) else model.model_validate(args)
+
+
+def _is_args_model(value: Any) -> TypeGuard[type[BaseModel]]:
+    """Return whether value is a Pydantic args model class."""
+    return isinstance(value, type) and issubclass(value, BaseModel)
+
+
+def _inline_schema_refs(schema: Json) -> Json:
+    """Inline simple local $defs references produced by Pydantic."""
+    defs = schema.pop("$defs", {})
+
+    def visit(value: Any) -> Any:
+        if isinstance(value, dict):
+            ref = value.pop("$ref", None)
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.rsplit("/", 1)[-1]
+                merged = dict(defs.get(name, {}))
+                merged.update(value)
+                value = merged
+            for key, item in list(value.items()):
+                value[key] = visit(item)
+        elif isinstance(value, list):
+            value = [visit(item) for item in value]
+        return value
+
+    return visit(schema)
+
+
+def _clean_schema(schema: Any) -> None:
+    """Remove Pydantic-only decoration and simplify optional-null fields."""
+    if isinstance(schema, list):
+        for item in schema:
+            _clean_schema(item)
+        return
+    if not isinstance(schema, dict):
+        return
+    schema.pop("title", None)
+    if "anyOf" in schema:
+        non_null = [item for item in schema["anyOf"] if item.get("type") != "null"]
+        if len(non_null) == 1:
+            replacement = dict(non_null[0])
+            replacement.update({key: value for key, value in schema.items() if key not in {"anyOf", "default"}})
+            schema.clear()
+            schema.update(replacement)
+    for value in schema.values():
+        _clean_schema(value)
+
+
+# =============================================================================
+# Search helpers
+# =============================================================================
+
+
+def _rg_error_message(returncode: int, output: str | None) -> str:
+    """Return a compact ripgrep failure message."""
+    details = (output or "").strip()
+    suffix = f": {details[:400]}" if details else ""
+    return f"ripgrep failed (rc={returncode}){suffix}"
+
+
 def _describe_search_scope(path_glob: str, file_type: str) -> str:
     """Describe active search filters."""
     parts = []
@@ -581,9 +748,9 @@ def _file_reason(file: SearchFile) -> str:
     return f"{kind}, {bucket}"
 
 
-def _truncate_line(line: str) -> str:
+def _truncate_line(line: str, max_chars: int) -> str:
     """Truncate a matched line for compact search output."""
-    return line if len(line) <= 180 else f"{line[:180]}..."
+    return line if len(line) <= max_chars else f"{line[:max_chars]}..."
 
 
 def _is_definition(content: str) -> bool:
@@ -653,6 +820,11 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+# =============================================================================
+# JSONL field/path helpers
+# =============================================================================
 
 
 _MISSING = object()

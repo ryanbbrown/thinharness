@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pydantic import ConfigDict, Field
+from pydantic.dataclasses import dataclass
 
 from .providers import Model, ProviderError, ResponsesClient, ToolOutput, infer_model
 from .skills import SkillRegistry
@@ -24,7 +26,7 @@ Start narrow, broaden only if needed, and prefer bounded reads over full-file re
 When finished, respond concisely with what changed and any verification run."""
 
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class HarnessConfig:
     """Configuration for Harness."""
 
@@ -33,15 +35,19 @@ class HarnessConfig:
     api_key: str | None = None
     base_url: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    skills_dir: str | Path | None = None
+    skills_dir: str | Path | list[str | Path] | None = None
+    selected_skills: list[str] | None = None
+    builtin_tools: list[str] | None = None
     output_dir: str | Path | None = None
     max_turns: int = 32
     request_timeout: int = 120
     max_read_chars: int = 40_000
+    max_read_bytes: int = 1_000_000
     max_tool_chars: int = 40_000
+    max_search_line_chars: int = 180
     rg_timeout: int = 30
     temperature: float | None = None
-    extra_body: dict[str, Any] = field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: TracingOptions | None = None
 
 
@@ -50,8 +56,8 @@ class HarnessResult:
     """Final result returned by a harness run."""
 
     text: str
-    responses: list[Json] = field(default_factory=list)
-    tool_calls: list[Json] = field(default_factory=list)
+    responses: list[Json] = Field(default_factory=list)
+    tool_calls: list[Json] = Field(default_factory=list)
 
 
 class HarnessError(RuntimeError):
@@ -84,19 +90,25 @@ class Harness:
             extra_body=self.config.extra_body,
             client=client,
         )
-        skills_dir = self.config.skills_dir or self.root / ".agents" / "skills"
-        self.skills = SkillRegistry(skills_dir)
-        builtin = make_builtin_tools(
+        skills_dir = self.config.skills_dir if self.config.skills_dir is not None else self.root / ".agents" / "skills"
+        self.skills = SkillRegistry(skills_dir, selected_skills=self.config.selected_skills)
+        filesystem_tools = make_builtin_tools(
             self.root,
             output_dir=self.config.output_dir,
             max_read_chars=self.config.max_read_chars,
+            max_read_bytes=self.config.max_read_bytes,
             max_tool_chars=self.config.max_tool_chars,
+            max_search_line_chars=self.config.max_search_line_chars,
             rg_timeout=self.config.rg_timeout,
         )
-        self.tools: list[ToolSpec] = [*builtin, *self.skills.specs()]
+        self._validate_skill_tool_selection()
+        builtin = self._select_builtin_tools([*filesystem_tools, *self.skills.specs()], self.config.builtin_tools)
+        self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in builtin)
+        self.tools: list[ToolSpec] = builtin
+        self._validate_unique_tools(self.tools)
+        self._tool_map = {tool.name: tool for tool in self.tools}
         for tool in tools or []:
             self.add_tool(tool)
-        self._tool_map = {tool.name: tool for tool in self.tools}
         self.tracing = tracing or self.config.tracing
 
     def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
@@ -154,16 +166,19 @@ class Harness:
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
         if isinstance(tool, dict):
+            parameters = tool.get("args_model") or tool.get("parameters") or object_schema({})
             spec = ToolSpec(
                 name=str(tool["name"]),
                 description=str(tool.get("description", "")),
-                parameters=dict(tool.get("parameters") or object_schema({})),
+                parameters=parameters,
                 handler=tool["handler"],
             )
         else:
             spec = tool
         if not callable(spec.handler):
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
+        if spec.name in self._tool_map:
+            raise ValueError(f"duplicate tool name: {spec.name}")
         self.tools.append(spec)
         self._tool_map = {tool.name: tool for tool in self.tools}
 
@@ -173,7 +188,8 @@ class Harness:
 
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
-        return f"{self.config.system_prompt}\n\nWorkspace root: {self.root}\n\n{self.skills.prompt_summary()}"
+        skill_summary = self.skills.prompt_summary() if self._skills_enabled else "No skills are configured."
+        return f"{self.config.system_prompt}\n\nWorkspace root: {self.root}\n\n{skill_summary}"
 
     def _call_output(self, name: str, arguments: str) -> str:
         """Execute one model tool call and format its output."""
@@ -194,3 +210,39 @@ class Harness:
             if output.startswith("error:"):
                 span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
             return output
+
+    @staticmethod
+    def _validate_unique_tools(tools: list[ToolSpec]) -> None:
+        """Reject duplicate tool names before sending schemas to a provider."""
+        seen: set[str] = set()
+        for tool in tools:
+            if tool.name in seen:
+                raise ValueError(f"duplicate tool name: {tool.name}")
+            seen.add(tool.name)
+
+    def _validate_skill_tool_selection(self) -> None:
+        """Require explicit skill tool selection when skills are explicitly configured."""
+        if not self.skills.skills or (self.config.skills_dir is None and self.config.selected_skills is None):
+            return
+        selected = {name.lower() for name in self.config.builtin_tools or []}
+        if not selected.intersection({"skill_read", "skill_run"}):
+            raise ValueError("skills_dir or selected_skills requires selecting skill_read or skill_run in builtin_tools")
+
+    @staticmethod
+    def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
+        """Return all or the explicitly selected built-in tools."""
+        if selected_names is None:
+            return tools
+        by_name = {tool.name: tool for tool in tools}
+        selected: list[ToolSpec] = []
+        seen: set[str] = set()
+        for raw_name in selected_names:
+            name = raw_name.lower()
+            if name in seen:
+                raise ValueError(f"duplicate selected builtin tool: {name}")
+            if name not in by_name:
+                available = ", ".join(sorted(by_name)) or "none"
+                raise ValueError(f"unknown builtin tool: {name}; available: {available}")
+            selected.append(by_name[name])
+            seen.add(name)
+        return selected

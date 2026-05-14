@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from .tools import Json, ToolResult, ToolSpec, contained_path, object_schema
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.dataclasses import dataclass
+
+from .tools import Json, ToolResult, ToolSpec, coerce_args, contained_path
 
 
 @dataclass(frozen=True)
@@ -23,12 +26,42 @@ class Skill:
     metadata: Json
 
 
+class SkillArgs(BaseModel):
+    """Base class for skill tool arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SkillReadArgs(SkillArgs):
+    """Arguments for skill_read."""
+
+    skill_name: str
+    path: str | None = None
+    max_chars: int = Field(default=40_000, ge=1)
+
+
+class SkillRunArgs(SkillArgs):
+    """Arguments for skill_run."""
+
+    skill_name: str
+    script: str
+    args: list[str] = Field(default_factory=list)
+    timeout: int = Field(default=60, ge=1)
+    max_chars: int = Field(default=40_000, ge=1)
+
+
 class SkillRegistry:
     """Load skills from directories containing SKILL.md files."""
 
-    def __init__(self, skills_dir: str | Path | None) -> None:
-        self.skills_dir = Path(skills_dir).expanduser().resolve() if skills_dir else None
-        self._skills = self._discover()
+    def __init__(
+        self,
+        skills_dir: str | Path | Sequence[str | Path] | None,
+        *,
+        selected_skills: Sequence[str] | None = None,
+    ) -> None:
+        self.skills_dirs = _normalize_skill_dirs(skills_dir)
+        self.selected_skills = list(selected_skills) if selected_skills is not None else None
+        self._skills = self._select_skills(self._discover())
 
     @property
     def skills(self) -> dict[str, Skill]:
@@ -47,42 +80,33 @@ class SkillRegistry:
 
     def specs(self) -> list[ToolSpec]:
         """Return tool specs for reading and running skills."""
+        if not self._skills:
+            return []
         return [
-            ToolSpec("skill_read", "Read a skill's SKILL.md or another contained file, with a file tree.", object_schema({
-                "skill_name": "string",
-                "path": "string?",
-                "max_chars": "integer?",
-            }, ["skill_name"]), self.skill_read),
-            ToolSpec("skill_run", "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.", object_schema({
-                "skill_name": "string",
-                "script": "string",
-                "args": "array?",
-                "timeout": "integer?",
-                "max_chars": "integer?",
-            }, ["skill_name", "script"]), self.skill_run),
+            ToolSpec("skill_read", "Read a skill's SKILL.md or another contained file, with a file tree.", SkillReadArgs, self.skill_read),
+            ToolSpec("skill_run", "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.", SkillRunArgs, self.skill_run),
         ]
 
-    def skill_read(self, args: dict[str, Any]) -> ToolResult:
+    def skill_read(self, args: SkillReadArgs | Json) -> ToolResult:
         """Read a skill file and include the skill tree."""
-        skill = self._get(args["skill_name"])
-        rel = str(args.get("path") or skill.skill_file.relative_to(skill.root))
+        args = coerce_args(args, SkillReadArgs)
+        skill = self._get(args.skill_name)
+        rel = str(args.path or skill.skill_file.relative_to(skill.root))
         target = contained_path(skill.root, rel)
         if not target.exists() or target.is_dir():
             return ToolResult(False, f"file not found: {rel}")
         content = target.read_text(encoding="utf-8", errors="replace")
         body = f"# Skill: {skill.name}\nRoot: {skill.root}\n\n## Files\n{self._tree(skill.root)}\n\n## {rel}\n{content}"
-        return self._truncate(body, int(args.get("max_chars", 40_000)))
+        return self._truncate(body, args.max_chars)
 
-    def skill_run(self, args: dict[str, Any]) -> ToolResult:
+    def skill_run(self, args: SkillRunArgs | Json) -> ToolResult:
         """Run a contained skill script."""
-        skill = self._get(args["skill_name"])
-        script = contained_path(skill.root, str(args["script"]))
+        args = coerce_args(args, SkillRunArgs)
+        skill = self._get(args.skill_name)
+        script = contained_path(skill.root, args.script)
         if not script.exists() or script.is_dir():
-            return ToolResult(False, f"script not found: {args['script']}")
-        run_args = args.get("args", [])
-        if not isinstance(run_args, list):
-            return ToolResult(False, "args must be a JSON array of strings")
-        command = [str(script), *[str(arg) for arg in run_args]]
+            return ToolResult(False, f"script not found: {args.script}")
+        command = [str(script), *[str(arg) for arg in args.args]]
         if script.suffix == ".py":
             command.insert(0, os.environ.get("PYTHON", "python3"))
         proc = subprocess.run(
@@ -91,36 +115,54 @@ class SkillRegistry:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=int(args.get("timeout", 60)),
+            timeout=args.timeout,
             check=False,
         )
         output = f"exit_code: {proc.returncode}\n{proc.stdout or ''}".strip()
-        result = self._truncate(output or "(empty)", int(args.get("max_chars", 40_000)))
+        result = self._truncate(output or "(empty)", args.max_chars)
         result.ok = proc.returncode == 0
         result.metadata.update({"returncode": proc.returncode, "cmd": command})
         return result
 
     def _discover(self) -> dict[str, Skill]:
-        """Discover skill files from the configured directory."""
-        if not self.skills_dir or not self.skills_dir.exists():
-            return {}
-        files = [path for path in self.skills_dir.rglob("SKILL.md") if path.is_file()]
-        files += [path for path in self.skills_dir.glob("*.md") if path.name != "SKILL.md"]
+        """Discover skill files from the configured directories."""
         found: dict[str, Skill] = {}
-        for path in sorted(set(files)):
-            metadata, _ = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
-            default_name = path.parent.name if path.name == "SKILL.md" else path.stem
-            name = str(metadata.get("name") or default_name).strip()
-            if not name:
+        for skills_dir in self.skills_dirs:
+            if not skills_dir.exists():
                 continue
-            found[name] = Skill(
-                name=name,
-                description=str(metadata.get("description") or "").strip(),
-                root=path.parent.resolve(),
-                skill_file=path.resolve(),
-                metadata=metadata,
-            )
+            files = [path for path in skills_dir.rglob("SKILL.md") if path.is_file()]
+            files += [path for path in skills_dir.glob("*.md") if path.name != "SKILL.md"]
+            for path in sorted(set(files)):
+                metadata, _ = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+                default_name = path.parent.name if path.name == "SKILL.md" else path.stem
+                name = str(metadata.get("name") or default_name).strip()
+                if not name:
+                    continue
+                skill = Skill(
+                    name=name,
+                    description=str(metadata.get("description") or "").strip(),
+                    root=path.parent.resolve(),
+                    skill_file=path.resolve(),
+                    metadata=metadata,
+                )
+                if name in found:
+                    raise ValueError(f"duplicate skill name: {name} in {found[name].skill_file} and {skill.skill_file}")
+                found[name] = skill
         return found
+
+    def _select_skills(self, discovered: dict[str, Skill]) -> dict[str, Skill]:
+        """Return discovered skills filtered by selected_skills."""
+        if self.selected_skills is None:
+            return discovered
+        selected: dict[str, Skill] = {}
+        for name in self.selected_skills:
+            if name in selected:
+                raise ValueError(f"duplicate selected skill: {name}")
+            if name not in discovered:
+                available = ", ".join(sorted(discovered)) or "none"
+                raise ValueError(f"unknown selected skill: {name}; available: {available}")
+            selected[name] = discovered[name]
+        return selected
 
     def _get(self, name: str) -> Skill:
         """Look up a skill by name."""
@@ -178,3 +220,12 @@ def parse_frontmatter(text: str) -> tuple[Json, str]:
                 parsed = value
         data[key.strip()] = parsed
     return data, body
+
+
+def _normalize_skill_dirs(skills_dir: str | Path | Sequence[str | Path] | None) -> list[Path]:
+    """Normalize one or more skill directories."""
+    if skills_dir is None:
+        return []
+    if isinstance(skills_dir, str | Path):
+        return [Path(skills_dir).expanduser().resolve()]
+    return [Path(path).expanduser().resolve() for path in skills_dir]

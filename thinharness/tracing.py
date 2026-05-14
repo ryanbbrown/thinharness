@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Iterator
+
+from pydantic import ConfigDict
+from pydantic.dataclasses import dataclass
 
 from .tools import Json
 
@@ -15,7 +17,7 @@ except ImportError:  # pragma: no cover - exercised when optional deps are absen
     SpanKind = Status = StatusCode = None  # type: ignore[assignment]
 
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class TracingOptions:
     """Configuration for tracing one harness run."""
 
@@ -28,7 +30,7 @@ class TracingOptions:
     capture_tool_results: bool = False
 
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class OtlpTracing:
     """Handle returned by create_otlp_tracing."""
 
@@ -244,7 +246,11 @@ def _finish_reasons(raw: Json) -> list[str] | None:
         return [raw["finish_reason"]]
     choices = raw.get("choices")
     if isinstance(choices, list):
-        reasons = [choice.get("finish_reason") for choice in choices if isinstance(choice, dict) and choice.get("finish_reason")]
+        reasons = [
+            reason
+            for choice in choices
+            if isinstance(choice, dict) and isinstance(reason := choice.get("finish_reason"), str)
+        ]
         return reasons or None
     return None
 

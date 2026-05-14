@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, Field
 
 from thinharness import (
     AnthropicMessagesModel,
@@ -12,12 +14,13 @@ from thinharness import (
     HarnessConfig,
     OpenRouterModel,
     OpenRouterProvider,
+    OpenAIProvider,
     SkillRegistry,
     ToolSpec,
     TracingOptions,
     parse_model_ref,
 )
-from thinharness.providers import ToolOutput
+from thinharness.providers import ProviderError, ToolOutput
 from thinharness.tools import FileTools
 
 
@@ -105,6 +108,23 @@ def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
     assert "notes/todo.txt" in listed.content
 
 
+def test_file_tools_large_reads_require_and_stream_bounded_range(tmp_path: Path) -> None:
+    path = tmp_path / "large.txt"
+    path.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    tools = FileTools(tmp_path, max_read_bytes=10)
+
+    unbounded = tools.read({"path": "large.txt"})
+    assert not unbounded.ok
+    assert "pass offset and limit" in unbounded.content
+
+    bounded = tools.read({"path": "large.txt", "offset": 3, "limit": 2})
+    assert bounded.ok
+    assert "3\tthree" in bounded.content
+    assert "4\tfour" in bounded.content
+    assert "one" not in bounded.content
+    assert bounded.metadata["total_lines"] is None
+
+
 def test_file_tools_reject_path_escape(tmp_path: Path) -> None:
     tools = FileTools(tmp_path)
     with pytest.raises(ValueError):
@@ -134,6 +154,20 @@ def test_search_no_matches_has_refinement_hint(tmp_path: Path) -> None:
     assert result.ok
     assert "No matches found." in result.content
     assert "scope: glob=**/*.py" in result.content
+
+
+def test_search_reports_ripgrep_errors(tmp_path: Path) -> None:
+    result = FileTools(tmp_path).search({"query": "["})
+    assert not result.ok
+    assert "ripgrep failed" in result.content
+    assert result.metadata["returncode"] not in (0, 1)
+
+
+def test_search_line_preview_limit_is_search_only(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("target = '" + ("x" * 40) + "'\n", encoding="utf-8")
+    result = FileTools(tmp_path, max_search_line_chars=12).search({"query": "target"})
+    assert result.ok
+    assert "target = 'xx..." in result.content
 
 
 def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
@@ -177,6 +211,12 @@ def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
     assert 'events.jsonl:3: {"id": 3}' in result.content
 
 
+def test_jsonl_search_reports_ripgrep_errors(tmp_path: Path) -> None:
+    result = FileTools(tmp_path).jsonl_search({"query": "[", "path_glob": "*.jsonl"})
+    assert not result.ok
+    assert "ripgrep failed" in result.content
+
+
 def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     (skill / "scripts").mkdir(parents=True)
@@ -191,6 +231,33 @@ def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
     run = registry.skill_run({"skill_name": "demo", "script": "scripts/echo.py", "args": ["there"]})
     assert run.ok
     assert "hi there" in run.content
+
+
+def test_skill_registry_aggregates_dirs_and_filters_selected_skills(tmp_path: Path) -> None:
+    alpha = tmp_path / "a" / "alpha"
+    beta = tmp_path / "b" / "beta"
+    alpha.mkdir(parents=True)
+    beta.mkdir(parents=True)
+    (alpha / "SKILL.md").write_text("---\nname: alpha\ndescription: Alpha skill\n---\nAlpha", encoding="utf-8")
+    (beta / "SKILL.md").write_text("---\nname: beta\ndescription: Beta skill\n---\nBeta", encoding="utf-8")
+
+    registry = SkillRegistry([tmp_path / "a", tmp_path / "b"], selected_skills=["beta"])
+
+    assert list(registry.skills) == ["beta"]
+    assert "beta - Beta skill" in registry.prompt_summary()
+    assert "alpha - Alpha skill" not in registry.prompt_summary()
+
+
+def test_skill_registry_rejects_duplicate_skill_names(tmp_path: Path) -> None:
+    first = tmp_path / "first" / "demo"
+    second = tmp_path / "second" / "demo"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "SKILL.md").write_text("---\nname: demo\n---\nFirst", encoding="utf-8")
+    (second / "SKILL.md").write_text("---\nname: demo\n---\nSecond", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate skill name: demo"):
+        SkillRegistry([tmp_path / "first", tmp_path / "second"])
 
 
 def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
@@ -259,6 +326,65 @@ def test_custom_tool_is_exposed_and_callable(tmp_path: Path) -> None:
     assert '"echo": "ok"' in output
 
 
+def test_custom_tool_can_use_pydantic_args_model(tmp_path: Path) -> None:
+    class EchoArgs(BaseModel):
+        value: str
+        count: int = Field(default=1, ge=1)
+
+    custom = ToolSpec("echo_typed", "Echo typed input", EchoArgs, lambda args: {"echo": args.value * args.count})
+    harness = Harness(HarnessConfig(root=tmp_path), client=FakeClient(), tools=[custom])
+
+    schema = next(tool for tool in harness.tool_schemas() if tool["name"] == "echo_typed")["parameters"]
+    assert schema["properties"]["count"]["minimum"] == 1
+    assert '"echo": "okok"' in harness._call_output("echo_typed", '{"value":"ok","count":2}')
+    assert "invalid arguments" in harness._call_output("echo_typed", '{"value":"ok","count":0}')
+
+
+def test_builtin_tool_selection_is_explicit(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read", "search"]), client=FakeClient())
+    assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "search"]
+
+
+def test_skill_dirs_require_selected_skill_tools(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\n---\nDemo", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="skill_read or skill_run"):
+        Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills"), client=FakeClient())
+    with pytest.raises(ValueError, match="skill_read or skill_run"):
+        Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["read"]), client=FakeClient())
+
+
+def test_selected_skills_are_exposed_when_skill_tool_is_selected(tmp_path: Path) -> None:
+    demo = tmp_path / "skills" / "demo"
+    other = tmp_path / "skills" / "other"
+    demo.mkdir(parents=True)
+    other.mkdir(parents=True)
+    (demo / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo", encoding="utf-8")
+    (other / "SKILL.md").write_text("---\nname: other\ndescription: Other skill\n---\nOther", encoding="utf-8")
+
+    harness = Harness(
+        HarnessConfig(
+            root=tmp_path,
+            skills_dir=tmp_path / "skills",
+            selected_skills=["demo"],
+            builtin_tools=["read", "skill_read"],
+        ),
+        client=FakeClient(),
+    )
+
+    assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "skill_read"]
+    assert "demo - Demo skill" in harness.system_instructions()
+    assert "other - Other skill" not in harness.system_instructions()
+
+
+def test_duplicate_tool_names_are_rejected(tmp_path: Path) -> None:
+    duplicate = ToolSpec("read", "Duplicate read", {"type": "object", "properties": {}}, lambda args: "ok")
+    with pytest.raises(ValueError, match="duplicate tool name: read"):
+        Harness(HarnessConfig(root=tmp_path), client=FakeClient(), tools=[duplicate])
+
+
 def test_model_refs_require_provider_prefix() -> None:
     assert parse_model_ref("openai:gpt-4.1-mini") == ("openai", "gpt-4.1-mini")
     assert parse_model_ref("anthropic:claude-3-5-haiku-latest") == ("anthropic", "claude-3-5-haiku-latest")
@@ -322,3 +448,33 @@ def test_openrouter_provider_model_tool_loop(monkeypatch) -> None:
     second = model.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
     assert second.text == "done"
     assert calls[0][1]["tools"][0]["function"]["name"] == "echo"
+
+
+def test_provider_wraps_transport_errors(monkeypatch) -> None:
+    def fail_urlopen(request, timeout):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+    provider = OpenAIProvider(api_key="key", base_url="http://example.invalid")
+    with pytest.raises(ProviderError, match="provider request failed"):
+        provider.post_json("/responses", {})
+
+
+def test_provider_wraps_invalid_json(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self):
+            return b"not json"
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    provider = OpenAIProvider(api_key="key", base_url="http://example.invalid")
+    with pytest.raises(ProviderError, match="invalid JSON"):
+        provider.post_json("/responses", {})
