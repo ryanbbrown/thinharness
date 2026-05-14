@@ -136,6 +136,17 @@ otlp.force_flush()
 
 Install the optional tracing dependencies with `pip install "thinharness[tracing]"`.
 
+## Parallel tool execution
+
+When a model emits multiple tool calls in one response, the harness runs them in parallel by default. Mutating built-ins (`write`, `edit`, `skill_run`) are marked `sequential=True` and force the entire batch to run serially in model order. Read-only built-ins (`read`, `search`, `list`, `glob`, `jsonl_search`, `skill_read`) execute concurrently in a thread pool.
+
+```python
+HarnessConfig(tool_execution="auto")        # default: same-response calls may run in parallel
+HarnessConfig(tool_execution="sequential")  # escape hatch: always serial, in model order
+```
+
+Custom tools default to `sequential=False`. Set `sequential=True` on a `ToolSpec` for tools that mutate shared state or are not thread-safe; including one such tool in a batch makes the whole batch sequential. The harness always waits for every result in the current batch before sending the next provider continuation, and returned outputs preserve the original model call order regardless of completion order.
+
 ## Runtime model
 
 Provider model instances keep conversation state while a run is in progress. Treat a `Harness` instance as single-run/single-thread unless you provide a stateless custom model.

@@ -7,6 +7,7 @@ import itertools
 import json
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, TypeGuard, TypeVar, cast
 
@@ -46,6 +47,7 @@ class ToolSpec:
     description: str
     parameters: Json | type[BaseModel]
     handler: ToolHandler
+    sequential: bool = False
 
     def response_tool(self) -> Json:
         """Return an OpenAI Responses API function tool definition."""
@@ -217,8 +219,8 @@ class FileTools:
         """Return built-in filesystem tool specs."""
         return [
             ToolSpec("read", "Read a UTF-8 text file with line numbers, offset, and limit.", ReadArgs, self.read),
-            ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", WriteArgs, self.write),
-            ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", EditArgs, self.edit),
+            ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", WriteArgs, self.write, sequential=True),
+            ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", EditArgs, self.edit, sequential=True),
             ToolSpec("search", "Search code with ripgrep, then rank and format matches for agent follow-up reads.", SearchArgs, self.search),
             ToolSpec("list", "List a directory or glob files under the workspace root.", ListArgs, self.list_files),
             ToolSpec("glob", "Find files by glob pattern under the workspace root.", GlobArgs, self.glob),
@@ -550,7 +552,7 @@ class FileTools:
         if len(text) <= limit:
             return ToolResult(True, text)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        artifact = self.output_dir / f"{prefix}-{int(time.time() * 1000)}.txt"
+        artifact = self.output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
         artifact.write_text(text, encoding="utf-8")
         head = limit // 2
         tail = limit - head

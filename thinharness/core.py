@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass
 
-from .providers import Model, ProviderError, ResponsesClient, ToolOutput, infer_model
+from .providers import Model, ModelToolCall, ProviderError, ResponsesClient, ToolOutput, infer_model
 from .skills import SkillRegistry
 from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
+
+MAX_PARALLEL_TOOL_WORKERS = 16
 
 DEFAULT_SYSTEM_PROMPT = """You are a filesystem automation agent working inside the workspace root.
 
@@ -52,6 +55,7 @@ class HarnessConfig:
     temperature: float | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: TracingOptions | None = None
+    tool_execution: Literal["auto", "sequential"] = "auto"
 
 
 @dataclass
@@ -145,11 +149,8 @@ class Harness:
                     if not turn.tool_calls:
                         agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                         return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
-                    outputs = []
-                    for call in turn.tool_calls:
-                        output = self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
-                        tool_calls.append({"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output})
-                        outputs.append(ToolOutput(call.id, output))
+                    recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
+                    tool_calls.extend(recorded)
                     with run_tracer.model(self.model) as model_span:
                         try:
                             turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
@@ -179,6 +180,7 @@ class Harness:
                 description=str(tool.get("description", "")),
                 parameters=parameters,
                 handler=tool["handler"],
+                sequential=bool(tool.get("sequential", False)),
             )
         else:
             spec = tool
@@ -218,6 +220,40 @@ class Harness:
                 span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
             return output
 
+    def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput]]:
+        """Run one batch of model tool calls; preserve model order in returned outputs."""
+        if self._should_run_sequentially(calls):
+            results = [self._traced_call_output(run_tracer, call.id, call.name, call.arguments) for call in calls]
+        else:
+            results = self._run_calls_in_threads(run_tracer, calls)
+        recorded = [
+            {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
+            for call, output in zip(calls, results)
+        ]
+        outputs = [ToolOutput(call.id, output) for call, output in zip(calls, results)]
+        return recorded, outputs
+
+    def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
+        """Decide whether the batch must execute serially."""
+        if self.config.tool_execution == "sequential" or len(calls) <= 1:
+            return True
+        return any((spec := self._tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
+
+    def _run_calls_in_threads(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[str]:
+        """Execute calls concurrently while keeping the OpenTelemetry parent context."""
+        parent_context = _current_otel_context()
+
+        def invoke(call: ModelToolCall) -> str:
+            token = _attach_otel_context(parent_context)
+            try:
+                return self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
+            finally:
+                _detach_otel_context(token)
+
+        with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_WORKERS)) as executor:
+            futures = [executor.submit(invoke, call) for call in calls]
+            return [future.result() for future in futures]
+
     @staticmethod
     def _validate_unique_tools(tools: list[ToolSpec]) -> None:
         """Reject duplicate tool names before sending schemas to a provider."""
@@ -253,3 +289,34 @@ class Harness:
             selected.append(by_name[name])
             seen.add(name)
         return selected
+
+
+def _current_otel_context() -> Any | None:
+    """Capture the active OpenTelemetry context for thread propagation, if available."""
+    try:
+        from opentelemetry import context as otel_context
+    except ImportError:
+        return None
+    return otel_context.get_current()
+
+
+def _attach_otel_context(context: Any | None) -> Any | None:
+    """Attach a captured OpenTelemetry context to the current thread, if available."""
+    if context is None:
+        return None
+    try:
+        from opentelemetry import context as otel_context
+    except ImportError:
+        return None
+    return otel_context.attach(context)
+
+
+def _detach_otel_context(token: Any | None) -> None:
+    """Detach a previously attached OpenTelemetry context, if available."""
+    if token is None:
+        return
+    try:
+        from opentelemetry import context as otel_context
+    except ImportError:
+        return
+    otel_context.detach(token)

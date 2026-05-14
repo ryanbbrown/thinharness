@@ -84,7 +84,7 @@ class SkillRegistry:
             return []
         return [
             ToolSpec("skill_read", "Read a skill's SKILL.md or another contained file, with a file tree.", SkillReadArgs, self.skill_read),
-            ToolSpec("skill_run", "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.", SkillRunArgs, self.skill_run),
+            ToolSpec("skill_run", "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.", SkillRunArgs, self.skill_run, sequential=True),
         ]
 
     def skill_read(self, args: SkillReadArgs | Json) -> ToolResult:
