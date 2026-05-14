@@ -56,6 +56,8 @@ class ModelSettings:
 class Model(Protocol):
     """Responses-like model contract consumed by the harness."""
 
+    model: str
+
     @property
     def provider(self) -> "Provider":
         """Return the model provider."""
@@ -65,6 +67,14 @@ class Model(Protocol):
     def api_key(self) -> str | None:
         """Return the model provider API key."""
         ...
+
+    def new_session(self) -> "ModelSession":
+        """Create isolated state for one model run."""
+        ...
+
+
+class ModelSession(Protocol):
+    """Per-run model state consumed by the harness."""
 
     def start(
         self,
@@ -211,39 +221,15 @@ class OpenAIResponsesModel:
         self.model = model
         self.provider = provider or OpenAIProvider()
         self.settings = settings or ModelSettings()
-        self.previous_response_id: str | None = None
 
     @property
     def api_key(self) -> str | None:
         """Return the provider API key."""
         return self.provider.api_key
 
-    def start(
-        self,
-        *,
-        prompt: str,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
-        previous_response_id: str | None = None,
-    ) -> ModelTurn:
-        """Start a Responses API run."""
-        self.previous_response_id = previous_response_id
-        payload = self._payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
-        return self._complete(payload)
-
-    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
-        """Continue a Responses API run with function_call_output items."""
-        input_payload = [
-            {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
-            for output in outputs
-        ]
-        payload = self._payload(input_payload=input_payload, tools=tools, metadata=metadata)
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
-        return self._complete(payload)
+    def new_session(self) -> ModelSession:
+        """Create an isolated Responses API session."""
+        return OpenAIResponsesSession(self)
 
     def _payload(self, *, input_payload: Any, tools: list[Json], instructions: str | None = None, metadata: Json | None = None) -> Json:
         """Build a Responses API payload."""
@@ -257,9 +243,44 @@ class OpenAIResponsesModel:
         payload.update(self.settings.extra_body)
         return payload
 
+
+class OpenAIResponsesSession:
+    """Per-run OpenAI Responses state."""
+
+    def __init__(self, model: OpenAIResponsesModel) -> None:
+        self.model = model
+        self.previous_response_id: str | None = None
+
+    def start(
+        self,
+        *,
+        prompt: str,
+        instructions: str,
+        tools: list[Json],
+        metadata: Json | None = None,
+        previous_response_id: str | None = None,
+    ) -> ModelTurn:
+        """Start a Responses API run."""
+        self.previous_response_id = previous_response_id
+        payload = self.model._payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
+        if self.previous_response_id:
+            payload["previous_response_id"] = self.previous_response_id
+        return self._complete(payload)
+
+    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+        """Continue a Responses API run with function_call_output items."""
+        input_payload = [
+            {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
+            for output in outputs
+        ]
+        payload = self.model._payload(input_payload=input_payload, tools=tools, metadata=metadata)
+        if self.previous_response_id:
+            payload["previous_response_id"] = self.previous_response_id
+        return self._complete(payload)
+
     def _complete(self, payload: Json) -> ModelTurn:
         """Send a Responses API payload and normalize the response."""
-        response = self.provider.create_response(payload)
+        response = self.model.provider.create_response(payload)
         self.previous_response_id = response.get("id") or self.previous_response_id
         return ModelTurn(text=_extract_responses_text(response), tool_calls=_extract_responses_tool_calls(response), raw=response)
 
@@ -279,13 +300,24 @@ class AnthropicMessagesModel:
         self.provider = provider or AnthropicProvider()
         self.settings = settings or ModelSettings()
         self.max_tokens = max_tokens
-        self.messages: list[Json] = []
-        self.system = ""
 
     @property
     def api_key(self) -> str | None:
         """Return the provider API key."""
         return self.provider.api_key
+
+    def new_session(self) -> ModelSession:
+        """Create an isolated Anthropic Messages session."""
+        return AnthropicMessagesSession(self)
+
+
+class AnthropicMessagesSession:
+    """Per-run Anthropic Messages state."""
+
+    def __init__(self, model: AnthropicMessagesModel) -> None:
+        self.model = model
+        self.messages: list[Json] = []
+        self.system = ""
 
     def start(
         self,
@@ -314,18 +346,18 @@ class AnthropicMessagesModel:
     def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Send a Messages API request and normalize the response."""
         payload: Json = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
+            "model": self.model.model,
+            "max_tokens": self.model.max_tokens,
             "system": self.system,
             "messages": self.messages,
             "tools": [_responses_tool_to_anthropic(tool) for tool in tools],
         }
         if metadata:
             payload["metadata"] = metadata
-        if self.settings.temperature is not None:
-            payload["temperature"] = self.settings.temperature
-        payload.update(self.settings.extra_body)
-        response = self.provider.create_message(payload)
+        if self.model.settings.temperature is not None:
+            payload["temperature"] = self.model.settings.temperature
+        payload.update(self.model.settings.extra_body)
+        response = self.model.provider.create_message(payload)
         self.messages.append({"role": "assistant", "content": response.get("content", [])})
         return ModelTurn(text=_extract_anthropic_text(response), tool_calls=_extract_anthropic_tool_calls(response), raw=response)
 
@@ -337,12 +369,23 @@ class OpenRouterModel:
         self.model = model
         self.provider = provider or OpenRouterProvider()
         self.settings = settings or ModelSettings()
-        self.messages: list[Json] = []
 
     @property
     def api_key(self) -> str | None:
         """Return the provider API key."""
         return self.provider.api_key
+
+    def new_session(self) -> ModelSession:
+        """Create an isolated OpenRouter session."""
+        return OpenRouterSession(self)
+
+
+class OpenRouterSession:
+    """Per-run OpenRouter chat completion state."""
+
+    def __init__(self, model: OpenRouterModel) -> None:
+        self.model = model
+        self.messages: list[Json] = []
 
     def start(
         self,
@@ -371,16 +414,16 @@ class OpenRouterModel:
     def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Send an OpenRouter request and normalize the response."""
         payload: Json = {
-            "model": self.model,
+            "model": self.model.model,
             "messages": self.messages,
             "tools": [_responses_tool_to_chat(tool) for tool in tools],
         }
         if metadata:
             payload["metadata"] = metadata
-        if self.settings.temperature is not None:
-            payload["temperature"] = self.settings.temperature
-        payload.update(self.settings.extra_body)
-        response = self.provider.create_chat_completion(payload)
+        if self.model.settings.temperature is not None:
+            payload["temperature"] = self.model.settings.temperature
+        payload.update(self.model.settings.extra_body)
+        response = self.model.provider.create_chat_completion(payload)
         message = ((response.get("choices") or [{}])[0].get("message") or {})
         self.messages.append(message)
         return ModelTurn(text=str(message.get("content") or ""), tool_calls=_extract_chat_tool_calls(message), raw=response)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import urllib.error
@@ -16,6 +17,7 @@ from thinharness import (
     OpenRouterModel,
     OpenRouterProvider,
     OpenAIProvider,
+    OpenAIResponsesModel,
     SkillRegistry,
     ToolSpec,
     TracingOptions,
@@ -95,6 +97,58 @@ class FakeTracer:
         span = FakeSpan(name, kwargs.get("attributes"), self.stack[-1] if self.stack else None)
         self.spans.append(span)
         return FakeSpanContext(self, span)
+
+
+class FakeAnthropicProvider(AnthropicProvider):
+    def __init__(self) -> None:
+        super().__init__(api_key="key")
+        self.payloads = []
+
+    def create_message(self, payload):
+        """Capture Anthropic payloads and return a tool loop response."""
+        self.payloads.append(copy.deepcopy(payload))
+        last = payload["messages"][-1]
+        if isinstance(last["content"], str):
+            return {
+                "content": [{"type": "tool_use", "id": f"toolu_{len(self.payloads)}", "name": "echo", "input": {"value": last["content"]}}],
+                "stop_reason": "tool_use",
+            }
+        return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+
+
+class FakeOpenRouterProvider(OpenRouterProvider):
+    def __init__(self) -> None:
+        super().__init__(api_key="key")
+        self.payloads = []
+
+    def create_chat_completion(self, payload):
+        """Capture OpenRouter payloads and return a tool loop response."""
+        self.payloads.append(copy.deepcopy(payload))
+        last = payload["messages"][-1]
+        if last["role"] == "user":
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": f"call_{len(self.payloads)}",
+                            "type": "function",
+                            "function": {"name": "echo", "arguments": json.dumps({"value": last["content"]})},
+                        }],
+                    }
+                }]
+            }
+        return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+
+def echo_tool() -> ToolSpec:
+    """Create a custom echo tool."""
+    return ToolSpec(
+        "echo",
+        "Echo input",
+        {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
+        lambda args: args["value"],
+    )
 
 
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
@@ -352,6 +406,36 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert "hello" in client.payloads[1]["input"][0]["output"]
 
 
+def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
+    provider = FakeAnthropicProvider()
+    model = AnthropicMessagesModel("claude-test", provider=provider)
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+
+    assert harness.run("first").text == "done"
+    assert harness.run("second").text == "done"
+
+    assert provider.payloads[0]["messages"] == [{"role": "user", "content": "first"}]
+    assert provider.payloads[2]["messages"] == [{"role": "user", "content": "second"}]
+
+
+def test_openrouter_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
+    provider = FakeOpenRouterProvider()
+    model = OpenRouterModel("openai/test", provider=provider)
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+
+    assert harness.run("first").text == "done"
+    assert harness.run("second").text == "done"
+
+    assert provider.payloads[0]["messages"] == [
+        {"role": "system", "content": harness.system_instructions()},
+        {"role": "user", "content": "first"},
+    ]
+    assert provider.payloads[2]["messages"] == [
+        {"role": "system", "content": harness.system_instructions()},
+        {"role": "user", "content": "second"},
+    ]
+
+
 def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
     tracer = FakeTracer()
@@ -481,6 +565,41 @@ def test_model_refs_require_provider_prefix() -> None:
         parse_model_ref("gpt-4.1-mini")
 
 
+def test_model_sessions_advance_independently() -> None:
+    provider = FakeAnthropicProvider()
+    model = AnthropicMessagesModel("claude-test", provider=provider)
+    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    first = model.new_session()
+    second = model.new_session()
+
+    first_turn = first.start(prompt="first", instructions="system", tools=tools)
+    second_turn = second.start(prompt="second", instructions="system", tools=tools)
+    first.continue_with_tools([ToolOutput(first_turn.tool_calls[0].id, "first result")], tools=tools)
+    second.continue_with_tools([ToolOutput(second_turn.tool_calls[0].id, "second result")], tools=tools)
+
+    assert provider.payloads[2]["messages"][0] == {"role": "user", "content": "first"}
+    assert provider.payloads[2]["messages"][-1]["content"][0]["content"] == "first result"
+    assert provider.payloads[3]["messages"][0] == {"role": "user", "content": "second"}
+    assert provider.payloads[3]["messages"][-1]["content"][0]["content"] == "second result"
+
+
+def test_openai_previous_response_id_is_session_scoped() -> None:
+    client = FakeClient()
+    provider = OpenAIProvider(api_key="key", client=client)
+    model = OpenAIResponsesModel("gpt-test", provider=provider)
+    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    first = model.new_session()
+    second = model.new_session()
+
+    first.start(prompt="first", instructions="system", tools=tools, previous_response_id="existing")
+    first.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
+    second.start(prompt="second", instructions="system", tools=tools)
+
+    assert client.payloads[0]["previous_response_id"] == "existing"
+    assert client.payloads[1]["previous_response_id"] == "resp_1"
+    assert "previous_response_id" not in client.payloads[2]
+
+
 def test_anthropic_provider_model_tool_loop(monkeypatch) -> None:
     calls = []
 
@@ -497,11 +616,12 @@ def test_anthropic_provider_model_tool_loop(monkeypatch) -> None:
     monkeypatch.setattr("thinharness.providers._post_json", fake_post)
     provider = AnthropicProvider(api_key="key")
     model = AnthropicMessagesModel("claude-test", provider=provider)
+    session = model.new_session()
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
 
-    first = model.start(prompt="hi", instructions="system", tools=tools)
+    first = session.start(prompt="hi", instructions="system", tools=tools)
     assert first.tool_calls[0].name == "echo"
-    second = model.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], tools=tools)
+    second = session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], tools=tools)
     assert second.text == "done"
     assert calls[0][1]["tools"][0]["input_schema"]["type"] == "object"
 
@@ -530,11 +650,12 @@ def test_openrouter_provider_model_tool_loop(monkeypatch) -> None:
     monkeypatch.setattr("thinharness.providers._post_json", fake_post)
     provider = OpenRouterProvider(api_key="key")
     model = OpenRouterModel("openai/test", provider=provider)
+    session = model.new_session()
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
 
-    first = model.start(prompt="hi", instructions="system", tools=tools)
+    first = session.start(prompt="hi", instructions="system", tools=tools)
     assert first.tool_calls[0].id == "call_1"
-    second = model.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
+    second = session.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
     assert second.text == "done"
     assert calls[0][1]["tools"][0]["function"]["name"] == "echo"
 

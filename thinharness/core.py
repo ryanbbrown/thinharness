@@ -122,12 +122,13 @@ class Harness:
         responses: list[Json] = []
         tool_calls: list[Json] = []
         run_tracer = RunTracer(self.tracing)
+        session = self.model.new_session()
 
         with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
             try:
                 with run_tracer.model(self.model) as model_span:
                     try:
-                        turn = self.model.start(
+                        turn = session.start(
                             prompt=prompt,
                             instructions=self.system_instructions(),
                             tools=self.tool_schemas(),
@@ -151,7 +152,7 @@ class Harness:
                         outputs.append(ToolOutput(call.id, output))
                     with run_tracer.model(self.model) as model_span:
                         try:
-                            turn = self.model.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                            turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
                         except Exception as exc:
                             model_span.record_exception(exc)
                             model_span.set_error(str(exc), type(exc).__name__)
