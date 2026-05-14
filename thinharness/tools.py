@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob as globlib
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -157,6 +158,38 @@ class FileTools:
                 "required": ["pattern"],
                 "additionalProperties": False,
             }, self.glob),
+            ToolSpec("jsonl_search", "Search JSONL files: optional ripgrep prefilter plus structured field/where filtering. Default scope is **/*.jsonl.", {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional ripgrep query. If omitted, scan all rows in scope."},
+                    "path_glob": {"type": "string", "description": "Glob filter; defaults to **/*.jsonl.", "default": "**/*.jsonl"},
+                    "fields": {
+                        "type": "object",
+                        "description": "Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
+                        "additionalProperties": {"type": "integer", "minimum": 0},
+                    },
+                    "where": {
+                        "type": "array",
+                        "description": "Filters AND-ed together. Each: {field, op, value | values}. Ops: eq, ne, in, contains, regex, exists.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "field": {"type": "string"},
+                                "op": {"type": "string", "enum": ["eq", "ne", "in", "contains", "regex", "exists"]},
+                                "value": {"type": "string"},
+                                "values": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["field", "op"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "max_files": {"type": "integer", "minimum": 1, "default": 10},
+                    "max_matches_per_file": {"type": "integer", "minimum": 1, "default": 3},
+                    "timeout": {"type": "integer", "minimum": 1},
+                    "max_chars": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": False,
+            }, self.jsonl_search),
         ]
 
     def read(self, args: Json) -> ToolResult:
@@ -288,6 +321,104 @@ class FileTools:
         if len(matches) > max_results:
             rows.append(f"... {len(matches) - max_results} more result(s) omitted")
         return ToolResult(True, "\n".join(rows) or "no files", {"total": len(matches), "returned": min(len(matches), max_results)})
+
+    def jsonl_search(self, args: Json) -> ToolResult:
+        """Filter JSONL files with an optional ripgrep prefilter and structured field/where filtering."""
+        query = str(args.get("query") or "")
+        path_glob = str(args.get("path_glob") or "**/*.jsonl")
+        fields = args.get("fields") or {}
+        where = args.get("where") or []
+        max_files = max(1, int(args.get("max_files", 10)))
+        max_matches_per_file = max(1, int(args.get("max_matches_per_file", 3)))
+        timeout = int(args.get("timeout", self.rg_timeout))
+        limit_chars = int(args.get("max_chars", self.max_tool_chars))
+
+        if not isinstance(fields, dict):
+            return ToolResult(False, "fields must be an object of {path: max_chars}")
+        if not isinstance(where, list):
+            return ToolResult(False, "where must be a list of filter objects")
+
+        candidates, scan_error = self._jsonl_candidates(query, path_glob, timeout)
+        if scan_error is not None:
+            return scan_error
+
+        matched: dict[str, list[tuple[int, Any]]] = {}
+        json_errors = 0
+        for path, line_number, line_text in candidates:
+            if not line_text.strip():
+                continue
+            try:
+                row = json.loads(line_text)
+            except json.JSONDecodeError:
+                json_errors += 1
+                continue
+            try:
+                if not _where_passes(row, where):
+                    continue
+            except ValueError as exc:
+                return ToolResult(False, f"invalid where filter: {exc}")
+            matched.setdefault(path, []).append((line_number, row))
+
+        files = sorted(matched.items(), key=lambda kv: kv[0])
+        total_files = len(files)
+        total_rows = sum(len(rows) for _, rows in files)
+        shown_files = files[:max_files]
+
+        header = [
+            "  summary:",
+            f"    query: {query or '(none)'}",
+            f"    scope: glob={path_glob}",
+        ]
+        if where:
+            header.append(f"    where: {_describe_where(where)}")
+        if fields:
+            header.append(f"    fields: {', '.join(fields)}")
+        header.append(f"    files: {total_files} total, {len(shown_files)} shown")
+        header.append(f"    rows_matched: {total_rows}")
+        if json_errors:
+            header.append(f"    json_parse_errors: {json_errors}")
+        body = [""]
+        for path, rows in shown_files:
+            rows.sort(key=lambda lr: lr[0])
+            for line_number, row in rows[:max_matches_per_file]:
+                try:
+                    projected = _project_fields(row, fields) if fields else row
+                except ValueError as exc:
+                    return ToolResult(False, f"invalid field path: {exc}")
+                body.append(f"{path}:{line_number}: {json.dumps(projected, ensure_ascii=False, default=str)}")
+            if len(rows) > max_matches_per_file:
+                body.append(f"  ... {len(rows) - max_matches_per_file} more row(s) in {path}")
+        if total_files > max_files:
+            body.append(f"  note: {total_files - max_files} more file(s) omitted")
+
+        return self._truncate("\n".join(header + body), prefix="jsonl_search", max_chars=limit_chars)
+
+    def _jsonl_candidates(self, query: str, path_glob: str, timeout: int) -> tuple[list[tuple[str, int, str]], ToolResult | None]:
+        """Collect (path, line_number, line_text) tuples for jsonl_search."""
+        if query:
+            command = ["rg", "--json", "--glob", path_glob, "--", query, "."]
+            proc = subprocess.run(
+                command,
+                cwd=self.root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+            )
+            if proc.returncode not in (0, 1) and not proc.stdout:
+                return [], ToolResult(False, f"ripgrep failed (rc={proc.returncode}): {(proc.stdout or '').strip()[:400]}", {"cmd": command})
+            files = self._parse_rg_json(proc.stdout or "")
+            return [(file.path, match.line_number, match.line_text) for file in files for match in file.matches], None
+        matches = [Path(p) for p in globlib.glob(str(self.root / path_glob), recursive=True)]
+        matches = [path for path in matches if _is_relative_to(path.resolve(), self.root) and path.is_file()]
+        candidates: list[tuple[str, int, str]] = []
+        for path in sorted(matches):
+            rel = str(path.relative_to(self.root))
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line_number, line_text in enumerate(handle, start=1):
+                    candidates.append((rel, line_number, line_text.rstrip("\n")))
+        return candidates, None
 
     @staticmethod
     def _no_matches_message(query: str, path_glob: str, file_type: str) -> str:
@@ -522,3 +653,118 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+_MISSING = object()
+_PATH_TOKEN = re.compile(
+    r'\.?(?:([A-Za-z_][A-Za-z0-9_]*)|\[(-?\d+)\]|\["([^"]*)"\]|\[\'([^\']*)\'\])'
+)
+
+
+def _parse_jq_path(path: str) -> list[str | int]:
+    """Parse a jq-compatible path: .foo, .foo.bar, .foo[0], .foo["weird key"]."""
+    segments: list[str | int] = []
+    i = 0
+    while i < len(path):
+        match = _PATH_TOKEN.match(path, i)
+        if not match or match.end() == i:
+            raise ValueError(f"invalid jq path: {path!r} at position {i}")
+        ident, idx, qkey, sqkey = match.groups()
+        if ident is not None:
+            segments.append(ident)
+        elif idx is not None:
+            segments.append(int(idx))
+        elif qkey is not None:
+            segments.append(qkey)
+        elif sqkey is not None:
+            segments.append(sqkey)
+        i = match.end()
+    if not segments:
+        raise ValueError(f"empty path: {path!r}")
+    return segments
+
+
+def _get_field_by_path(obj: Any, segments: list[str | int]) -> Any:
+    """Walk a parsed path through obj; return _MISSING if it doesn't resolve."""
+    cur: Any = obj
+    for segment in segments:
+        if isinstance(segment, int) and isinstance(cur, list):
+            if -len(cur) <= segment < len(cur):
+                cur = cur[segment]
+                continue
+            return _MISSING
+        if isinstance(segment, str) and isinstance(cur, dict):
+            if segment in cur:
+                cur = cur[segment]
+                continue
+            return _MISSING
+        return _MISSING
+    return cur
+
+
+def _apply_where_op(value: Any, op: str, target: Any, targets: Any) -> bool:
+    """Evaluate one where operator against a resolved field value."""
+    if op == "exists":
+        return value is not _MISSING and value is not None
+    if value is _MISSING or value is None:
+        return False
+    rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    if op == "eq":
+        return rendered == str(target)
+    if op == "ne":
+        return rendered != str(target)
+    if op == "in":
+        return rendered in [str(item) for item in (targets or [])]
+    if op == "contains":
+        return str(target) in rendered
+    if op == "regex":
+        return re.search(str(target), rendered) is not None
+    raise ValueError(f"unknown op: {op!r}")
+
+
+def _where_passes(row: Any, where: list[Json]) -> bool:
+    """Return True if a row passes every where filter (AND)."""
+    for filt in where:
+        field = filt.get("field")
+        op = filt.get("op")
+        if not field or not op:
+            raise ValueError(f"where filter missing field or op: {filt}")
+        if op in {"eq", "ne", "contains", "regex"} and "value" not in filt:
+            raise ValueError(f"op {op!r} requires 'value'")
+        if op == "in" and "values" not in filt:
+            raise ValueError("op 'in' requires 'values'")
+        value = _get_field_by_path(row, _parse_jq_path(field))
+        if not _apply_where_op(value, op, filt.get("value"), filt.get("values")):
+            return False
+    return True
+
+
+def _project_fields(row: Any, fields: dict[str, Any]) -> Json:
+    """Project requested fields with per-field max_chars truncation."""
+    result: Json = {}
+    for key, max_chars in fields.items():
+        value = _get_field_by_path(row, _parse_jq_path(key))
+        if value is _MISSING:
+            result[key] = None
+            continue
+        limit = int(max_chars) if isinstance(max_chars, (int, float)) else 0
+        if limit > 0:
+            rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+            result[key] = rendered if len(rendered) <= limit else rendered[:limit] + "…"
+        else:
+            result[key] = value
+    return result
+
+
+def _describe_where(where: list[Json]) -> str:
+    """Format where filters for the summary header."""
+    parts = []
+    for filt in where:
+        op = filt.get("op", "")
+        if op == "in":
+            parts.append(f"{filt.get('field')} in {filt.get('values')}")
+        elif op == "exists":
+            parts.append(f"{filt.get('field')} exists")
+        else:
+            parts.append(f"{filt.get('field')} {op} {filt.get('value')!r}")
+    return "; ".join(parts)

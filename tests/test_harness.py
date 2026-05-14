@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -133,6 +134,47 @@ def test_search_no_matches_has_refinement_hint(tmp_path: Path) -> None:
     assert result.ok
     assert "No matches found." in result.content
     assert "scope: glob=**/*.py" in result.content
+
+
+def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "user": {"name": "alice", "tags": ["admin", "ops"]}, "msg": "login ok"},
+        {"id": 2, "user": {"name": "bob", "tags": ["user"]}, "msg": "login ok"},
+        {"id": 3, "user": {"name": "carol", "tags": ["admin"]}, "msg": "login fail"},
+    ]
+    data = tmp_path / "events.jsonl"
+    data.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path_glob": "*.jsonl",
+        "fields": {"user.name": 0, "msg": 4},
+        "where": [
+            {"field": "user.tags[0]", "op": "eq", "value": "admin"},
+            {"field": 'user["name"]', "op": "regex", "value": "^[ac]"},
+        ],
+    })
+    assert result.ok, result.content
+    assert "rows_matched: 2" in result.content
+    assert 'events.jsonl:1: {"user.name": "alice", "msg": "logi…"}' in result.content
+    assert 'events.jsonl:3: {"user.name": "carol", "msg": "logi…"}' in result.content
+    assert "bob" not in result.content
+
+
+def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
+    data = tmp_path / "events.jsonl"
+    data.write_text(
+        '{"id":1,"msg":"login ok"}\n{"id":2,"msg":"logout ok"}\n{"id":3,"msg":"login fail"}\n',
+        encoding="utf-8",
+    )
+    result = FileTools(tmp_path).jsonl_search({
+        "query": "login",
+        "path_glob": "*.jsonl",
+        "where": [{"field": "msg", "op": "contains", "value": "fail"}],
+        "fields": {"id": 0},
+    })
+    assert result.ok
+    assert "rows_matched: 1" in result.content
+    assert 'events.jsonl:3: {"id": 3}' in result.content
 
 
 def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
