@@ -67,6 +67,7 @@ def create_subagent_tool(parent: "Harness", configs: list[SubAgentConfig]) -> To
         _subagent_tool_description(configs),
         SubAgentArgs,
         lambda args: run_subagent_tool(parent, configs, args),
+        metadata={"framework_tool": "subagent"},
     )
 
 
@@ -115,7 +116,7 @@ def run_subagent_tool(parent: "Harness", configs: list[SubAgentConfig], args: Su
 
 def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Harness":
     """Create an isolated child harness for one subagent invocation."""
-    from .core import Harness, HarnessConfig
+    from .core import Harness
 
     parent_config = parent.config
     inherit_tools = config is None or config.inherit_parent_tools
@@ -130,8 +131,6 @@ def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Ha
         "max_turns": config.max_turns if config is not None and config.max_turns is not None else parent_config.max_turns,
         "subagents": [],
     })
-    if not isinstance(child_config, HarnessConfig):
-        child_config = HarnessConfig.model_validate(child_config)
     child_model = parent.model
     if config is not None and config.model is not None:
         same_provider = _same_provider(parent, config.model)

@@ -193,6 +193,17 @@ class ScriptedModel:
         return self.sessions.pop(0)
 
 
+class RecordingModel(ScriptedModel):
+    def __init__(self, sessions, *, model: str = "recording-model") -> None:
+        super().__init__(sessions, model=model)
+        self.session_requests = 0
+
+    def new_session(self):
+        """Record session requests and return the next scripted session."""
+        self.session_requests += 1
+        return super().new_session()
+
+
 class ScriptedSession:
     def __init__(self, *, start_turn: ModelTurn, continue_turn: ModelTurn | None = None, on_start=None, on_continue=None) -> None:
         self.start_turn = start_turn
@@ -812,6 +823,7 @@ def test_child_harness_tool_surfaces_follow_subagent_policy(tmp_path: Path) -> N
     explicit_child = build_child_harness(parent, SubAgentConfig(name="special", description="Special helper.", tools=[explicit_tool]))
 
     assert default_child.tools == [parent_echo]
+    assert default_child.config.subagents == []
     assert [tool.name for tool in explicit_child.tools] == ["explicit"]
     assert explicit_child.tools[0].sequential is True
     assert explicit_child.config.subagents == []
@@ -889,6 +901,23 @@ def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypat
     assert calls[1][1]["base_url"] is None
 
 
+def test_subagent_model_override_is_used_for_child_run(tmp_path: Path, monkeypatch) -> None:
+    child_model = RecordingModel([ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))], model="child-model")
+    parent_model = RecordingModel([], model="parent-model")
+
+    def fake_infer_model(_model_ref, **_kwargs):
+        return child_model
+
+    monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
+    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=parent_model)
+    child = build_child_harness(parent, SubAgentConfig(name="special", description="Special helper.", model="openai:child", tools=[echo_tool()]))
+
+    assert child.model is child_model
+    assert child.run("delegate").text == "child done"
+    assert child_model.session_requests == 1
+    assert parent_model.session_requests == 0
+
+
 def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> None:
     parent_call = ModelTurn(
         tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
@@ -961,10 +990,13 @@ def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_pat
     root = next(span for span in tracer.spans if span.name == "invoke_agent thinharness")
     subagent_tools = [span for span in tracer.spans if span.name == "execute_tool subagent"]
     child_agents = [span for span in tracer.spans if span.name == "invoke_agent subagent.default"]
+    child_model_spans = [span for span in tracer.spans if span.name == "chat scripted-model" and span.parent in child_agents]
     assert len(subagent_tools) == 2
     assert len(child_agents) == 2
+    assert len(child_model_spans) == 2
     assert all(span.parent is root for span in subagent_tools)
     assert {id(span.parent) for span in child_agents} == {id(span) for span in subagent_tools}
+    assert {id(span.parent) for span in child_model_spans} == {id(span) for span in child_agents}
 
 
 def test_unknown_named_subagent_returns_structured_error(tmp_path: Path) -> None:
@@ -1024,6 +1056,24 @@ def test_duplicate_tool_names_are_rejected(tmp_path: Path) -> None:
     duplicate = ToolSpec("read", "Duplicate read", {"type": "object", "properties": {}}, lambda args: "ok")
     with pytest.raises(ValueError, match="duplicate tool name: read"):
         Harness(HarnessConfig(root=tmp_path), client=FakeClient(), tools=[duplicate])
+
+
+def test_subagent_tool_name_is_reserved_for_custom_tools(tmp_path: Path) -> None:
+    custom = ToolSpec("subagent", "Not the framework tool.", {"type": "object", "properties": {}}, lambda args: "bad")
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
+
+    with pytest.raises(ValueError, match="reserved tool name"):
+        Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
+    with pytest.raises(ValueError, match="reserved tool name"):
+        harness.add_tool(custom)
+
+
+def test_framework_subagent_tool_can_be_added_after_construction(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
+
+    harness.add_tool(create_subagent_tool(harness, []))
+
+    assert [tool["name"] for tool in harness.tool_schemas()] == ["subagent"]
 
 
 def test_model_refs_require_provider_prefix() -> None:

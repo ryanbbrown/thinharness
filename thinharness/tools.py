@@ -48,6 +48,7 @@ class ToolSpec:
     parameters: Json | type[BaseModel]
     handler: ToolHandler
     sequential: bool = False
+    metadata: Json = Field(default_factory=dict)
 
     def response_tool(self) -> Json:
         """Return an OpenAI Responses API function tool definition."""

@@ -201,6 +201,8 @@ class Harness:
             spec = tool
         if not callable(spec.handler):
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
+        if spec.name == "subagent" and spec.metadata.get("framework_tool") != "subagent":
+            raise ValueError("subagent is a reserved tool name")
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
         self.tools.append(spec)
