@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from .tools import Json
@@ -45,8 +45,7 @@ class ToolOutput:
     output: str
 
 
-@dataclass
-class ModelSettings:
+class ModelSettings(BaseModel):
     """Common request settings shared across models."""
 
     temperature: float | None = None

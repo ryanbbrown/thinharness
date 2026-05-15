@@ -574,7 +574,7 @@ def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
 
 
 def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
-    """Invoke a tool handler and normalize the result to a string."""
+    """Invoke a tool handler and normalize the result to structured JSON."""
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else raw_args
     except json.JSONDecodeError as exc:
@@ -585,12 +585,15 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
         args = spec.parse_args(args)
     except ValidationError as exc:
         return ToolResult(False, f"invalid arguments: {exc}").as_json()
-    result = spec.handler(args)
+    try:
+        result = spec.handler(args)
+    except Exception as exc:
+        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
     if isinstance(result, ToolResult):
         return result.as_json()
     if isinstance(result, str):
-        return result
-    return json.dumps(result, indent=2, sort_keys=True, default=str)
+        return ToolResult(True, result).as_json()
+    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str)).as_json()
 
 
 # =============================================================================

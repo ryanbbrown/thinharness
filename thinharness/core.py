@@ -2,36 +2,33 @@
 
 from __future__ import annotations
 
+import contextvars
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.dataclasses import dataclass
 
+from .defaults import DEFAULT_SYSTEM_PROMPT
 from .providers import Model, ModelToolCall, ProviderError, ResponsesClient, ToolOutput, infer_model
 from .skills import SkillRegistry
+from .subagents import SubAgentConfig
 from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
 
 MAX_PARALLEL_TOOL_WORKERS = 16
-
-DEFAULT_SYSTEM_PROMPT = """You are a filesystem automation agent working inside the workspace root.
-
-Use search to find symbols, definitions, references, filenames, and repeated patterns.
-Use read to inspect bounded file sections before editing.
-Use edit for targeted replacements and write for creating or replacing files.
-Start narrow, broaden only if needed, and prefer bounded reads over full-file reads.
-
-When finished, respond concisely with what changed and any verification run."""
+_CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
 
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
-class HarnessConfig:
+class HarnessConfig(BaseModel):
     """Configuration for Harness."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model: str = "openai:gpt-5.2"
     root: str | Path = "."
@@ -56,6 +53,14 @@ class HarnessConfig:
     extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: TracingOptions | None = None
     tool_execution: Literal["auto", "sequential"] = "auto"
+    subagents: list[SubAgentConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_skills(self) -> "HarnessConfig":
+        """Validate explicit skill discovery settings."""
+        if self.selected_skills is not None and self.skills_dir is None:
+            raise ValueError("selected_skills requires skills_dir")
+        return self
 
 
 @dataclass
@@ -83,8 +88,11 @@ class Harness:
         client: ResponsesClient | Any | None = None,
         tools: list[ToolSpec | Json] | None = None,
         tracing: TracingOptions | None = None,
+        skills: SkillRegistry | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
+        if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
+            raise ValueError("skills cannot be combined with skills_dir or selected_skills")
         self.root = Path(self.config.root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
@@ -97,8 +105,7 @@ class Harness:
             extra_body=self.config.extra_body,
             client=client,
         )
-        skills_dir = self.config.skills_dir if self.config.skills_dir is not None else self.root / ".agents" / "skills"
-        self.skills = SkillRegistry(skills_dir, selected_skills=self.config.selected_skills)
+        self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         filesystem_tools = make_builtin_tools(
             self.root,
             output_dir=self.config.output_dir,
@@ -111,15 +118,19 @@ class Harness:
             search_low_priority_dirs=self.config.search_low_priority_dirs,
             search_test_dirs=self.config.search_test_dirs,
         )
-        self._validate_skill_tool_selection()
-        builtin = self._select_builtin_tools([*filesystem_tools, *self.skills.specs()], self.config.builtin_tools)
-        self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in builtin)
+        from .subagents import create_subagent_tool
+
+        builtin_candidates = [*filesystem_tools, *self.skills.specs(), create_subagent_tool(self, self.config.subagents)]
+        builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
         self.tools: list[ToolSpec] = builtin
         self._validate_unique_tools(self.tools)
         self._tool_map = {tool.name: tool for tool in self.tools}
         for tool in tools or []:
             self.add_tool(tool)
+        self._validate_skill_tool_selection()
+        self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.tracing = tracing or self.config.tracing
+        self._current_run_metadata: Json | None = None
 
     def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
@@ -127,49 +138,53 @@ class Harness:
         tool_calls: list[Json] = []
         run_tracer = RunTracer(self.tracing)
         session = self.model.new_session()
+        self._current_run_metadata = dict(metadata or {})
 
-        with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
-            try:
-                with run_tracer.model(self.model) as model_span:
-                    try:
-                        turn = session.start(
-                            prompt=prompt,
-                            instructions=self.system_instructions(),
-                            tools=self.tool_schemas(),
-                            metadata=metadata,
-                            previous_response_id=previous_response_id,
-                        )
-                    except Exception as exc:
-                        model_span.record_exception(exc)
-                        model_span.set_error(str(exc), type(exc).__name__)
-                        raise
-                    annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
-                for _ in range(self.config.max_turns):
-                    responses.append(turn.raw)
-                    if not turn.tool_calls:
-                        agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
-                        return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
-                    recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
-                    tool_calls.extend(recorded)
+        try:
+            with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
+                try:
                     with run_tracer.model(self.model) as model_span:
                         try:
-                            turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                            turn = session.start(
+                                prompt=prompt,
+                                instructions=self.system_instructions(),
+                                tools=self.tool_schemas(),
+                                metadata=metadata,
+                                previous_response_id=previous_response_id,
+                            )
                         except Exception as exc:
                             model_span.record_exception(exc)
                             model_span.set_error(str(exc), type(exc).__name__)
                             raise
                         annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
-            except ProviderError as exc:
-                agent_span.record_exception(exc)
-                agent_span.set_error(str(exc), type(exc).__name__)
-                raise HarnessError(str(exc)) from exc
-            except Exception as exc:
-                agent_span.record_exception(exc)
-                agent_span.set_error(str(exc), type(exc).__name__)
-                raise
-            error = HarnessError(f"model did not finish within max_turns={self.config.max_turns}")
-            agent_span.set_error(str(error), type(error).__name__)
-            raise error
+                    for _ in range(self.config.max_turns):
+                        responses.append(turn.raw)
+                        if not turn.tool_calls:
+                            agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
+                            return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
+                        recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
+                        tool_calls.extend(recorded)
+                        with run_tracer.model(self.model) as model_span:
+                            try:
+                                turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                            except Exception as exc:
+                                model_span.record_exception(exc)
+                                model_span.set_error(str(exc), type(exc).__name__)
+                                raise
+                            annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+                except ProviderError as exc:
+                    agent_span.record_exception(exc)
+                    agent_span.set_error(str(exc), type(exc).__name__)
+                    raise HarnessError(str(exc)) from exc
+                except Exception as exc:
+                    agent_span.record_exception(exc)
+                    agent_span.set_error(str(exc), type(exc).__name__)
+                    raise
+                error = HarnessError(f"model did not finish within max_turns={self.config.max_turns}")
+                agent_span.set_error(str(error), type(error).__name__)
+                raise error
+        finally:
+            self._current_run_metadata = None
 
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
@@ -204,19 +219,28 @@ class Harness:
         """Execute one model tool call and format its output."""
         spec = self._tool_map.get(str(name))
         if not spec:
-            return f"error: unknown tool {name}"
-        try:
-            return call_tool(spec, arguments or {})
-        except Exception as exc:
-            return f"error: {type(exc).__name__}: {exc}"
+            return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
+        return call_tool(spec, arguments or {})
 
     def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str) -> str:
         """Execute one model tool call with tracing."""
         with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
-            output = self._call_output(name, arguments)
+            token = _CURRENT_TOOL_CALL.set({"call_id": call_id, "name": name})
+            try:
+                output = self._call_output(name, arguments)
+            finally:
+                _CURRENT_TOOL_CALL.reset(token)
+            parsed = _parse_tool_output(output)
+            metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+            if name == "subagent":
+                span.set_attributes({
+                    "subagent.name": metadata.get("agent"),
+                    "subagent.tool_mode": metadata.get("tool_mode"),
+                    "subagent.tools": metadata.get("tools"),
+                })
             if self.tracing and self.tracing.capture_tool_results:
                 span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
-            if output.startswith("error:"):
+            if parsed.get("ok") is False:
                 span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
             return output
 
@@ -241,17 +265,11 @@ class Harness:
 
     def _run_calls_in_threads(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[str]:
         """Execute calls concurrently while keeping the OpenTelemetry parent context."""
-        parent_context = _current_otel_context()
-
         def invoke(call: ModelToolCall) -> str:
-            token = _attach_otel_context(parent_context)
-            try:
-                return self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
-            finally:
-                _detach_otel_context(token)
+            return self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
 
         with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_WORKERS)) as executor:
-            futures = [executor.submit(invoke, call) for call in calls]
+            futures = [executor.submit(contextvars.copy_context().run, invoke, call) for call in calls]
             return [future.result() for future in futures]
 
     @staticmethod
@@ -265,11 +283,11 @@ class Harness:
 
     def _validate_skill_tool_selection(self) -> None:
         """Require explicit skill tool selection when skills are explicitly configured."""
-        if not self.skills.skills or (self.config.skills_dir is None and self.config.selected_skills is None):
+        if not self.skills.skills:
             return
-        selected = {name.lower() for name in self.config.builtin_tools or []}
-        if not selected.intersection({"skill_read", "skill_run"}):
-            raise ValueError("skills_dir or selected_skills requires selecting skill_read or skill_run in builtin_tools")
+        tool_names = {tool.name for tool in self.tools}
+        if not tool_names.intersection({"skill_read", "skill_run"}):
+            raise ValueError("configured skills require exposing skill_read or skill_run")
 
     @staticmethod
     def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
@@ -291,32 +309,15 @@ class Harness:
         return selected
 
 
-def _current_otel_context() -> Any | None:
-    """Capture the active OpenTelemetry context for thread propagation, if available."""
+def current_tool_call_context() -> Json | None:
+    """Return the current tool call context for nested tool handlers."""
+    return _CURRENT_TOOL_CALL.get()
+
+
+def _parse_tool_output(output: str) -> Json:
+    """Parse a normalized tool output envelope."""
     try:
-        from opentelemetry import context as otel_context
-    except ImportError:
-        return None
-    return otel_context.get_current()
-
-
-def _attach_otel_context(context: Any | None) -> Any | None:
-    """Attach a captured OpenTelemetry context to the current thread, if available."""
-    if context is None:
-        return None
-    try:
-        from opentelemetry import context as otel_context
-    except ImportError:
-        return None
-    return otel_context.attach(context)
-
-
-def _detach_otel_context(token: Any | None) -> None:
-    """Detach a previously attached OpenTelemetry context, if available."""
-    if token is None:
-        return
-    try:
-        from opentelemetry import context as otel_context
-    except ImportError:
-        return
-    otel_context.detach(token)
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        return {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
+    return parsed if isinstance(parsed, dict) else {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}

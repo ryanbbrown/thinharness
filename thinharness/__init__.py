@@ -19,6 +19,7 @@ from .providers import (
     parse_model_ref,
 )
 from .skills import Skill, SkillRegistry
+from .subagents import SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import FileTools, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
@@ -33,6 +34,8 @@ __all__ = [
     "AnthropicProvider",
     "Skill",
     "SkillRegistry",
+    "SubAgentArgs",
+    "SubAgentConfig",
     "Model",
     "ModelSettings",
     "ModelSession",
@@ -48,9 +51,11 @@ __all__ = [
     "ToolOutput",
     "OtlpTracing",
     "TracingOptions",
+    "build_child_harness",
     "builtin_tools",
     "call_tool",
     "contained_path",
+    "create_subagent_tool",
     "create_otlp_tracing",
     "infer_model",
     "parse_model_ref",

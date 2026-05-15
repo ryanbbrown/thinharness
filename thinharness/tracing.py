@@ -6,7 +6,7 @@ import json
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict
 from pydantic.dataclasses import dataclass
 
 from .tools import Json
@@ -17,9 +17,10 @@ except ImportError:  # pragma: no cover - exercised when optional deps are absen
     SpanKind = Status = StatusCode = None  # type: ignore[assignment]
 
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
-class TracingOptions:
+class TracingOptions(BaseModel):
     """Configuration for tracing one harness run."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tracer: Any
     agent_name: str = "thinharness"

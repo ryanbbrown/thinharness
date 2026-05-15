@@ -64,7 +64,7 @@ Files up to `max_read_bytes` use the fast whole-file read path, then apply `offs
 
 `builtin_tools` selects harness-provided tools by lowercase name. `None` exposes all built-ins, `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Skill access is selected the same way with `skill_read` and `skill_run`.
 
-Built-in tools return JSON strings with `ok`, `content`, and `metadata` fields. Failed tools return `ok: false` instead of raising through the model loop when the failure is part of normal tool execution, such as invalid arguments, missing files, ripgrep errors, or timeouts.
+Tool outputs sent back to providers are JSON strings with `ok`, `content`, and `metadata` fields. Failed tools return `ok: false` instead of raising through the model loop when the failure is part of normal tool execution, such as invalid arguments, handler exceptions, missing files, ripgrep errors, or timeouts.
 
 Custom tools can use a Pydantic args model as the source of truth for validation and provider JSON Schema:
 
@@ -113,11 +113,53 @@ HarnessConfig(
 )
 ```
 
+## Subagents
+
+`subagent` is a normal built-in tool. With `builtin_tools=None`, it is exposed alongside the filesystem tools and can route to the framework default subagent by omitting `agent`. The default subagent runs in fresh context and inherits the parent's current tool set except `subagent`.
+
+```python
+from thinharness import Harness, HarnessConfig
+
+harness = Harness(HarnessConfig(root="."))
+result = harness.run("Use a subagent to inspect README.md, then summarize the result.")
+```
+
+Specialized named subagents use fixed tool surfaces:
+
+```python
+from thinharness import Harness, HarnessConfig, SubAgentConfig
+
+harness = Harness(HarnessConfig(
+    root=".",
+    subagents=[
+        SubAgentConfig(
+            name="research",
+            description="Searches and reads code without editing.",
+            system_prompt="Investigate and report findings. Do not edit files.",
+            builtin_tools=["read", "search", "glob"],
+        )
+    ],
+))
+```
+
+When explicit tool selection is used, include `subagent` to allow delegation:
+
+```python
+HarnessConfig(
+    builtin_tools=["read", "write", "edit", "subagent"],
+    subagents=[
+        SubAgentConfig(name="research", description="Research helper.", builtin_tools=["read", "search", "glob"]),
+    ],
+)
+```
+
+`builtin_tools=[]` disables all built-ins, including `subagent`. A named subagent can also set `inherit_parent_tools=True` to inherit the parent's effective tool universe minus `subagent`; otherwise it must define `builtin_tools` or `tools`.
+
 ## Skills
 
 Skills are Markdown files with intentionally small frontmatter. Use flat `key: value` metadata such as `name` and `description`; values may be plain strings, quoted strings, booleans, or JSON literals. Nested YAML is not supported.
 
-`skills_dir` may be one path or a list of paths. The directories are treated as one skill namespace, so duplicate skill names raise an error. Use `selected_skills` to expose only specific skill names. If `skills_dir` or `selected_skills` is configured and matching skills are available, `builtin_tools` must explicitly include `skill_read` or `skill_run`.
+`skills_dir` may be one path or a list of paths. The directories are treated as one skill namespace, so duplicate skill names raise an error. Use `selected_skills` to expose only specific skill names. Skills are loaded only when `skills_dir` is set; there is no automatic workspace skill discovery. If `builtin_tools` is an explicit list and matching skills are available, include `skill_read` or `skill_run`.
 
 `skill_run` executes local scripts from the selected skill directory without sandboxing. Only expose it when those scripts are trusted for the workspace.
 
