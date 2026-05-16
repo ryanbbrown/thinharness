@@ -57,6 +57,8 @@ HarnessConfig(
     max_read_bytes=1_000_000,
     max_tool_chars=40_000,
     max_search_line_chars=180,
+    read_paths=["src", "tests"],
+    write_paths=["src"],
 )
 ```
 
@@ -65,6 +67,8 @@ Files up to `max_read_bytes` use the fast whole-file read path, then apply `offs
 `builtin_tools` selects harness-provided tools by lowercase name. `None` exposes all built-ins, `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Skill access is selected the same way with `skill_read` and `skill_run`.
 
 Tool outputs sent back to providers are JSON strings with `ok`, `content`, and `metadata` fields. Failed tools return `ok: false` instead of raising through the model loop when the failure is part of normal tool execution, such as invalid arguments, handler exceptions, missing files, ripgrep errors, or timeouts.
+
+`read_paths` and `write_paths` narrow filesystem access under `root`. Relative entries are resolved from the workspace root; absolute entries must still be inside the workspace root. When omitted, both default to the full workspace root. `read_paths` applies to `read`, `list`, `glob`, `search`, and `jsonl_search`; `write_paths` applies to `write` and `edit`. Glob-style selectors are validated separately, so absolute patterns and `..` path components are rejected.
 
 Custom tools can use a Pydantic args model as the source of truth for validation and provider JSON Schema:
 

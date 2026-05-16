@@ -20,7 +20,7 @@ from .providers import (
 )
 from .skills import Skill, SkillRegistry
 from .subagents import SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
-from .tools import FileTools, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
+from .tools import FileTools, PathValidationError, PathPolicy, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
 __all__ = [
@@ -46,6 +46,8 @@ __all__ = [
     "OpenRouterModel",
     "OpenRouterProvider",
     "Provider",
+    "PathPolicy",
+    "PathValidationError",
     "ToolResult",
     "ToolSpec",
     "ToolOutput",

@@ -8,7 +8,8 @@ import json
 import subprocess
 import time
 import uuid
-from pathlib import Path
+from collections.abc import Sequence
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -98,6 +99,59 @@ class SearchFile:
 
     path: str
     matches: list[SearchMatch]
+
+
+@dataclass(frozen=True, config=ConfigDict(arbitrary_types_allowed=True))
+class AllowedPath:
+    """One resolved path allowed by a workspace path policy."""
+
+    path: Path
+    exact: bool = False
+
+
+class PathValidationError(ValueError):
+    """Raised when a tool path or selector escapes its allowed policy."""
+
+
+class PathPolicy:
+    """Resolve workspace paths and enforce an allowlist under root."""
+
+    def __init__(self, root: Path, allowed_paths: Sequence[str | Path] | None, label: str) -> None:
+        self.root = root
+        self.label = label
+        raw_paths = list(allowed_paths) if allowed_paths is not None else ["."]
+        if not raw_paths:
+            raise ValueError(f"{label}_paths must not be empty")
+        self.allowed_paths = [self._allowed_path(raw) for raw in raw_paths]
+
+    def resolve(self, raw: str | Path) -> Path:
+        """Resolve a raw tool path and require it to be allowed."""
+        resolved = _resolve_under_root(self.root, raw)
+        if not self.allows(resolved):
+            raise PathValidationError(f"path is outside allowed {self.label} paths: {raw}")
+        return resolved
+
+    def allows(self, path: Path) -> bool:
+        """Return whether a resolved path is allowed by this policy."""
+        resolved = path.resolve()
+        if not _is_relative_to(resolved, self.root):
+            return False
+        for allowed in self.allowed_paths:
+            if allowed.exact:
+                if resolved == allowed.path:
+                    return True
+            elif resolved == allowed.path or allowed.path in resolved.parents:
+                return True
+        return False
+
+    def existing_search_roots(self) -> list[Path]:
+        """Return existing allow roots for commands that accept search paths."""
+        return [allowed.path for allowed in self.allowed_paths if allowed.path.exists()]
+
+    def _allowed_path(self, raw: str | Path) -> AllowedPath:
+        """Normalize a configured allow path under the workspace root."""
+        resolved = contained_path(self.root, raw)
+        return AllowedPath(resolved, exact=resolved.exists() and resolved.is_file())
 
 
 # =============================================================================
@@ -190,18 +244,24 @@ class FileTools:
         search_exclude_globs: list[str] | None = None,
         search_low_priority_dirs: list[str] | None = None,
         search_test_dirs: list[str] | None = None,
+        read_paths: Sequence[str | Path] | None = None,
+        write_paths: Sequence[str | Path] | None = None,
     ) -> None:
         from .jsonl import JsonlSearch
 
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.output_dir = contained_path(self.root, output_dir or ".fsharness/outputs")
+        self.read_policy = PathPolicy(self.root, read_paths, "read")
+        self.write_policy = PathPolicy(self.root, write_paths, "write")
         self.max_read_chars = max_read_chars
         self.max_read_bytes = max_read_bytes
         self.max_tool_chars = max_tool_chars
         self.max_search_line_chars = max_search_line_chars
         self.rg_timeout = rg_timeout
         self.search_exclude_globs = list(search_exclude_globs or [])
+        for exclude_glob in self.search_exclude_globs:
+            validate_glob_selector(exclude_glob, field="search_exclude_globs", allow_negation=True)
         self.search_low_priority_dirs = {part.lower() for part in (search_low_priority_dirs or DEFAULT_SEARCH_LOW_PRIORITY_DIRS)}
         self.search_test_dirs = {part.lower() for part in (search_test_dirs or DEFAULT_SEARCH_TEST_DIRS)}
         self.jsonl = JsonlSearch(
@@ -209,7 +269,9 @@ class FileTools:
             max_tool_chars=self.max_tool_chars,
             rg_timeout=self.rg_timeout,
             truncate=self._truncate,
-            parse_rg_json=self._parse_rg_json,
+            parse_rg_json=self._parse_contained_rg_json,
+            path_allowed=self.read_policy.allows,
+            search_roots=lambda: [self._display(path) for path in self.read_policy.existing_search_roots()],
         )
 
     # -------------------------------------------------------------------------
@@ -235,7 +297,10 @@ class FileTools:
     def read(self, args: ReadArgs | Json) -> ToolResult:
         """Read a contained text file with line numbers."""
         args = coerce_args(args, ReadArgs)
-        path = contained_path(self.root, args.path)
+        try:
+            path = self.read_policy.resolve(args.path)
+        except PathValidationError as exc:
+            return _path_error(exc)
         if not path.exists():
             return ToolResult(False, f"file not found: {self._display(path)}", {"path": str(path)})
         if path.is_dir():
@@ -275,7 +340,10 @@ class FileTools:
     def write(self, args: WriteArgs | Json) -> ToolResult:
         """Write a contained UTF-8 file."""
         args = coerce_args(args, WriteArgs)
-        path = contained_path(self.root, args.path)
+        try:
+            path = self.write_policy.resolve(args.path)
+        except PathValidationError as exc:
+            return _path_error(exc)
         content = args.content
         path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if args.append else "w"
@@ -287,7 +355,10 @@ class FileTools:
     def edit(self, args: EditArgs | Json) -> ToolResult:
         """Replace exact text in a contained UTF-8 file."""
         args = coerce_args(args, EditArgs)
-        path = contained_path(self.root, args.path)
+        try:
+            path = self.write_policy.resolve(args.path)
+        except PathValidationError as exc:
+            return _path_error(exc)
         old = args.old_string
         new = args.new_string
         replace_all = args.all
@@ -319,6 +390,10 @@ class FileTools:
         if not query:
             return ToolResult(False, "query is required; pass a non-empty query string")
         path_glob = args.path_glob
+        try:
+            validate_glob_selector(path_glob, field="path_glob")
+        except PathValidationError as exc:
+            return _path_error(exc)
         file_type = args.file_type
         max_files = args.max_files
         max_matches_per_file = args.max_matches_per_file
@@ -330,7 +405,12 @@ class FileTools:
             command.extend(["--glob", _exclude_glob(exclude_glob)])
         if file_type:
             command.extend(["--type", file_type])
-        command.extend(["--", query, "."])
+        search_roots = self.read_policy.existing_search_roots()
+        if not search_roots:
+            command.extend(["--", query])
+            return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": 1, "cmd": command, "matches": 0})
+        command.extend(["--", query])
+        command.extend(self._display(path) for path in search_roots)
         timeout = args.timeout or self.rg_timeout
         try:
             proc = subprocess.run(
@@ -346,7 +426,7 @@ class FileTools:
             return ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command})
         if proc.returncode not in (0, 1):
             return ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
-        files = self._parse_rg_json(proc.stdout or "")
+        files = self._parse_contained_rg_json(proc.stdout or "")
         if not files:
             return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": proc.returncode, "cmd": command, "matches": 0})
         files.sort(key=self._search_file_sort_key)
@@ -360,7 +440,11 @@ class FileTools:
     def list_files(self, args: ListArgs | Json) -> ToolResult:
         """List contained files and directories."""
         args = coerce_args(args, ListArgs)
-        base = contained_path(self.root, args.path)
+        try:
+            base = self.read_policy.resolve(args.path)
+            validate_glob_selector(args.glob, field="glob")
+        except PathValidationError as exc:
+            return _path_error(exc)
         max_results = args.max_results
         pattern = args.glob
         if pattern:
@@ -382,7 +466,11 @@ class FileTools:
     def glob(self, args: GlobArgs | Json) -> ToolResult:
         """Glob for contained files and directories."""
         args = coerce_args(args, GlobArgs)
-        base = contained_path(self.root, args.path)
+        try:
+            base = self.read_policy.resolve(args.path)
+            validate_glob_selector(args.pattern, field="pattern")
+        except PathValidationError as exc:
+            return _path_error(exc)
         max_results = args.max_results
         total, matches = self._newest_paths(base.glob(args.pattern), max_results, include_dirs=args.include_dirs)
         rows = [self._display(path) + ("/" if path.is_dir() else "") for path in matches]
@@ -431,6 +519,18 @@ class FileTools:
                 file_order.append(path)
             file_map.setdefault(path, []).append(SearchMatch(line_number, line_text, _is_definition(line_text)))
         return [SearchFile(path, file_map[path]) for path in file_order]
+
+    def _parse_contained_rg_json(self, stdout: str) -> list[SearchFile]:
+        """Parse rg output and drop matches outside the readable policy."""
+        return [file for file in self._parse_rg_json(stdout) if self._search_file_allowed(file.path)]
+
+    def _search_file_allowed(self, path: str) -> bool:
+        """Return whether a search result path is readable."""
+        try:
+            resolved = _resolve_under_root(self.root, path)
+        except PathValidationError:
+            return False
+        return self.read_policy.allows(resolved)
 
     def _search_file_sort_key(self, file: SearchFile) -> tuple[int, int, str]:
         """Sort definition matches first, then source before tests and low-priority paths."""
@@ -604,11 +704,35 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
 
 def contained_path(root: Path, raw: str | Path) -> Path:
     """Resolve a path and require it to remain inside root."""
+    return _resolve_under_root(root, raw)
+
+
+def validate_glob_selector(pattern: str, *, field: str, allow_negation: bool = False) -> None:
+    """Reject selector patterns that can address paths outside root."""
+    if not pattern:
+        return
+    body = pattern[1:] if allow_negation and pattern.startswith("!") else pattern
+    if "\x00" in body:
+        raise PathValidationError(f"{field} must not contain NUL bytes: {pattern}")
+    if Path(body).is_absolute() or PureWindowsPath(body).is_absolute():
+        raise PathValidationError(f"{field} must be relative: {pattern}")
+    parts = [part for part in body.replace("\\", "/").split("/") if part]
+    if any(part == ".." for part in parts):
+        raise PathValidationError(f"{field} must not contain '..': {pattern}")
+
+
+def _resolve_under_root(root: Path, raw: str | Path) -> Path:
+    """Resolve raw under root and require the result to stay inside root."""
     path = Path(raw).expanduser()
     resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
-    if resolved != root and root not in resolved.parents:
-        raise ValueError(f"path escapes root: {raw}")
+    if not _is_relative_to(resolved, root):
+        raise PathValidationError(f"path escapes root: {raw}")
     return resolved
+
+
+def _path_error(exc: PathValidationError) -> ToolResult:
+    """Return a structured tool result for path policy failures."""
+    return ToolResult(False, str(exc), {"error_type": "PathValidationError"})
 
 
 def object_schema(fields: dict[str, str], required: list[str] | None = None) -> Json:

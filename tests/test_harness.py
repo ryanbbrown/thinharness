@@ -280,10 +280,50 @@ def test_file_tools_large_reads_require_and_stream_bounded_range(tmp_path: Path)
 
 def test_file_tools_reject_path_escape(tmp_path: Path) -> None:
     tools = FileTools(tmp_path)
-    with pytest.raises(ValueError):
-        tools.read({"path": "../outside.txt"})
-    with pytest.raises(ValueError):
-        tools.write({"path": "/tmp/outside.txt", "content": "no"})
+    read = tools.read({"path": "../outside.txt"})
+    assert not read.ok
+    assert read.metadata["error_type"] == "PathValidationError"
+    write = tools.write({"path": "/tmp/outside.txt", "content": "no"})
+    assert not write.ok
+    assert write.metadata["error_type"] == "PathValidationError"
+
+
+def test_file_tools_enforce_read_and_write_paths(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def Target():\n    pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text("Target()\n", encoding="utf-8")
+    (tmp_path / "docs" / "note.md").write_text("Target\n", encoding="utf-8")
+    tools = FileTools(tmp_path, read_paths=["src", "tests"], write_paths=["src"])
+
+    assert tools.read({"path": "src/app.py"}).ok
+    blocked_read = tools.read({"path": "docs/note.md"})
+    assert not blocked_read.ok
+    assert blocked_read.metadata["error_type"] == "PathValidationError"
+
+    assert tools.write({"path": "src/generated.py", "content": "ok\n"}).ok
+    blocked_write = tools.write({"path": "tests/generated.py", "content": "no\n"})
+    assert not blocked_write.ok
+    assert blocked_write.metadata["error_type"] == "PathValidationError"
+
+    search = tools.search({"query": "Target"})
+    assert search.ok
+    assert "src/app.py" in search.content
+    assert "tests/test_app.py" in search.content
+    assert "docs/note.md" not in search.content
+
+
+def test_file_tools_validate_glob_selectors(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path)
+    for result in [
+        tools.search({"query": "x", "path_glob": "../*.py"}),
+        tools.list_files({"path": ".", "glob": "../*"}),
+        tools.glob({"path": ".", "pattern": "/tmp/*"}),
+        tools.jsonl_search({"path_glob": "src/../../*.jsonl"}),
+    ]:
+        assert not result.ok
+        assert result.metadata["error_type"] == "PathValidationError"
 
 
 def test_search_ranks_and_formats_agent_results(tmp_path: Path) -> None:

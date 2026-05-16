@@ -10,7 +10,18 @@ from typing import Annotated, Any, Callable, Iterator, Literal
 
 from pydantic import Field
 
-from .tools import Json, StrictArgs, ToolResult, ToolSpec, coerce_args, _is_relative_to, _rg_error_message, _timeout_error_message
+from .tools import (
+    Json,
+    PathValidationError,
+    StrictArgs,
+    ToolResult,
+    ToolSpec,
+    coerce_args,
+    validate_glob_selector,
+    _path_error,
+    _rg_error_message,
+    _timeout_error_message,
+)
 
 
 class JsonlWhereFilter(StrictArgs):
@@ -46,12 +57,16 @@ class JsonlSearch:
         rg_timeout: int,
         truncate: Callable[..., ToolResult],
         parse_rg_json: Callable[[str], list[Any]],
+        path_allowed: Callable[[Path], bool],
+        search_roots: Callable[[], list[str]],
     ) -> None:
         self.root = root
         self.max_tool_chars = max_tool_chars
         self.rg_timeout = rg_timeout
         self._truncate = truncate
         self._parse_rg_json = parse_rg_json
+        self._path_allowed = path_allowed
+        self._search_roots = search_roots
 
     def spec(self) -> ToolSpec:
         """Return the jsonl_search tool spec."""
@@ -67,6 +82,10 @@ class JsonlSearch:
         args = coerce_args(args, JsonlSearchArgs)
         query = args.query
         path_glob = args.path_glob
+        try:
+            validate_glob_selector(path_glob, field="path_glob")
+        except PathValidationError as exc:
+            return _path_error(exc)
         fields = args.fields
         where = [item.model_dump(exclude_none=True) for item in args.where]
         max_files = args.max_files
@@ -141,7 +160,10 @@ class JsonlSearch:
     def _candidates(self, query: str, path_glob: str, timeout: int) -> tuple[Iterator[tuple[str, int, str]], ToolResult | None]:
         """Collect (path, line_number, line_text) tuples for jsonl_search."""
         if query:
-            command = ["rg", "--json", "--glob", path_glob, "--", query, "."]
+            search_roots = self._search_roots()
+            command = ["rg", "--json", "--glob", path_glob, "--", query, *search_roots]
+            if not search_roots:
+                return iter(()), None
             try:
                 proc = subprocess.run(
                     command,
@@ -164,7 +186,7 @@ class JsonlSearch:
         """Yield JSONL candidate rows without accumulating them."""
         for path in self.root.glob(path_glob):
             resolved = path.resolve()
-            if not _is_relative_to(resolved, self.root) or not path.is_file():
+            if not self._path_allowed(resolved) or not path.is_file():
                 continue
             rel = str(resolved.relative_to(self.root))
             with resolved.open("r", encoding="utf-8", errors="replace") as handle:

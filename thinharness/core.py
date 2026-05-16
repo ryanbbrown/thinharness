@@ -49,6 +49,8 @@ class HarnessConfig(BaseModel):
     search_exclude_globs: list[str] = Field(default_factory=list)
     search_low_priority_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_LOW_PRIORITY_DIRS))
     search_test_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_TEST_DIRS))
+    read_paths: list[str | Path] | None = None
+    write_paths: list[str | Path] | None = None
     temperature: float | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: TracingOptions | None = None
@@ -117,6 +119,8 @@ class Harness:
             search_exclude_globs=self.config.search_exclude_globs,
             search_low_priority_dirs=self.config.search_low_priority_dirs,
             search_test_dirs=self.config.search_test_dirs,
+            read_paths=self.config.read_paths,
+            write_paths=self.config.write_paths,
         )
         from .subagents import create_subagent_tool
 

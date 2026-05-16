@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.dataclasses import dataclass
 
-from .tools import Json, ToolResult, ToolSpec, coerce_args, contained_path, _timeout_error_message
+from .tools import Json, PathValidationError, ToolResult, ToolSpec, coerce_args, contained_path, _path_error, _timeout_error_message
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,10 @@ class SkillRegistry:
         args = coerce_args(args, SkillReadArgs)
         skill = self._get(args.skill_name)
         rel = str(args.path or skill.skill_file.relative_to(skill.root))
-        target = contained_path(skill.root, rel)
+        try:
+            target = contained_path(skill.root, rel)
+        except PathValidationError as exc:
+            return _path_error(exc)
         if not target.exists() or target.is_dir():
             return ToolResult(False, f"file not found: {rel}")
         content = target.read_text(encoding="utf-8", errors="replace")
@@ -103,7 +106,10 @@ class SkillRegistry:
         """Run a contained skill script."""
         args = coerce_args(args, SkillRunArgs)
         skill = self._get(args.skill_name)
-        script = contained_path(skill.root, args.script)
+        try:
+            script = contained_path(skill.root, args.script)
+        except PathValidationError as exc:
+            return _path_error(exc)
         if not script.exists() or script.is_dir():
             return ToolResult(False, f"script not found: {args.script}")
         command = [str(script), *[str(arg) for arg in args.args]]
