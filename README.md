@@ -17,10 +17,23 @@ The harness provides:
 ## Usage
 
 ```python
+import asyncio
 from thinharness import Harness, HarnessConfig
 
-harness = Harness(HarnessConfig(root=".", model="openai:gpt-5.2"))
-result = harness.run("Read README.md and summarize it.")
+async def main():
+    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.2")) as harness:
+        result = await harness.run("Read README.md and summarize it.")
+        print(result.text)
+
+asyncio.run(main())
+```
+
+For non-async callers, use the synchronous wrapper:
+
+```python
+from thinharness import Harness, HarnessConfig
+
+result = Harness(HarnessConfig(root=".", model="openai:gpt-5.2")).run_sync("Read README.md and summarize it.")
 print(result.text)
 ```
 
@@ -96,7 +109,7 @@ harness = Harness(
 Run results include final text, raw model responses, tool records, and usage counters:
 
 ```python
-result = harness.run("Inspect the workspace.")
+result = harness.run_sync("Inspect the workspace.")
 print(result.usage.model_requests)
 print(result.usage.tool_calls)
 print(result.usage.cancelled_tool_calls)
@@ -164,7 +177,7 @@ HarnessConfig(
 from thinharness import Harness, HarnessConfig
 
 harness = Harness(HarnessConfig(root=".", builtin_tools=["read", "search", "glob", "subagent"]))
-result = harness.run("Use a subagent to inspect README.md, then summarize the result.")
+result = harness.run_sync("Use a subagent to inspect README.md, then summarize the result.")
 ```
 
 Specialized named subagents use fixed tool surfaces:
@@ -253,7 +266,7 @@ from thinharness import Harness, HarnessConfig, TracingOptions, create_otlp_trac
 
 otlp = create_otlp_tracing(service_name="my-agent")
 harness = Harness(HarnessConfig(root=".", tracing=TracingOptions(tracer=otlp.tracer)))
-result = harness.run("Read README.md and summarize it.")
+result = harness.run_sync("Read README.md and summarize it.")
 otlp.force_flush()
 ```
 
@@ -261,7 +274,7 @@ Install the optional tracing dependencies with `pip install "thinharness[tracing
 
 ## Parallel tool execution
 
-When a model emits multiple tool calls in one response, the harness runs them in parallel by default. Mutating built-ins (`write`, `edit`, `skill_run`) are marked `sequential=True` and force the entire batch to run serially in model order. Read-only built-ins (`read`, `search`, `list`, `glob`, `jsonl_search`, `skill_read`) execute concurrently in a thread pool.
+When a model emits multiple tool calls in one response, the harness runs them in parallel by default. Mutating built-ins (`write`, `edit`, `skill_run`) are marked `sequential=True` and force the entire batch to run serially in model order. Read-only built-ins (`read`, `search`, `list`, `glob`, `jsonl_search`, `skill_read`) execute concurrently through asyncio tasks; sync handlers run on worker threads with context propagation.
 
 ```python
 HarnessConfig(tool_execution="auto")        # default: same-response calls may run in parallel

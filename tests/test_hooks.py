@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -76,7 +77,7 @@ def test_run_end_fires_when_new_session_fails(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="no session"):
-        harness.run("go")
+        harness.run_sync("go")
 
     assert events == [("error", "RuntimeError", 0)]
 
@@ -89,7 +90,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
     )
 
     with pytest.raises(HarnessError, match="child failed"):
-        provider_harness.run("go")
+        provider_harness.run_sync("go")
 
     unexpected = ScriptedSession(start_turn=ModelTurn(), on_start=lambda *_args: (_ for _ in ()).throw(ValueError("boom")))
     error_harness = Harness(
@@ -99,7 +100,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
     )
 
     with pytest.raises(ValueError, match="boom"):
-        error_harness.run("go")
+        error_harness.run_sync("go")
 
     assert events == [("provider_error", "HarnessError"), ("error", "ValueError")]
 
@@ -122,9 +123,9 @@ def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="end hook failed"):
-        harness.run("first")
+        harness.run_sync("first")
 
-    assert harness.run("second").text == "second"
+    assert harness.run_sync("second").text == "second"
 
 def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> None:
     captured = {}
@@ -145,7 +146,7 @@ def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> Non
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}), on_start=on_start)
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), hooks=hooks)
 
-    result = harness.run("summarize")
+    result = harness.run_sync("summarize")
 
     assert captured["prompt"] == "summarize\n\n<hook_context>\npolicy: keep it short\n</hook_context>"
     assert result.usage.model_requests == 1
@@ -177,7 +178,7 @@ def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> Non
     )
 
     with pytest.raises(HarnessError, match="run blocked by hook: blocked"):
-        harness.run("nope")
+        harness.run_sync("nope")
 
     assert events == ["user_prompt_submit", ("run_end", "cancelled_by_hook", "HarnessError")]
 
@@ -190,12 +191,12 @@ def test_same_harness_reentrant_run_is_rejected(tmp_path: Path) -> None:
 
     def reenter(ctx):
         with pytest.raises(HarnessError, match="not re-entrant") as exc_info:
-            harness.run("nested")
+            harness.run_sync("nested")
         captured.append(str(exc_info.value))
 
     harness.hooks.hooks.append(Hook("user_prompt_submit", reenter))
 
-    assert harness.run("outer").text == "done"
+    assert harness.run_sync("outer").text == "done"
     assert captured == ["Harness.run is not re-entrant"]
 
 def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path) -> None:
@@ -225,7 +226,7 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
     )
     harness.add_tool(ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original"))
 
-    result = harness.run("go")
+    result = harness.run_sync("go")
 
     outputs = [tool_output(item["output"]) for item in client.payloads[1]["input"]]
     assert [name_index for name_index in indexes] == [("block", 0), ("ok", 1)]
@@ -253,7 +254,7 @@ def test_after_tool_hooks_see_refreshed_parsed_output(tmp_path: Path) -> None:
         hooks=[Hook("after_tool_call", rewrite), Hook("after_tool_call", observe)],
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     assert seen == [{"ok": True, "content": "changed", "metadata": {"stage": 1}}]
 
@@ -271,7 +272,7 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
     )
 
     with pytest.raises(RuntimeError, match="after failed"):
-        harness.run("go")
+        harness.run_sync("go")
 
 def test_after_tool_hook_parsed_output_uses_normalized_invalid_output() -> None:
     seen = []
@@ -307,7 +308,38 @@ def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path
     )
 
     with pytest.raises(RuntimeError, match="strict hook failed"):
-        harness.run("go")
+        harness.run_sync("go")
+
+async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path: Path) -> None:
+    client = MultiCallClient([("fail", "{}"), ("wait", "{}")])
+    cancelled = asyncio.Event()
+
+    async def wait(_args):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    def fail_for_fail(ctx):
+        if ctx.tool_name == "fail":
+            raise RuntimeError("strict hook failed")
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        model=_fake_openai(client),
+        tools=[
+            ToolSpec("wait", "wait", {"type": "object", "properties": {}}, wait),
+            ToolSpec("fail", "fail", {"type": "object", "properties": {}}, lambda args: "should not run"),
+        ],
+        hooks=[Hook("before_tool_call", fail_for_fail)],
+    )
+
+    task = asyncio.create_task(harness.run("go"))
+    with pytest.raises(RuntimeError, match="strict hook failed"):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert cancelled.is_set()
 
 def test_explicit_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None:
     registry = HookRegistry([Hook("user_prompt_submit", lambda ctx: (_ for _ in ()).throw(RuntimeError("strict registry")))], strict_hooks=True)
@@ -318,16 +350,16 @@ def test_explicit_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None
     )
 
     with pytest.raises(RuntimeError, match="strict registry"):
-        harness.run("go")
+        harness.run_sync("go")
 
 def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     events = []
 
     class BareHarnessErrorSession:
-        def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
             return ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="ok", arguments="{}")], raw={"id": "start"})
 
-        def continue_with_tools(self, outputs, *, tools, metadata=None):
+        async def continue_with_tools(self, outputs, *, tools, metadata=None):
             raise HarnessError("bare harness error")
 
     harness = Harness(
@@ -338,7 +370,7 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     )
 
     with pytest.raises(HarnessError, match="bare harness error"):
-        harness.run("go")
+        harness.run_sync("go")
 
     assert events == [("error", "HarnessError")]
 
@@ -362,7 +394,7 @@ def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
     )
 
     with pytest.raises(HarnessError, match="tool calls would exceed max_tool_calls=2"):
-        harness.run("go")
+        harness.run_sync("go")
 
     assert events == [("limit_reached", "tool_calls", 2, 3), ("run_end", "limit_reached", 0)]
     assert client.invocations == 1
@@ -372,7 +404,7 @@ def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> Non
         HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
-    assert immediate.run("go").usage.model_requests == 1
+    assert immediate.run_sync("go").usage.model_requests == 1
 
     client = MultiCallClient([("ok", "{}")])
     limited = Harness(
@@ -381,7 +413,7 @@ def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> Non
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
     )
     with pytest.raises(HarnessError, match="max_model_requests=1"):
-        limited.run("go")
+        limited.run_sync("go")
 
     allowed_client = MultiCallClient([("ok", "{}")])
     allowed = Harness(
@@ -389,7 +421,7 @@ def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> Non
         model=_fake_openai(allowed_client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
     )
-    assert allowed.run("go").usage.model_requests == 2
+    assert allowed.run_sync("go").usage.model_requests == 2
 
 def test_strict_subagent_hook_exception_surfaces_to_parent_run(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -409,4 +441,4 @@ def test_strict_subagent_hook_exception_surfaces_to_parent_run(tmp_path: Path) -
     harness.add_tool(create_subagent_tool(harness, []))
 
     with pytest.raises(RuntimeError, match="strict subagent hook failed"):
-        harness.run("delegate")
+        harness.run_sync("delegate")

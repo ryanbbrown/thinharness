@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
 from pydantic import BaseModel, Field
 
 from .tools import Json
@@ -74,7 +73,7 @@ class Model(Protocol):
 class ModelSession(Protocol):
     """Per-run model state consumed by the harness."""
 
-    def start(
+    async def start(
         self,
         *,
         prompt: str,
@@ -86,7 +85,7 @@ class ModelSession(Protocol):
         """Start a model run."""
         ...
 
-    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Continue a model run with tool outputs."""
         ...
 
@@ -107,10 +106,19 @@ class Provider:
     api_key_env = ""
     default_base_url = ""
 
-    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 120,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         self.api_key = api_key or (os.getenv(self.api_key_env) if self.api_key_env else None)
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self.timeout = timeout
+        self._http_client = http_client
+        self._owns_client = http_client is None
 
     def headers(self) -> Json:
         """Return auth headers for this provider."""
@@ -118,9 +126,31 @@ class Provider:
             raise ProviderError(f"{self.api_key_env} is required for {self.name}")
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
-    def post_json(self, path: str, payload: Json) -> Json:
+    def _client(self) -> httpx.AsyncClient:
+        """Return the shared async HTTP client for this provider."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=self.timeout)
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close this provider's owned HTTP client."""
+        if self._owns_client and self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+
+    async def post_json(self, path: str, payload: Json) -> Json:
         """POST JSON to this provider."""
-        return _post_json(f"{self.base_url}{path}", payload, self.headers(), self.timeout)
+        try:
+            response = await self._client().post(f"{self.base_url}{path}", json=payload, headers=self.headers())
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(f"provider error {exc.response.status_code}: {exc.response.text}") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"provider request failed: {exc}") from exc
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ProviderError(f"provider returned invalid JSON: {exc}") from exc
 
 
 class OpenAIProvider(Provider):
@@ -130,12 +160,19 @@ class OpenAIProvider(Provider):
     api_key_env = "OPENAI_API_KEY"
     default_base_url = "https://api.openai.com/v1"
 
-    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
-        super().__init__(api_key=api_key, base_url=base_url or os.getenv("OPENAI_BASE_URL"), timeout=timeout)
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 120,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, base_url=base_url or os.getenv("OPENAI_BASE_URL"), timeout=timeout, http_client=http_client)
 
-    def create_response(self, payload: Json) -> Json:
+    async def create_response(self, payload: Json) -> Json:
         """Create a Responses API response."""
-        return self.post_json("/responses", payload)
+        return await self.post_json("/responses", payload)
 
 
 class AnthropicProvider(Provider):
@@ -145,8 +182,15 @@ class AnthropicProvider(Provider):
     api_key_env = "ANTHROPIC_API_KEY"
     default_base_url = "https://api.anthropic.com/v1"
 
-    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
-        super().__init__(api_key=api_key, base_url=base_url or os.getenv("ANTHROPIC_BASE_URL"), timeout=timeout)
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 120,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, base_url=base_url or os.getenv("ANTHROPIC_BASE_URL"), timeout=timeout, http_client=http_client)
 
     def headers(self) -> Json:
         """Return Anthropic auth headers."""
@@ -154,9 +198,9 @@ class AnthropicProvider(Provider):
             raise ProviderError("ANTHROPIC_API_KEY is required for Anthropic")
         return {"x-api-key": self.api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
 
-    def create_message(self, payload: Json) -> Json:
+    async def create_message(self, payload: Json) -> Json:
         """Create an Anthropic Messages response."""
-        return self.post_json("/messages", payload)
+        return await self.post_json("/messages", payload)
 
 
 class OpenRouterProvider(Provider):
@@ -166,8 +210,15 @@ class OpenRouterProvider(Provider):
     api_key_env = "OPENROUTER_API_KEY"
     default_base_url = "https://openrouter.ai/api/v1"
 
-    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
-        super().__init__(api_key=api_key, base_url=base_url or os.getenv("OPENROUTER_BASE_URL"), timeout=timeout)
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 120,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, base_url=base_url or os.getenv("OPENROUTER_BASE_URL"), timeout=timeout, http_client=http_client)
 
     def headers(self) -> Json:
         """Return OpenRouter auth and attribution headers."""
@@ -178,9 +229,9 @@ class OpenRouterProvider(Provider):
             headers["X-Title"] = app_title
         return headers
 
-    def create_chat_completion(self, payload: Json) -> Json:
+    async def create_chat_completion(self, payload: Json) -> Json:
         """Create an OpenRouter chat completion."""
-        return self.post_json("/chat/completions", payload)
+        return await self.post_json("/chat/completions", payload)
 
 
 # =============================================================================
@@ -225,7 +276,7 @@ class OpenAIResponsesSession:
         self.model = model
         self.previous_response_id: str | None = None
 
-    def start(
+    async def start(
         self,
         *,
         prompt: str,
@@ -239,9 +290,9 @@ class OpenAIResponsesSession:
         payload = self.model.build_payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
-        return self._complete(payload)
+        return await self._complete(payload)
 
-    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Continue a Responses API run with function_call_output items."""
         input_payload = [
             {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
@@ -250,11 +301,11 @@ class OpenAIResponsesSession:
         payload = self.model.build_payload(input_payload=input_payload, tools=tools, metadata=metadata)
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
-        return self._complete(payload)
+        return await self._complete(payload)
 
-    def _complete(self, payload: Json) -> ModelTurn:
+    async def _complete(self, payload: Json) -> ModelTurn:
         """Send a Responses API payload and normalize the response."""
-        response = self.model.provider.create_response(payload)
+        response = await self.model.provider.create_response(payload)
         self.previous_response_id = response.get("id") or self.previous_response_id
         return ModelTurn(text=_extract_responses_text(response), tool_calls=_extract_responses_tool_calls(response), raw=response)
 
@@ -293,7 +344,7 @@ class AnthropicMessagesSession:
         self.messages: list[Json] = []
         self.system = ""
 
-    def start(
+    async def start(
         self,
         *,
         prompt: str,
@@ -307,17 +358,17 @@ class AnthropicMessagesSession:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
         self.system = instructions
         self.messages = [{"role": "user", "content": prompt}]
-        return self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata)
 
-    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
         self.messages.append({
             "role": "user",
             "content": [{"type": "tool_result", "tool_use_id": output.call_id, "content": output.output} for output in outputs],
         })
-        return self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata)
 
-    def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Send a Messages API request and normalize the response."""
         payload: Json = {
             "model": self.model.model,
@@ -331,7 +382,7 @@ class AnthropicMessagesSession:
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
         payload.update(self.model.settings.extra_body)
-        response = self.model.provider.create_message(payload)
+        response = await self.model.provider.create_message(payload)
         self.messages.append({"role": "assistant", "content": response.get("content", [])})
         return ModelTurn(text=_extract_anthropic_text(response), tool_calls=_extract_anthropic_tool_calls(response), raw=response)
 
@@ -361,7 +412,7 @@ class OpenRouterSession:
         self.model = model
         self.messages: list[Json] = []
 
-    def start(
+    async def start(
         self,
         *,
         prompt: str,
@@ -377,15 +428,15 @@ class OpenRouterSession:
             {"role": "system", "content": instructions},
             {"role": "user", "content": prompt},
         ]
-        return self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata)
 
-    def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Continue an OpenRouter run with tool messages."""
         for output in outputs:
             self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": output.output})
-        return self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata)
 
-    def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Send an OpenRouter request and normalize the response."""
         payload: Json = {
             "model": self.model.model,
@@ -397,7 +448,7 @@ class OpenRouterSession:
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
         payload.update(self.model.settings.extra_body)
-        response = self.model.provider.create_chat_completion(payload)
+        response = await self.model.provider.create_chat_completion(payload)
         message = ((response.get("choices") or [{}])[0].get("message") or {})
         self.messages.append(message)
         return ModelTurn(text=str(message.get("content") or ""), tool_calls=_extract_chat_tool_calls(message), raw=response)
@@ -443,25 +494,8 @@ def parse_model_ref(model_ref: str) -> tuple[str, str]:
 
 
 # =============================================================================
-# HTTP and provider format helpers
+# Provider format helpers
 # =============================================================================
-
-
-def _post_json(url: str, payload: Json, headers: Json, timeout: int) -> Json:
-    """POST JSON with urllib and decode JSON response."""
-    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise ProviderError(f"provider error {exc.code}: {body}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise ProviderError(f"provider request failed: {exc}") from exc
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise ProviderError(f"provider returned invalid JSON: {exc}") from exc
 
 
 def _responses_tool_to_anthropic(tool: Json) -> Json:

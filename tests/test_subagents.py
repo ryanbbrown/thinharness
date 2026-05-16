@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -25,9 +26,19 @@ from thinharness import (
     ToolSpec,
     TracingOptions,
     build_child_harness,
+    call_tool,
     create_subagent_tool,
 )
 from thinharness.providers import ModelToolCall, ModelTurn
+
+
+class ClosingProvider:
+    def __init__(self) -> None:
+        self.name = "OpenAI"
+        self.closed = 0
+
+    async def aclose(self) -> None:
+        self.closed += 1
 
 
 def test_subagent_config_validation_accepts_tool_specs_and_dict_tools() -> None:
@@ -99,7 +110,7 @@ def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
     harness.add_tool(create_subagent_tool(harness, []))
 
-    result = harness.run("delegate", metadata={"conversation_id": "conv-1", "extra": "ignored"})
+    result = harness.run_sync("delegate", metadata={"conversation_id": "conv-1", "extra": "ignored"})
 
     assert result.text == "parent done"
     assert child_start_metadata == {
@@ -107,6 +118,23 @@ def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(
         "tools": ["echo"],
         "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"},
     }
+
+def test_default_subagent_does_not_close_shared_parent_provider(tmp_path: Path) -> None:
+    parent_call = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
+        raw={"id": "parent-start"},
+    )
+    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
+    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
+    model = ScriptedModel([parent, child])
+    provider = ClosingProvider()
+    model.provider = provider
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness.add_tool(create_subagent_tool(harness, []))
+
+    assert harness.run_sync("delegate").text == "parent done"
+
+    assert provider.closed == 0
 
 def test_named_inherited_subagent_gets_parent_tools_without_subagent(tmp_path: Path) -> None:
     parent_echo = echo_tool()
@@ -187,9 +215,72 @@ def test_subagent_model_override_is_used_for_child_run(tmp_path: Path, monkeypat
     child = build_child_harness(parent, SubAgentConfig(name="special", description="Special helper.", model="openai:child", tools=[echo_tool()]))
 
     assert child.model is child_model
-    assert child.run("delegate").text == "child done"
+    assert child.run_sync("delegate").text == "child done"
     assert child_model.session_requests == 1
     assert parent_model.session_requests == 0
+
+def test_subagent_model_override_closes_child_provider(tmp_path: Path, monkeypatch) -> None:
+    parent_call = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help","agent":"special"}')],
+        raw={"id": "parent-start"},
+    )
+    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
+    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
+    child_model = ScriptedModel([child], model="child-model")
+    child_provider = ClosingProvider()
+    child_model.provider = child_provider
+
+    def fake_infer_model(_model_ref, **_kwargs):
+        return child_model
+
+    monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
+    harness = Harness(
+        HarnessConfig(
+            root=tmp_path,
+            builtin_tools=[],
+            subagents=[SubAgentConfig(name="special", description="Special helper.", model="openai:child", tools=[echo_tool()])],
+        ),
+        model=ScriptedModel([parent]),
+    )
+    harness.add_tool(create_subagent_tool(harness, harness.config.subagents))
+
+    assert harness.run_sync("delegate").text == "parent done"
+
+    assert child_provider.closed == 1
+
+async def test_concurrent_subagent_strict_abort_does_not_hang(tmp_path: Path) -> None:
+    parent_call = ModelTurn(
+        tool_calls=[
+            ModelToolCall(id="call_1", name="subagent", arguments='{"task":"one"}'),
+            ModelToolCall(id="call_2", name="subagent", arguments='{"task":"two"}'),
+        ],
+        raw={"id": "parent-start"},
+    )
+
+    async def wait_forever(_args):
+        await asyncio.Event().wait()
+
+    child_tool = ToolSpec("wait", "Wait", {"type": "object", "properties": {}}, wait_forever)
+
+    def fail_second_subagent(ctx):
+        if ctx.call_id == "call_2":
+            raise RuntimeError("strict abort")
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=True),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=parent_call),
+            ScriptedSession(start_turn=ModelTurn(tool_calls=[ModelToolCall(id="child_call", name="wait", arguments="{}")], raw={"id": "child"})),
+        ]),
+        tools=[child_tool],
+        hooks=[Hook("before_tool_call", fail_second_subagent)],
+    )
+    harness.add_tool(create_subagent_tool(harness, []))
+
+    task = asyncio.create_task(harness.run("delegate"))
+
+    with pytest.raises(RuntimeError, match="strict abort"):
+        await asyncio.wait_for(task, timeout=1)
 
 def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -216,7 +307,7 @@ def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> N
     )
     harness.add_tool(create_subagent_tool(harness, []))
 
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
     subagent_tool = next(span for span in tracer.spans if span.name == "execute_tool subagent")
     assert subagent_tool.attributes["subagent.name"] == "default"
     assert subagent_tool.attributes["subagent.tool_mode"] == "inherited"
@@ -227,7 +318,7 @@ def test_unknown_named_subagent_returns_structured_error(tmp_path: Path) -> None
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
     tool = create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", builtin_tools=["read"])])
 
-    output = tool_output(tool.handler(tool.parse_args({"task": "x", "agent": "missing"})).as_json())
+    output = tool_output(asyncio.run(tool.handler(tool.parse_args({"task": "x", "agent": "missing"}))).as_json())
 
     assert output["ok"] is False
     assert output["metadata"]["available"] == ["research"]
@@ -238,7 +329,7 @@ def test_blank_subagent_name_is_normal_argument_validation_error(tmp_path: Path)
     tool = create_subagent_tool(harness, [])
     harness.add_tool(tool)
 
-    output = tool_output(harness._call_output(tool.name, '{"task":"x","agent":""}'))
+    output = tool_output(call_tool(tool, '{"task":"x","agent":""}'))
 
     assert output["ok"] is False
     assert "invalid arguments" in output["content"]
@@ -282,7 +373,7 @@ def test_explicit_subagent_hook_registry_strict_mode_is_preserved(tmp_path: Path
     )
     harness.add_tool(create_subagent_tool(harness, []))
 
-    assert harness.run("go").text == "parent done"
+    assert harness.run_sync("go").text == "parent done"
     assert child_registry.strict_hooks is True
     assert outputs_seen[0]["ok"] is False
     assert outputs_seen[0]["metadata"]["error_type"] == "RuntimeError"
@@ -324,7 +415,7 @@ def test_subagent_hooks_and_child_hooks_are_explicit(tmp_path: Path) -> None:
 
     assert build_child_harness(harness, harness.config.subagents[0]).hooks.hooks
     assert build_child_harness(harness, None).hooks.hooks == []
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
     assert events == [
         ("before_subagent_run", "research", "call_1"),
         ("run_start", "child"),
@@ -362,7 +453,7 @@ def test_subagent_hook_can_cancel_default_agent_without_child_run(tmp_path: Path
     )
     harness.add_tool(create_subagent_tool(harness, []))
 
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
     assert events == [(DEFAULT_SUBAGENT_NAME, "call_1")]
     assert outputs_seen[0]["ok"] is False
     assert outputs_seen[0]["content"] == "Subagent execution blocked by hook: blocked"

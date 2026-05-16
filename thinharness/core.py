@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import contextvars
+import asyncio
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -29,13 +28,13 @@ from .hooks import (
 from .providers import Model, ModelToolCall, ProviderError, ToolOutput, infer_model
 from .skills import SkillRegistry
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool
+from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, _invoke_tool
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
 MAX_PARALLEL_TOOL_WORKERS = 16
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
-StopReason = Literal["end_turn", "provider_error", "limit_reached", "error", "cancelled_by_hook"]
+StopReason = Literal["end_turn", "provider_error", "limit_reached", "error", "cancelled_by_hook", "cancelled"]
 
 
 class HarnessConfig(BaseModel):
@@ -117,6 +116,7 @@ class Harness:
         skills: SkillRegistry | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
         subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
+        _owns_model: bool | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
         if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
@@ -132,6 +132,7 @@ class Harness:
             temperature=self.config.temperature,
             extra_body=self.config.extra_body,
         )
+        self._owns_model = _owns_model if _owns_model is not None else model is None
         self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         filesystem_tools = make_builtin_tools(
             self.root,
@@ -163,9 +164,10 @@ class Harness:
         self.tracing = tracing or self.config.tracing
         self._current_run_metadata: Json | None = None
         self._running = False
+        self._closed = False
         self._warn_unmatched_hook_filters()
 
-    def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
+    async def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")
@@ -181,6 +183,7 @@ class Harness:
         run_metadata = dict(metadata or {})
         self._current_run_metadata = run_metadata
         self._running = True
+        self._closed = False
 
         def fire_run_end_once() -> None:
             """Emit run_end exactly once for this run."""
@@ -262,7 +265,7 @@ class Harness:
                         check_model_limit()
                         with run_tracer.model(self.model) as model_span:
                             try:
-                                turn = session.start(
+                                turn = await session.start(
                                     prompt=effective_prompt,
                                     instructions=self.system_instructions(),
                                     tools=self.tool_schemas(),
@@ -290,19 +293,25 @@ class Harness:
                                 return result
                             check_tool_limit(len(turn.tool_calls))
                             usage.tool_calls += len(turn.tool_calls)
-                            recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
+                            recorded, outputs = await self._execute_tool_batch(run_tracer, turn.tool_calls)
                             usage.cancelled_tool_calls += sum(1 for record in recorded if record.get("cancelled") is True)
                             tool_call_records.extend(recorded)
                             check_model_limit()
                             with run_tracer.model(self.model) as model_span:
                                 try:
-                                    turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                                    turn = await session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
                                     usage.model_requests += 1
                                 except Exception as exc:
                                     model_span.record_exception(exc)
                                     model_span.set_error(str(exc), type(exc).__name__)
                                     raise
                                 annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+                    except asyncio.CancelledError as exc:
+                        stop_reason = "cancelled"
+                        terminal_error = exc
+                        agent_span.record_exception(exc)
+                        agent_span.set_error("run cancelled", "CancelledError")
+                        raise
                     except ProviderError as exc:
                         stop_reason = "provider_error"
                         terminal_error = HarnessError(str(exc))
@@ -327,6 +336,45 @@ class Harness:
         finally:
             self._current_run_metadata = None
             self._running = False
+
+    def run_sync(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
+        """Synchronous wrapper around run."""
+        if self._running:
+            raise HarnessError("Harness.run is not re-entrant")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise HarnessError("run_sync cannot be called from inside a running event loop; await run() instead")
+
+        async def _run_and_close() -> HarnessResult:
+            """Run and close owned async resources in the same loop."""
+            try:
+                return await self.run(prompt, previous_response_id=previous_response_id, metadata=metadata)
+            finally:
+                await self.aclose()
+
+        return asyncio.run(_run_and_close())
+
+    async def aclose(self) -> None:
+        """Close provider HTTP clients if this harness owns them."""
+        if not self._owns_model:
+            return
+        if self._closed:
+            return
+        aclose = getattr(self.model.provider, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        self._closed = True
+
+    async def __aenter__(self) -> Harness:
+        """Enter an async harness lifecycle."""
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """Close owned async resources when leaving a lifecycle."""
+        await self.aclose()
 
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
@@ -365,14 +413,14 @@ class Harness:
         skill_summary = self.skills.prompt_summary() if self._skills_enabled else "No skills are configured."
         return f"{self.config.system_prompt}\n\nWorkspace root: {self.root}\n\n{skill_summary}"
 
-    def _call_output(self, name: str, arguments: str) -> str:
+    async def _call_output(self, name: str, arguments: str) -> str:
         """Execute one model tool call and format its output."""
         spec = self._tool_map.get(str(name))
         if not spec:
             return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
-        return call_tool(spec, arguments or {})
+        return await _invoke_tool(spec, arguments or {})
 
-    def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> tuple[str, bool]:
+    async def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> tuple[str, bool]:
         """Execute one model tool call with tracing."""
         with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
             token = _CURRENT_TOOL_CALL.set({"call_id": call_id, "name": name})
@@ -398,7 +446,7 @@ class Harness:
                         "metadata": {"error_type": "ToolCallCancelled"},
                     }, ensure_ascii=False)
                 else:
-                    output = self._call_output(name, arguments)
+                    output = await self._call_output(name, arguments)
                 parsed = _parse_tool_output(output)
                 after = AfterToolCallContext(
                     harness=self,
@@ -429,12 +477,15 @@ class Harness:
             finally:
                 _CURRENT_TOOL_CALL.reset(token)
 
-    def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput]]:
+    async def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput]]:
         """Run one batch of model tool calls; preserve model order in returned outputs."""
         if self._should_run_sequentially(calls):
-            results = [self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index) for index, call in enumerate(calls)]
+            results = [
+                await self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
+                for index, call in enumerate(calls)
+            ]
         else:
-            results = self._run_calls_in_threads(run_tracer, calls)
+            results = await self._run_calls_concurrently(run_tracer, calls)
         recorded = []
         for call, (output, cancelled) in zip(calls, results, strict=True):
             record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
@@ -450,14 +501,36 @@ class Harness:
             return True
         return any((spec := self._tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
 
-    def _run_calls_in_threads(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[tuple[str, bool]]:
-        """Execute calls concurrently while keeping the OpenTelemetry parent context."""
-        def invoke(index: int, call: ModelToolCall) -> tuple[str, bool]:
-            return self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
+    async def _run_calls_concurrently(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[tuple[str, bool]]:
+        """Execute calls concurrently while preserving model request order."""
+        sem = asyncio.Semaphore(MAX_PARALLEL_TOOL_WORKERS)
 
-        with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_WORKERS)) as executor:
-            futures = [executor.submit(contextvars.copy_context().run, invoke, index, call) for index, call in enumerate(calls)]
-            return [future.result() for future in futures]
+        async def invoke(index: int, call: ModelToolCall) -> tuple[str, bool]:
+            """Invoke one traced tool call under the shared concurrency limit."""
+            async with sem:
+                return await self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
+
+        tasks = [asyncio.create_task(invoke(index, call)) for index, call in enumerate(calls)]
+        task_index = {task: index for index, task in enumerate(tasks)}
+        results: list[tuple[str, bool] | None] = [None] * len(tasks)
+        pending = set(tasks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+                for task in done:
+                    exc = task.exception()
+                    if exc is not None:
+                        for sibling in pending:
+                            sibling.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        raise exc
+                    results[task_index[task]] = task.result()
+        except BaseException:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            raise
+        return [result for result in results if result is not None]
 
     @staticmethod
     def _validate_unique_tools(tools: list[ToolSpec]) -> None:

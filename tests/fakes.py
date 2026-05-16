@@ -22,7 +22,7 @@ class FakeClient(OpenAIProvider):
         self.calls = 0
         self.payloads = []
 
-    def create_response(self, payload):
+    async def create_response(self, payload):
         self.calls += 1
         self.payloads.append(payload)
         if self.calls == 1:
@@ -121,7 +121,7 @@ class FakeAnthropicProvider(AnthropicProvider):
         super().__init__(api_key="key")
         self.payloads = []
 
-    def create_message(self, payload):
+    async def create_message(self, payload):
         """Capture Anthropic payloads and return a tool loop response."""
         self.payloads.append(copy.deepcopy(payload))
         last = payload["messages"][-1]
@@ -137,7 +137,7 @@ class FakeOpenRouterProvider(OpenRouterProvider):
         super().__init__(api_key="key")
         self.payloads = []
 
-    def create_chat_completion(self, payload):
+    async def create_chat_completion(self, payload):
         """Capture OpenRouter payloads and return a tool loop response."""
         self.payloads.append(copy.deepcopy(payload))
         last = payload["messages"][-1]
@@ -187,24 +187,24 @@ class ScriptedSession:
         self.on_start = on_start
         self.on_continue = on_continue
 
-    def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
         """Return the scripted start turn."""
         if self.on_start:
             self.on_start(prompt, instructions, tools, metadata, previous_response_id)
         return self.start_turn
 
-    def continue_with_tools(self, outputs, *, tools, metadata=None):
+    async def continue_with_tools(self, outputs, *, tools, metadata=None):
         """Return the scripted continuation turn."""
         if self.on_continue:
             self.on_continue(outputs, tools, metadata)
         return self.continue_turn
 
 class FailingSession:
-    def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
         """Raise a provider failure from the child run."""
         raise ProviderError("child failed")
 
-    def continue_with_tools(self, outputs, *, tools, metadata=None):
+    async def continue_with_tools(self, outputs, *, tools, metadata=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 
@@ -230,7 +230,7 @@ class MultiCallClient(OpenAIProvider):
         self.payloads = []
         self.invocations = 0
 
-    def create_response(self, payload):
+    async def create_response(self, payload):
         self.invocations += 1
         self.payloads.append(payload)
         if self.invocations == 1:

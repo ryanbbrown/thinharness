@@ -48,7 +48,7 @@ def test_parallel_safe_batch_runs_concurrently(tmp_path: Path) -> None:
     )
 
     start = time.monotonic()
-    result = harness.run("go")
+    result = harness.run_sync("go")
     elapsed = time.monotonic() - start
 
     assert result.text == "done"
@@ -68,7 +68,7 @@ def test_sequential_tool_forces_serial_batch(tmp_path: Path) -> None:
     )
 
     start = time.monotonic()
-    result = harness.run("go")
+    result = harness.run_sync("go")
     elapsed = time.monotonic() - start
 
     assert result.text == "done"
@@ -86,7 +86,7 @@ def test_tool_execution_sequential_forces_serial_even_for_safe_tools(tmp_path: P
     )
 
     start = time.monotonic()
-    harness.run("go")
+    harness.run_sync("go")
     elapsed = time.monotonic() - start
 
     assert elapsed >= delay * 1.9
@@ -99,7 +99,7 @@ def test_parallel_batch_preserves_model_call_order(tmp_path: Path) -> None:
         tools=[slow_tool("slow_first", 0.2), slow_tool("fast_second", 0.01)],
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     continuation_inputs = client.payloads[1]["input"]
     assert [item["call_id"] for item in continuation_inputs] == ["call_1", "call_2"]
@@ -119,7 +119,7 @@ def test_parallel_batch_continues_when_one_tool_errors(tmp_path: Path) -> None:
         tools=[boom_spec, ok_spec],
     )
 
-    result = harness.run("go")
+    result = harness.run_sync("go")
 
     assert result.text == "done"
     continuation_inputs = client.payloads[1]["input"]
@@ -136,7 +136,7 @@ def test_parallel_batch_makes_one_provider_continuation(tmp_path: Path) -> None:
         tools=[slow_tool("a", 0.01), slow_tool("b", 0.01), slow_tool("c", 0.01)],
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     assert client.invocations == 2
     assert len(client.payloads[1]["input"]) == 3
@@ -151,7 +151,7 @@ def test_truncate_spill_files_do_not_collide_under_parallel_reads(tmp_path: Path
         model=_fake_openai(client),
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     saved_paths = []
     for item in client.payloads[1]["input"]:
@@ -178,7 +178,7 @@ def test_dict_tool_can_opt_into_sequential(tmp_path: Path) -> None:
     )
 
     start = time.monotonic()
-    harness.run("go")
+    harness.run_sync("go")
     elapsed = time.monotonic() - start
 
     assert elapsed >= delay * 1.9, f"expected serial execution, elapsed={elapsed:.3f}s"
@@ -193,7 +193,7 @@ def test_parallel_batch_with_more_calls_than_worker_cap(tmp_path: Path) -> None:
         tools=tools,
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     continuation_inputs = client.payloads[1]["input"]
     assert [item["call_id"] for item in continuation_inputs] == [f"call_{i+1}" for i in range(20)]
@@ -223,7 +223,7 @@ def test_parallel_batch_tools_execute_in_separate_threads(tmp_path: Path) -> Non
         ],
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     assert len(seen_threads) == 2
     assert seen_threads[0] != seen_threads[1]

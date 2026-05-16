@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import heapq
+import inspect
 import itertools
 import json
 import subprocess
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path, PureWindowsPath
 from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 Json = dict[str, Any]
-ToolHandler = Callable[[Any], Any]
+ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_SEARCH_LOW_PRIORITY_DIRS = [
     "example",
@@ -674,8 +677,8 @@ def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
     return FileTools(root, **kwargs).specs()
 
 
-def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
-    """Invoke a tool handler and normalize the result to structured JSON."""
+def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> str | Any:
+    """Parse and validate raw tool arguments."""
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else raw_args
     except json.JSONDecodeError as exc:
@@ -683,20 +686,73 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     if not isinstance(args, dict):
         return ToolResult(False, "tool arguments must be a JSON object").as_json()
     try:
-        args = spec.parse_args(args)
+        return spec.parse_args(args)
     except ValidationError as exc:
         return ToolResult(False, f"invalid arguments: {exc}").as_json()
+
+
+def _normalize_result(result: Any) -> str:
+    """Normalize a tool handler result to a structured JSON envelope."""
+    if isinstance(result, ToolResult):
+        return result.as_json()
+    if isinstance(result, str):
+        return ToolResult(True, result).as_json()
+    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str)).as_json()
+
+
+def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
+    """Invoke a sync tool handler and normalize the result to structured JSON."""
+    args = _prepare_args(spec, raw_args)
+    if isinstance(args, str):
+        return args
     try:
         result = spec.handler(args)
     except Exception as exc:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
         return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
-    if isinstance(result, ToolResult):
-        return result.as_json()
-    if isinstance(result, str):
-        return ToolResult(True, result).as_json()
-    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str)).as_json()
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if close is not None:
+            close()
+        return ToolResult(
+            False,
+            "async handler requires harness execution",
+            {"error_type": "AsyncHandlerInSyncContext"},
+        ).as_json()
+    return _normalize_result(result)
+
+
+async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> str:
+    """Invoke a tool handler without blocking the event loop."""
+    args = _prepare_args(spec, raw_args)
+    if isinstance(args, str):
+        return args
+    try:
+        if _is_async_callable(spec.handler):
+            result = await spec.handler(args)
+        else:
+            worker = asyncio.create_task(asyncio.to_thread(spec.handler, args))
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await asyncio.gather(worker, return_exceptions=True)
+                raise
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        if getattr(exc, "_thinharness_strict_hook", False):
+            raise
+        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
+    return _normalize_result(result)
+
+
+def _is_async_callable(handler: ToolHandler) -> bool:
+    """Return whether a handler is natively async."""
+    obj: Any = handler
+    while isinstance(obj, partial):
+        obj = obj.func
+    return inspect.iscoroutinefunction(obj) or (callable(obj) and inspect.iscoroutinefunction(obj.__call__))
 
 
 # =============================================================================

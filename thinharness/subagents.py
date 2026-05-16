@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import TracebackType
 from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -64,16 +65,20 @@ class SubAgentArgs(BaseModel):
 
 def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> ToolSpec:
     """Create the parent-facing subagent delegation tool."""
+    async def handler(args: SubAgentArgs) -> ToolResult:
+        """Run the selected subagent."""
+        return await run_subagent_tool(parent, configs, args)
+
     return ToolSpec(
         "subagent",
         _subagent_tool_description(configs),
         SubAgentArgs,
-        lambda args: run_subagent_tool(parent, configs, args),
+        handler,
         metadata={"framework_tool": "subagent"},
     )
 
 
-def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args: SubAgentArgs) -> ToolResult:
+async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args: SubAgentArgs) -> ToolResult:
     """Run a child harness and return its final text as a tool result."""
     config = _select_config(configs, args.agent)
     if args.agent and config is None:
@@ -115,7 +120,21 @@ def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args: SubA
     try:
         child = build_child_harness(parent, config)
         effective_tools = [tool.name for tool in child.tools]
-        result = child.run(args.task, metadata=_child_metadata(parent))
+        run_error: BaseException | None = None
+        run_traceback: TracebackType | None = None
+        try:
+            result = await child.run(args.task, metadata=_child_metadata(parent))
+        except BaseException as exc:
+            # Preserve cancellation and other BaseException exits while still closing the child harness below.
+            run_error = exc
+            run_traceback = exc.__traceback__
+        try:
+            await child.aclose()
+        except Exception:
+            if run_error is None:
+                raise
+        if run_error is not None:
+            raise run_error.with_traceback(run_traceback)
     except Exception as exc:
         parent.hooks.fire(AfterSubagentRunContext(
             harness=parent,
@@ -205,6 +224,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
         skills=parent.skills if inherit_tools else None,
         hooks=_child_hooks(parent, config),
         subagent_hooks={},
+        _owns_model=config is not None and config.model is not None,
     )
 
 

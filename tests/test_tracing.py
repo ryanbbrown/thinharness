@@ -42,7 +42,7 @@ def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> N
         ),
     )
 
-    result = harness.run("read hello", metadata={"conversation_id": "conv-1"})
+    result = harness.run_sync("read hello", metadata={"conversation_id": "conv-1"})
 
     assert result.text == "done"
     assert [span.name for span in tracer.spans] == [
@@ -77,7 +77,7 @@ def test_tool_tracing_marks_normalized_failures(tmp_path: Path) -> None:
         tracing=TracingOptions(tracer=tracer),
     )
 
-    harness.run("go")
+    harness.run_sync("go")
 
     tool = next(span for span in tracer.spans if span.name == "execute_tool fail")
     assert tool.status is not None
@@ -99,7 +99,7 @@ def test_subagent_tracing_nests_child_under_parent_tool_span(tmp_path: Path) -> 
     )
     harness.add_tool(create_subagent_tool(harness, []))
 
-    harness.run("delegate")
+    harness.run_sync("delegate")
 
     assert [span.name for span in tracer.spans] == [
         "invoke_agent thinharness",
@@ -131,7 +131,7 @@ def test_subagent_runs_with_tracing_disabled(tmp_path: Path) -> None:
     harness.add_tool(create_subagent_tool(harness, []))
 
     assert build_child_harness(harness, None).tracing is None
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
 
 def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -153,7 +153,7 @@ def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_pat
     )
     harness.add_tool(create_subagent_tool(harness, []))
 
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
 
     root = next(span for span in tracer.spans if span.name == "invoke_agent thinharness")
     subagent_tools = [span for span in tracer.spans if span.name == "execute_tool subagent"]
@@ -189,7 +189,7 @@ def test_unknown_named_subagent_trace_marks_failed_without_child_tool_mode(tmp_p
     )
     harness.add_tool(create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", builtin_tools=["read"])]))
 
-    assert harness.run("delegate").text == "parent done"
+    assert harness.run_sync("delegate").text == "parent done"
     subagent_tool = next(span for span in tracer.spans if span.name == "execute_tool subagent")
     assert subagent_tool.attributes["subagent.name"] == "missing"
     assert "subagent.tool_mode" not in subagent_tool.attributes
