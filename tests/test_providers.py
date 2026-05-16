@@ -18,7 +18,7 @@ from thinharness import (
     OpenRouterProvider,
     parse_model_ref,
 )
-from thinharness.providers import ProviderError, ToolOutput
+from thinharness.providers import ModelSettings, ProviderError, StructuredOutputRequest, ToolOutput
 
 
 def test_model_refs_require_provider_prefix() -> None:
@@ -58,6 +58,22 @@ async def test_openai_previous_response_id_is_session_scoped() -> None:
     assert client.payloads[0]["previous_response_id"] == "existing"
     assert client.payloads[1]["previous_response_id"] == "resp_1"
     assert "previous_response_id" not in client.payloads[2]
+
+def test_openai_native_structured_output_overrides_extra_body_text() -> None:
+    model = OpenAIResponsesModel(
+        "gpt-test",
+        provider=OpenAIProvider(api_key="key"),
+        settings=ModelSettings(extra_body={"text": {"format": {"type": "text"}}}),
+    )
+
+    payload = model.build_payload(
+        input_payload="hi",
+        tools=[],
+        structured_output=StructuredOutputRequest(name="final_result", schema={"type": "object", "properties": {}}),
+    )
+
+    assert payload["text"]["format"]["type"] == "json_schema"
+    assert payload["text"]["format"]["name"] == "final_result"
 
 async def test_anthropic_provider_model_tool_loop() -> None:
     calls = []
@@ -118,6 +134,33 @@ async def test_openrouter_provider_model_tool_loop() -> None:
         second = await session.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["function"]["name"] == "echo"
+
+async def test_openrouter_native_structured_output_overrides_extra_body_response_format() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": '{"ok":true}'}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenRouterProvider(api_key="key", http_client=client)
+        model = OpenRouterModel(
+            "openai/test",
+            provider=provider,
+            settings=ModelSettings(extra_body={"response_format": {"type": "text"}}),
+        )
+        session = model.new_session()
+
+        await session.start(
+            prompt="hi",
+            instructions="system",
+            tools=[],
+            structured_output=StructuredOutputRequest(name="final_result", schema={"type": "object", "properties": {}}),
+        )
+
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[0]["response_format"]["json_schema"]["name"] == "final_result"
 
 async def test_provider_wraps_transport_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

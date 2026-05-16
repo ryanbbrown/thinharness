@@ -401,11 +401,14 @@ async def test_external_cancellation_records_run_end_and_allows_rerun(tmp_path: 
     events = []
 
     class WaitingSession:
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
             started.set()
             await asyncio.Event().wait()
 
-        async def continue_with_tools(self, outputs, *, tools, metadata=None):
+        async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
+            raise AssertionError("should not continue")
+
+        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
             raise AssertionError("should not continue")
 
     model = ScriptedModel([

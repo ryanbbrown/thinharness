@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ class ModelTurn:
     text: str = ""
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     raw: Json = field(default_factory=dict)
+    finalized_output_mode: str | None = None
 
 
 @dataclass
@@ -41,6 +42,25 @@ class ToolOutput:
 
     call_id: str
     output: str
+
+
+@dataclass(frozen=True)
+class StructuredOutputRequest:
+    """Provider-neutral structured-output request metadata."""
+
+    name: str
+    schema: Json
+    strict: bool = True
+    description: str | None = None
+
+
+class ModelCapabilities(BaseModel):
+    """Provider capability flags used by the harness."""
+
+    supports_json_schema_output: bool = False
+    supports_tools: bool = True
+    permissive_native_override: bool = False
+    default_structured_output_mode: Literal["native", "tool", "prompted"] = "tool"
 
 
 class ModelSettings(BaseModel):
@@ -81,12 +101,31 @@ class ModelSession(Protocol):
         tools: list[Json],
         metadata: Json | None = None,
         previous_response_id: str | None = None,
+        structured_output: StructuredOutputRequest | None = None,
     ) -> ModelTurn:
         """Start a model run."""
         ...
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(
+        self,
+        outputs: list[ToolOutput],
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
         """Continue a model run with tool outputs."""
+        ...
+
+    async def continue_with_user_message(
+        self,
+        message: str,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a model run with a corrective user message."""
         ...
 
 
@@ -242,6 +281,8 @@ class OpenRouterProvider(Provider):
 class OpenAIResponsesModel:
     """Responses-like model implemented with OpenAI Responses."""
 
+    capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+
     def __init__(self, model: str, *, provider: OpenAIProvider | None = None, settings: ModelSettings | None = None) -> None:
         self.model = model
         self.provider = provider or OpenAIProvider()
@@ -256,7 +297,15 @@ class OpenAIResponsesModel:
         """Create an isolated Responses API session."""
         return OpenAIResponsesSession(self)
 
-    def build_payload(self, *, input_payload: Any, tools: list[Json], instructions: str | None = None, metadata: Json | None = None) -> Json:
+    def build_payload(
+        self,
+        *,
+        input_payload: Any,
+        tools: list[Json],
+        instructions: str | None = None,
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> Json:
         """Build a Responses API payload."""
         payload: Json = {"model": self.model, "input": input_payload, "tools": tools}
         if instructions:
@@ -266,6 +315,8 @@ class OpenAIResponsesModel:
         if self.settings.temperature is not None:
             payload["temperature"] = self.settings.temperature
         payload.update(self.settings.extra_body)
+        if structured_output is not None:
+            payload["text"] = _structured_output_to_openai_text_format(structured_output)
         return payload
 
 
@@ -284,21 +335,49 @@ class OpenAIResponsesSession:
         tools: list[Json],
         metadata: Json | None = None,
         previous_response_id: str | None = None,
+        structured_output: StructuredOutputRequest | None = None,
     ) -> ModelTurn:
         """Start a Responses API run."""
         self.previous_response_id = previous_response_id
-        payload = self.model.build_payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
+        payload = self.model.build_payload(
+            input_payload=prompt,
+            instructions=instructions,
+            tools=tools,
+            metadata=metadata,
+            structured_output=structured_output,
+        )
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(
+        self,
+        outputs: list[ToolOutput],
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
         """Continue a Responses API run with function_call_output items."""
         input_payload = [
             {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
             for output in outputs
         ]
-        payload = self.model.build_payload(input_payload=input_payload, tools=tools, metadata=metadata)
+        payload = self.model.build_payload(input_payload=input_payload, tools=tools, metadata=metadata, structured_output=structured_output)
+        if self.previous_response_id:
+            payload["previous_response_id"] = self.previous_response_id
+        return await self._complete(payload)
+
+    async def continue_with_user_message(
+        self,
+        message: str,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a Responses API run with a corrective user message."""
+        payload = self.model.build_payload(input_payload=message, tools=tools, metadata=metadata, structured_output=structured_output)
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
@@ -312,6 +391,8 @@ class OpenAIResponsesSession:
 
 class AnthropicMessagesModel:
     """Responses-like model implemented with Anthropic Messages."""
+
+    capabilities = ModelCapabilities(supports_json_schema_output=False, default_structured_output_mode="tool")
 
     def __init__(
         self,
@@ -352,20 +433,46 @@ class AnthropicMessagesSession:
         tools: list[Json],
         metadata: Json | None = None,
         previous_response_id: str | None = None,
+        structured_output: StructuredOutputRequest | None = None,
     ) -> ModelTurn:
         """Start an Anthropic Messages run."""
+        if structured_output is not None:
+            raise ProviderError("Anthropic does not support native structured output")
         if previous_response_id:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
         self.system = instructions
         self.messages = [{"role": "user", "content": prompt}]
         return await self._complete(tools=tools, metadata=metadata)
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(
+        self,
+        outputs: list[ToolOutput],
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
+        if structured_output is not None:
+            raise ProviderError("Anthropic does not support native structured output")
         self.messages.append({
             "role": "user",
             "content": [{"type": "tool_result", "tool_use_id": output.call_id, "content": output.output} for output in outputs],
         })
+        return await self._complete(tools=tools, metadata=metadata)
+
+    async def continue_with_user_message(
+        self,
+        message: str,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue an Anthropic Messages run with a corrective user message."""
+        if structured_output is not None:
+            raise ProviderError("Anthropic does not support native structured output")
+        self.messages.append({"role": "user", "content": message})
         return await self._complete(tools=tools, metadata=metadata)
 
     async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
@@ -389,6 +496,13 @@ class AnthropicMessagesSession:
 
 class OpenRouterModel:
     """Responses-like model implemented through OpenRouter chat completions."""
+
+    capabilities = ModelCapabilities(
+        supports_json_schema_output=False,
+        supports_tools=True,
+        permissive_native_override=True,
+        default_structured_output_mode="tool",
+    )
 
     def __init__(self, model: str, *, provider: OpenRouterProvider | None = None, settings: ModelSettings | None = None) -> None:
         self.model = model
@@ -420,6 +534,7 @@ class OpenRouterSession:
         tools: list[Json],
         metadata: Json | None = None,
         previous_response_id: str | None = None,
+        structured_output: StructuredOutputRequest | None = None,
     ) -> ModelTurn:
         """Start an OpenRouter run."""
         if previous_response_id:
@@ -428,15 +543,40 @@ class OpenRouterSession:
             {"role": "system", "content": instructions},
             {"role": "user", "content": prompt},
         ]
-        return await self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_tools(
+        self,
+        outputs: list[ToolOutput],
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
         """Continue an OpenRouter run with tool messages."""
         for output in outputs:
             self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": output.output})
-        return await self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
 
-    async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
+    async def continue_with_user_message(
+        self,
+        message: str,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue an OpenRouter run with a corrective user message."""
+        self.messages.append({"role": "user", "content": message})
+        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+
+    async def _complete(
+        self,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
         """Send an OpenRouter request and normalize the response."""
         payload: Json = {
             "model": self.model.model,
@@ -448,6 +588,8 @@ class OpenRouterSession:
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
         payload.update(self.model.settings.extra_body)
+        if structured_output is not None:
+            payload["response_format"] = _structured_output_to_openrouter_response_format(structured_output)
         response = await self.model.provider.create_chat_completion(payload)
         message = ((response.get("choices") or [{}])[0].get("message") or {})
         self.messages.append(message)
@@ -517,6 +659,22 @@ def _responses_tool_to_chat(tool: Json) -> Json:
             "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
         },
     }
+
+
+def _structured_output_to_openai_text_format(request: StructuredOutputRequest) -> Json:
+    """Convert neutral structured-output metadata to Responses text.format."""
+    json_schema: Json = {"name": request.name, "schema": request.schema, "strict": request.strict}
+    if request.description:
+        json_schema["description"] = request.description
+    return {"format": {"type": "json_schema", **json_schema}}
+
+
+def _structured_output_to_openrouter_response_format(request: StructuredOutputRequest) -> Json:
+    """Convert neutral structured-output metadata to OpenRouter response_format."""
+    json_schema: Json = {"name": request.name, "schema": request.schema, "strict": request.strict}
+    if request.description:
+        json_schema["description"] = request.description
+    return {"type": "json_schema", "json_schema": json_schema}
 
 
 def _extract_responses_tool_calls(response: Json) -> list[ModelToolCall]:

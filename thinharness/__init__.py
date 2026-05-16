@@ -1,6 +1,6 @@
 """Public API for the filesystem harness."""
 
-from .core import Harness, HarnessConfig, HarnessError, HarnessResult, RunUsage
+from .core import Harness, HarnessConfig, HarnessError, HarnessResult, RunUsage, UnexpectedModelBehavior
 from .hooks import (
     AfterSubagentRunContext,
     AfterToolCallContext,
@@ -15,10 +15,12 @@ from .hooks import (
     RunStartContext,
     UserPromptSubmitContext,
 )
+from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
 from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
     Model,
+    ModelCapabilities,
     ModelSession,
     ModelSettings,
     ModelToolCall,
@@ -28,6 +30,7 @@ from .providers import (
     OpenRouterModel,
     OpenRouterProvider,
     Provider,
+    StructuredOutputRequest,
     ToolOutput,
     infer_model,
     parse_model_ref,
@@ -44,6 +47,7 @@ __all__ = [
     "HarnessError",
     "HarnessResult",
     "RunUsage",
+    "UnexpectedModelBehavior",
     "AfterSubagentRunContext",
     "AfterToolCallContext",
     "BeforeSubagentRunContext",
@@ -64,6 +68,7 @@ __all__ = [
     "SubAgentConfig",
     "DEFAULT_SUBAGENT_NAME",
     "Model",
+    "ModelCapabilities",
     "ModelSettings",
     "ModelSession",
     "ModelToolCall",
@@ -73,6 +78,12 @@ __all__ = [
     "OpenRouterModel",
     "OpenRouterProvider",
     "Provider",
+    "StructuredOutputRequest",
+    "NativeOutput",
+    "OutputSchema",
+    "PromptedOutput",
+    "TextOutput",
+    "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
     "ToolResult",

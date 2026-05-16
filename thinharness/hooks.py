@@ -192,8 +192,6 @@ class HookRegistry:
     def __init__(self, hooks: list[Hook] | None = None, *, strict_hooks: bool = False) -> None:
         self.hooks = list(hooks or [])
         self.strict_hooks = strict_hooks
-        self._warned_unmatched: set[tuple[str, str]] = set()
-        self._matched_filters: set[tuple[str, str]] = set()
 
     def fire(self, ctx: HookContext) -> None:
         """Dispatch matching hooks to one mutable context."""
@@ -228,31 +226,17 @@ class HookRegistry:
                     _mark_strict_hook_exception(exc)
                     raise
 
-    def warn_unmatched_filters(self, *, tool_names: set[str], agent_names: set[str]) -> None:
-        """Warn once for filters that do not currently match registered names."""
+    def validate_filters(self, *, tool_names: set[str], agent_names: set[str]) -> None:
+        """Raise for filters that do not match registered names."""
         for hook in self.hooks:
             for name in hook.tools or []:
-                key = ("tool", name)
-                if key in self._matched_filters:
-                    continue
-                if name in tool_names:
-                    self._matched_filters.add(key)
-                    continue
                 if name not in tool_names:
-                    if key not in self._warned_unmatched:
-                        logger.warning("hook filter references unknown tool name: %s", name)
-                        self._warned_unmatched.add(key)
+                    available = ", ".join(sorted(tool_names)) or "none"
+                    raise ValueError(f"hook filter references unknown tool name: {name}; available: {available}")
             for name in hook.agents or []:
-                key = ("agent", name)
-                if key in self._matched_filters:
-                    continue
-                if name in agent_names:
-                    self._matched_filters.add(key)
-                    continue
                 if name not in agent_names:
-                    if key not in self._warned_unmatched:
-                        logger.warning("hook filter references unknown subagent name: %s", name)
-                        self._warned_unmatched.add(key)
+                    available = ", ".join(sorted(agent_names)) or "none"
+                    raise ValueError(f"hook filter references unknown subagent name: {name}; available: {available}")
 
     def _matches(self, hook: Hook, ctx: HookContext) -> bool:
         """Return whether a hook applies to a context."""

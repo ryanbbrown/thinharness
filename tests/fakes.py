@@ -187,24 +187,34 @@ class ScriptedSession:
         self.on_start = on_start
         self.on_continue = on_continue
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
         """Return the scripted start turn."""
         if self.on_start:
             self.on_start(prompt, instructions, tools, metadata, previous_response_id)
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None):
+    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
         """Return the scripted continuation turn."""
         if self.on_continue:
             self.on_continue(outputs, tools, metadata)
         return self.continue_turn
 
+    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
+        """Return the scripted continuation turn after a user message."""
+        if self.on_continue:
+            self.on_continue(message, tools, metadata)
+        return self.continue_turn
+
 class FailingSession:
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
         """Raise a provider failure from the child run."""
         raise ProviderError("child failed")
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None):
+    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
+        """Never continue after a failed start."""
+        raise AssertionError("should not continue")
+
+    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 

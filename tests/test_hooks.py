@@ -218,13 +218,16 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
         model=_fake_openai(client),
-        tools=[ToolSpec("block", "blocked", {"type": "object", "properties": {}}, lambda args: "bad"), echo_tool()],
+        tools=[
+            ToolSpec("block", "blocked", {"type": "object", "properties": {}}, lambda args: "bad"),
+            echo_tool(),
+            ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original"),
+        ],
         hooks=[
             Hook("before_tool_call", before),
             Hook("after_tool_call", after, tools=["ok"]),
         ],
     )
-    harness.add_tool(ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original"))
 
     result = harness.run_sync("go")
 
@@ -356,10 +359,13 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     events = []
 
     class BareHarnessErrorSession:
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None):
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
             return ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="ok", arguments="{}")], raw={"id": "start"})
 
-        async def continue_with_tools(self, outputs, *, tools, metadata=None):
+        async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
+            raise HarnessError("bare harness error")
+
+        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
             raise HarnessError("bare harness error")
 
     harness = Harness(

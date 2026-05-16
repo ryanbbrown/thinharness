@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -34,6 +34,9 @@ class SubAgentConfig(BaseModel):
     model: str | None = None
     max_model_requests: int | None = None
     max_tool_calls: int | None = None
+    output_type: Any | None = None
+    output_mode: Literal["auto", "native", "tool", "prompted"] = "auto"
+    output_retries: int = Field(default=1, ge=0)
 
     @model_validator(mode="after")
     def validate_subagent(self) -> SubAgentConfig:
@@ -166,15 +169,18 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
         usage=result.usage,
         parent_call_id=parent_call_id,
     ))
+    structured_output = result.output is not None
+    content = child.output_schema.dump(result.output) if structured_output and child.output_schema is not None else result.text
     return ToolResult(
         True,
-        result.text,
+        content,
         {
             "agent": agent_name,
             "inherited": inherited,
             "tool_mode": tool_mode,
             "tools": effective_tools,
             "model_requests": result.usage.model_requests,
+            "structured_output": structured_output,
         },
     )
 
@@ -203,6 +209,9 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
             if config is not None and config.max_tool_calls is not None
             else parent_config.max_tool_calls
         ),
+        "output_type": config.output_type if config is not None else None,
+        "output_mode": config.output_mode if config is not None else "auto",
+        "output_retries": config.output_retries if config is not None else 1,
         "subagents": [],
     })
     child_model = parent.model
