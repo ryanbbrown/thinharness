@@ -34,6 +34,7 @@ from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
 MAX_PARALLEL_TOOL_WORKERS = 16
+DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
 StopReason = Literal["end_turn", "provider_error", "limit_reached", "error", "cancelled_by_hook"]
 
 
@@ -483,9 +484,9 @@ class Harness:
     @staticmethod
     def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
         """Return all or the explicitly selected built-in tools."""
-        if selected_names is None:
-            return tools
         by_name = {tool.name: tool for tool in tools}
+        if selected_names is None:
+            return [tool for tool in tools if tool.name in DEFAULT_BUILTIN_TOOLS]
         selected: list[ToolSpec] = []
         seen: set[str] = set()
         for name in selected_names:

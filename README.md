@@ -8,7 +8,7 @@ The harness provides:
 - Responses-like model classes for OpenAI Responses, Anthropic Messages, and OpenRouter.
 - Provider classes for auth, base URLs, and gateway/proxy customization.
 - OpenTelemetry-compatible tracing for agent runs, model calls, and tool calls.
-- Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search`.
+- Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, and `glob`.
 - Agent-oriented code search adapted from `pgr`, backed by `rg --json`.
 - Contained path handling for structured filesystem tools.
 - Frontmatter-based skill discovery with `skill_read` and `skill_run`.
@@ -68,7 +68,7 @@ HarnessConfig(
 
 Files up to `max_read_bytes` use the fast whole-file read path, then apply `offset` and `limit` in memory. Larger files must be read with an explicit bounded range, which is streamed so skipped content is not accumulated in memory.
 
-`builtin_tools` selects harness-provided tools by lowercase name. `None` exposes all built-ins, `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Skill access is selected the same way with `skill_read` and `skill_run`.
+`builtin_tools` selects harness-provided tools by lowercase name. `None` exposes the default filesystem tools (`read`, `write`, `edit`, `search`, `list`, and `glob`), `[]` exposes none, and a list such as `["read", "search"]` exposes only those tools. Specialized tools are opt-in: add `jsonl_search` for JSONL datasets, `subagent` for delegation, and `skill_read` or `skill_run` for configured skills.
 
 Tool outputs sent back to providers are JSON strings with `ok`, `content`, and `metadata` fields. Failed tools return `ok: false` instead of raising through the model loop when the failure is part of normal tool execution, such as invalid arguments, handler exceptions, missing files, ripgrep errors, or timeouts.
 
@@ -140,7 +140,11 @@ Filters match final registered tool and subagent names exactly and case-sensitiv
 
 The implementation is a Python port of the core `pgr` search behavior. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution.
 
-`max_search_line_chars` only affects `search` match previews. `jsonl_search` uses `fields` for field-level projection and truncation, plus `max_tool_chars` for the total output size.
+`max_search_line_chars` only affects `search` match previews. `jsonl_search` is an opt-in built-in for JSONL datasets; it uses `fields` for field-level projection and truncation, plus `max_tool_chars` for the total output size.
+
+```python
+HarnessConfig(builtin_tools=["read", "search", "jsonl_search"])
+```
 
 Search ranking and scope are configurable. By default, pgr-style ranking shows likely definitions first, then source files before tests before low-priority directories such as `vendor`, `examples`, `fixtures`, and `node_modules`. Exclude globs are passed to ripgrep, so excluded paths are not searched at all.
 
@@ -154,12 +158,12 @@ HarnessConfig(
 
 ## Subagents
 
-`subagent` is a normal built-in tool. With `builtin_tools=None`, it is exposed alongside the filesystem tools and can route to the framework default subagent by omitting `agent`. The default subagent runs in fresh context and inherits the parent's current tool set except `subagent`.
+`subagent` is an opt-in built-in tool. Include it in `builtin_tools` to allow delegation. It can route to the framework default subagent by omitting `agent`; the default subagent runs in fresh context and inherits the parent's current tool set except `subagent`.
 
 ```python
 from thinharness import Harness, HarnessConfig
 
-harness = Harness(HarnessConfig(root="."))
+harness = Harness(HarnessConfig(root=".", builtin_tools=["read", "search", "glob", "subagent"]))
 result = harness.run("Use a subagent to inspect README.md, then summarize the result.")
 ```
 
@@ -192,7 +196,7 @@ HarnessConfig(
 )
 ```
 
-`builtin_tools=[]` disables all built-ins, including `subagent`. A named subagent can also set `inherit_parent_tools=True` to inherit the parent's effective tool universe minus `subagent`; otherwise it must define `builtin_tools` or `tools`.
+`builtin_tools=None` does not expose `subagent`; it must be selected explicitly. `builtin_tools=[]` disables all built-ins. A named subagent can also set `inherit_parent_tools=True` to inherit the parent's effective tool universe minus `subagent`; otherwise it must define `builtin_tools` or `tools`.
 
 Parent hooks observe the parent run and the parent-side `subagent` tool boundary. They do not automatically run inside child harnesses. Configure child hooks explicitly with `subagent_hooks`:
 

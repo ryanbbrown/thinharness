@@ -112,12 +112,23 @@ def test_builtin_tool_selection_is_explicit(tmp_path: Path) -> None:
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read", "search"]), model=_fake_openai(FakeClient()))
     assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "search"]
 
+def test_default_builtin_tools_are_minimal_filesystem_surface(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path), model=_fake_openai(FakeClient()))
+    assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "write", "edit", "search", "list", "glob"]
+
+def test_specialized_builtin_tools_are_explicit_opt_ins(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["jsonl_search", "subagent"]), model=_fake_openai(FakeClient()))
+    assert [tool["name"] for tool in harness.tool_schemas()] == ["jsonl_search", "subagent"]
+
 def test_skill_dirs_require_selected_skill_tools(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\n---\nDemo", encoding="utf-8")
 
-    harness = Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills"), model=_fake_openai(FakeClient()))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["skill_read"]),
+        model=_fake_openai(FakeClient()),
+    )
     assert "skill_read" in [tool["name"] for tool in harness.tool_schemas()]
     with pytest.raises(ValueError, match="skill_read or skill_run"):
         Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["read"]), model=_fake_openai(FakeClient()))

@@ -68,7 +68,7 @@ def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     disabled = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
     only_subagent = Harness(HarnessConfig(root=tmp_path, builtin_tools=["subagent"]), model=ScriptedModel([]))
 
-    assert "subagent" in [tool["name"] for tool in default.tool_schemas()]
+    assert "subagent" not in [tool["name"] for tool in default.tool_schemas()]
     assert "subagent" not in [tool["name"] for tool in disabled.tool_schemas()]
     assert [tool["name"] for tool in only_subagent.tool_schemas()] == ["subagent"]
     schema = only_subagent.tool_schemas()[0]["parameters"]
