@@ -53,6 +53,8 @@ HarnessConfig(
     builtin_tools=["read", "search", "skill_read"],
     skills_dir=[Path(".agents/skills"), Path("vendor/skills")],
     selected_skills=["python"],
+    max_model_requests=64,
+    max_tool_calls=200,
     max_read_chars=40_000,
     max_read_bytes=1_000_000,
     max_tool_chars=40_000,
@@ -61,6 +63,8 @@ HarnessConfig(
     write_paths=["src"],
 )
 ```
+
+`max_model_requests` counts provider calls. `max_tool_calls` counts model-requested tool calls separately, including calls blocked by hooks. A response with three tool calls uses one model request and three tool calls; a batch that would exceed `max_tool_calls` is rejected before any tool in that batch runs.
 
 Files up to `max_read_bytes` use the fast whole-file read path, then apply `offset` and `limit` in memory. Larger files must be read with an explicit bounded range, which is streamed so skipped content is not accumulated in memory.
 
@@ -88,6 +92,37 @@ harness = Harness(
     tools=[ToolSpec("echo", "Echo typed input.", EchoArgs, echo)],
 )
 ```
+
+Run results include final text, raw model responses, tool records, and usage counters:
+
+```python
+result = harness.run("Inspect the workspace.")
+print(result.usage.model_requests)
+print(result.usage.tool_calls)
+print(result.usage.cancelled_tool_calls)
+print(result.tool_call_records)
+```
+
+`usage.tool_calls` is the cheap count of requested tool calls, and it should equal `len(result.tool_call_records)` for completed runs. `tool_call_records` is the ordered audit list of each tool call and provider-facing output; hook-blocked records include `cancelled: True`, while the provider-facing output also carries `metadata.error_type == "ToolCallCancelled"`.
+
+## Hooks
+
+Hooks are synchronous runtime constructor arguments. They are not part of `HarnessConfig` or `SubAgentConfig` because handlers are live Python callables. If you pass a prebuilt `HookRegistry`, its `strict_hooks` setting is preserved; if you pass a hook list, `HarnessConfig.strict_hooks` controls whether handler exceptions are logged and swallowed or re-raised.
+
+```python
+from thinharness import BeforeToolCallContext, Harness, Hook
+
+def log_reads(ctx: BeforeToolCallContext) -> None:
+    print(ctx.call_id, ctx.tool_name, ctx.arguments)
+
+harness = Harness(
+    hooks=[Hook("before_tool_call", log_reads, tools=["read"])],
+)
+```
+
+Filters match final registered tool and subagent names exactly and case-sensitively. `tools=None` and `agents=None` mean all matching event targets. Hook handlers run in registration order; tool hooks run inside the tool execution span and may run concurrently for parallel tool batches.
+
+`user_prompt_submit` hooks can append provider-neutral context to the first model request through `ctx.additional_context` or block the run with `ctx.cancelled = True`. `before_tool_call` and `before_subagent_run` are also cancellable. `after_tool_call` may replace the output sent back to the model by assigning `ctx.output`.
 
 ## Search
 
@@ -159,6 +194,44 @@ HarnessConfig(
 
 `builtin_tools=[]` disables all built-ins, including `subagent`. A named subagent can also set `inherit_parent_tools=True` to inherit the parent's effective tool universe minus `subagent`; otherwise it must define `builtin_tools` or `tools`.
 
+Parent hooks observe the parent run and the parent-side `subagent` tool boundary. They do not automatically run inside child harnesses. Configure child hooks explicitly with `subagent_hooks`:
+
+```python
+from thinharness import Harness, HarnessConfig, Hook, SubAgentConfig
+
+def log_subagent(ctx) -> None:
+    print(ctx.agent, ctx.task)
+
+def log_child_run(ctx) -> None:
+    print("child", ctx.prompt)
+
+harness = Harness(
+    HarnessConfig(
+        subagents=[
+            SubAgentConfig(
+                name="research",
+                description="Searches and reads code.",
+                builtin_tools=["read", "search", "glob"],
+            ),
+        ],
+    ),
+    hooks=[Hook("before_subagent_run", log_subagent, agents=["research"])],
+    subagent_hooks={"research": [Hook("run_start", log_child_run)]},
+)
+```
+
+Pass the same hook in both places if you want observability at the parent boundary and inside the child run:
+
+```python
+logging_hook = Hook("run_end", lambda ctx: print(ctx.stop_reason))
+harness = Harness(
+    hooks=[logging_hook],
+    subagent_hooks={"research": [logging_hook]},
+)
+```
+
+Parent and child budgets are local to each harness run. If a child inherits `max_model_requests=64`, each child invocation receives its own fresh budget, so subagent-heavy workflows can multiply total provider calls.
+
 ## Skills
 
 Skills are Markdown files with intentionally small frontmatter. Use flat `key: value` metadata such as `name` and `description`; values may be plain strings, quoted strings, booleans, or JSON literals. Nested YAML is not supported.
@@ -196,6 +269,14 @@ Custom tools default to `sequential=False`. Set `sequential=True` on a `ToolSpec
 ## Runtime model
 
 Provider model instances keep conversation state while a run is in progress. Treat a `Harness` instance as single-run/single-thread unless you provide a stateless custom model.
+
+## Breaking changes
+
+- `max_turns` was replaced by `max_model_requests` and `max_tool_calls`.
+- `HarnessResult.tool_calls` was renamed to `tool_call_records`.
+- `HarnessResult.usage` now contains model request, tool call, and cancelled tool call counters.
+
+If you previously passed `max_turns=N`, the closest provider-call budget is `max_model_requests=N + 1`, because the old loop allowed one initial request plus up to `N` continuations.
 
 ## Development
 

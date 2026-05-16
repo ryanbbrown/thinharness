@@ -5,17 +5,29 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic.dataclasses import dataclass
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
+from .hooks import (
+    AfterToolCallContext,
+    BeforeToolCallContext,
+    Hook,
+    HookRegistry,
+    LimitReachedContext,
+    RunEndContext,
+    RunStartContext,
+    UserPromptSubmitContext,
+    apply_prompt_context,
+)
 from .providers import Model, ModelToolCall, ProviderError, ResponsesClient, ToolOutput, infer_model
 from .skills import SkillRegistry
-from .subagents import SubAgentConfig
+from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig
 from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool, object_schema
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
@@ -23,6 +35,7 @@ from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_a
 
 MAX_PARALLEL_TOOL_WORKERS = 16
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
+StopReason = Literal["end_turn", "provider_error", "limit_reached", "error", "cancelled_by_hook"]
 
 
 class HarnessConfig(BaseModel):
@@ -39,7 +52,9 @@ class HarnessConfig(BaseModel):
     selected_skills: list[str] | None = None
     builtin_tools: list[str] | None = None
     output_dir: str | Path | None = None
-    max_turns: int = 32
+    max_model_requests: int = 64
+    max_tool_calls: int | None = None
+    strict_hooks: bool = False
     request_timeout: int = 120
     max_read_chars: int = 40_000
     max_read_bytes: int = 1_000_000
@@ -70,8 +85,19 @@ class HarnessResult:
     """Final result returned by a harness run."""
 
     text: str
-    responses: list[Json] = Field(default_factory=list)
-    tool_calls: list[Json] = Field(default_factory=list)
+    responses: list[Json] = field(default_factory=list)
+    tool_call_records: list[Json] = field(default_factory=list)
+    usage: "RunUsage" = field(default_factory=lambda: RunUsage())
+    stop_reason: StopReason = "end_turn"
+
+
+@dataclass
+class RunUsage:
+    """Provider and tool usage for one harness run."""
+
+    model_requests: int = 0
+    tool_calls: int = 0
+    cancelled_tool_calls: int = 0
 
 
 class HarnessError(RuntimeError):
@@ -91,6 +117,8 @@ class Harness:
         tools: list[ToolSpec | Json] | None = None,
         tracing: TracingOptions | None = None,
         skills: SkillRegistry | None = None,
+        hooks: list[Hook] | HookRegistry | None = None,
+        subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
         if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
@@ -129,66 +157,180 @@ class Harness:
         self.tools: list[ToolSpec] = builtin
         self._validate_unique_tools(self.tools)
         self._tool_map = {tool.name: tool for tool in self.tools}
+        self.hooks = hooks if isinstance(hooks, HookRegistry) else HookRegistry(hooks, strict_hooks=self.config.strict_hooks)
+        self.subagent_hooks = subagent_hooks or {}
+        self._suppress_hook_filter_warnings = True
         for tool in tools or []:
             self.add_tool(tool)
+        self._suppress_hook_filter_warnings = False
         self._validate_skill_tool_selection()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.tracing = tracing or self.config.tracing
         self._current_run_metadata: Json | None = None
+        self._running = False
+        self._warn_unmatched_hook_filters()
 
     def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
+        if self._running:
+            raise HarnessError("Harness.run is not re-entrant")
+
         responses: list[Json] = []
-        tool_calls: list[Json] = []
+        tool_call_records: list[Json] = []
+        usage = RunUsage()
+        result: HarnessResult | None = None
+        terminal_error: BaseException | None = None
+        stop_reason: StopReason = "end_turn"
+        run_end_fired = False
         run_tracer = RunTracer(self.tracing)
-        session = self.model.new_session()
-        self._current_run_metadata = dict(metadata or {})
+        run_metadata = dict(metadata or {})
+        self._current_run_metadata = run_metadata
+        self._running = True
+
+        def fire_run_end_once() -> None:
+            """Emit run_end exactly once for this run."""
+            nonlocal run_end_fired
+            if run_end_fired:
+                return
+            run_end_fired = True
+            self.hooks.fire(RunEndContext(
+                harness=self,
+                metadata=dict(run_metadata),
+                result=result,
+                error=terminal_error,
+                stop_reason=stop_reason,
+                usage=usage,
+            ))
+
+        def check_model_limit() -> None:
+            """Raise if another provider request would exceed the configured limit."""
+            nonlocal terminal_error, stop_reason
+            if usage.model_requests < self.config.max_model_requests:
+                return
+            self.hooks.fire(LimitReachedContext(
+                harness=self,
+                metadata=dict(run_metadata),
+                limit_kind="model_requests",
+                limit_value=self.config.max_model_requests,
+                current_count=usage.model_requests,
+            ))
+            stop_reason = "limit_reached"
+            terminal_error = HarnessError(f"model did not finish within max_model_requests={self.config.max_model_requests}")
+            raise terminal_error
+
+        def check_tool_limit(batch_size: int) -> None:
+            """Raise if a requested tool batch would exceed the configured limit."""
+            nonlocal terminal_error, stop_reason
+            if self.config.max_tool_calls is None or usage.tool_calls + batch_size <= self.config.max_tool_calls:
+                return
+            self.hooks.fire(LimitReachedContext(
+                harness=self,
+                metadata=dict(run_metadata),
+                limit_kind="tool_calls",
+                limit_value=self.config.max_tool_calls,
+                current_count=self.config.max_tool_calls,
+            ))
+            stop_reason = "limit_reached"
+            terminal_error = HarnessError(f"tool calls would exceed max_tool_calls={self.config.max_tool_calls}")
+            raise terminal_error
 
         try:
-            with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
-                try:
-                    with run_tracer.model(self.model) as model_span:
+            try:
+                with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
+                    try:
+                        self.hooks.fire(RunStartContext(
+                            harness=self,
+                            metadata=dict(run_metadata),
+                            prompt=prompt,
+                            root=self.root,
+                            max_model_requests=self.config.max_model_requests,
+                            max_tool_calls=self.config.max_tool_calls,
+                        ))
+                        prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
+                        self.hooks.fire(prompt_ctx)
+                        if prompt_ctx.cancelled:
+                            reason = prompt_ctx.cancel_reason or "unspecified"
+                            stop_reason = "cancelled_by_hook"
+                            terminal_error = HarnessError(f"run blocked by hook: {reason}")
+                            raise terminal_error
+                        effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
                         try:
-                            turn = session.start(
-                                prompt=prompt,
-                                instructions=self.system_instructions(),
-                                tools=self.tool_schemas(),
-                                metadata=metadata,
-                                previous_response_id=previous_response_id,
-                            )
+                            session = self.model.new_session()
                         except Exception as exc:
-                            model_span.record_exception(exc)
-                            model_span.set_error(str(exc), type(exc).__name__)
+                            stop_reason = "error"
+                            terminal_error = exc
+                            agent_span.record_exception(exc)
+                            agent_span.set_error(str(exc), type(exc).__name__)
                             raise
-                        annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
-                    for _ in range(self.config.max_turns):
-                        responses.append(turn.raw)
-                        if not turn.tool_calls:
-                            agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
-                            return HarnessResult(text=turn.text, responses=responses, tool_calls=tool_calls)
-                        recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
-                        tool_calls.extend(recorded)
+
+                        check_model_limit()
                         with run_tracer.model(self.model) as model_span:
                             try:
-                                turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                                turn = session.start(
+                                    prompt=effective_prompt,
+                                    instructions=self.system_instructions(),
+                                    tools=self.tool_schemas(),
+                                    metadata=metadata,
+                                    previous_response_id=previous_response_id,
+                                )
+                                usage.model_requests += 1
                             except Exception as exc:
                                 model_span.record_exception(exc)
                                 model_span.set_error(str(exc), type(exc).__name__)
                                 raise
                             annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
-                except ProviderError as exc:
-                    agent_span.record_exception(exc)
-                    agent_span.set_error(str(exc), type(exc).__name__)
-                    raise HarnessError(str(exc)) from exc
-                except Exception as exc:
-                    agent_span.record_exception(exc)
-                    agent_span.set_error(str(exc), type(exc).__name__)
-                    raise
-                error = HarnessError(f"model did not finish within max_turns={self.config.max_turns}")
-                agent_span.set_error(str(error), type(error).__name__)
-                raise error
+                        while True:
+                            responses.append(turn.raw)
+                            if not turn.tool_calls:
+                                agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
+                                result = HarnessResult(
+                                    text=turn.text,
+                                    responses=responses,
+                                    tool_call_records=tool_call_records,
+                                    usage=usage,
+                                    stop_reason=stop_reason,
+                                )
+                                fire_run_end_once()
+                                return result
+                            check_tool_limit(len(turn.tool_calls))
+                            usage.tool_calls += len(turn.tool_calls)
+                            recorded, outputs = self._execute_tool_batch(run_tracer, turn.tool_calls)
+                            usage.cancelled_tool_calls += sum(1 for record in recorded if record.get("cancelled") is True)
+                            tool_call_records.extend(recorded)
+                            check_model_limit()
+                            with run_tracer.model(self.model) as model_span:
+                                try:
+                                    turn = session.continue_with_tools(outputs, tools=self.tool_schemas(), metadata=metadata)
+                                    usage.model_requests += 1
+                                except Exception as exc:
+                                    model_span.record_exception(exc)
+                                    model_span.set_error(str(exc), type(exc).__name__)
+                                    raise
+                                annotate_model_span(model_span, turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+                    except ProviderError as exc:
+                        stop_reason = "provider_error"
+                        terminal_error = HarnessError(str(exc))
+                        agent_span.record_exception(exc)
+                        agent_span.set_error(str(exc), type(exc).__name__)
+                        raise terminal_error from exc
+                    except HarnessError as exc:
+                        terminal_error = terminal_error or exc
+                        if stop_reason == "end_turn":
+                            stop_reason = "error"
+                        agent_span.record_exception(exc)
+                        agent_span.set_error(str(exc), type(exc).__name__)
+                        raise
+                    except Exception as exc:
+                        stop_reason = "error"
+                        terminal_error = exc
+                        agent_span.record_exception(exc)
+                        agent_span.set_error(str(exc), type(exc).__name__)
+                        raise
+            finally:
+                fire_run_end_once()
         finally:
             self._current_run_metadata = None
+            self._running = False
 
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
@@ -211,6 +353,8 @@ class Harness:
             raise ValueError(f"duplicate tool name: {spec.name}")
         self.tools.append(spec)
         self._tool_map = {tool.name: tool for tool in self.tools}
+        if not getattr(self, "_suppress_hook_filter_warnings", False):
+            self._warn_unmatched_hook_filters()
 
     def tool_schemas(self) -> list[Json]:
         """Return normalized Responses-style tool definitions."""
@@ -228,39 +372,76 @@ class Harness:
             return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
         return call_tool(spec, arguments or {})
 
-    def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str) -> str:
+    def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> tuple[str, bool]:
         """Execute one model tool call with tracing."""
         with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
             token = _CURRENT_TOOL_CALL.set({"call_id": call_id, "name": name})
+            cancelled = False
+            start = time.perf_counter()
             try:
-                output = self._call_output(name, arguments)
+                before = BeforeToolCallContext(
+                    harness=self,
+                    metadata=dict(self._current_run_metadata or {}),
+                    call_id=call_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    tool_spec=self._tool_map.get(str(name)),
+                    tool_index=tool_index,
+                )
+                self.hooks.fire(before)
+                if before.cancelled:
+                    cancelled = True
+                    reason = before.cancel_reason or "unspecified"
+                    output = json.dumps({
+                        "ok": False,
+                        "content": f"Tool execution blocked by hook: {reason}",
+                        "metadata": {"error_type": "ToolCallCancelled"},
+                    }, ensure_ascii=False)
+                else:
+                    output = self._call_output(name, arguments)
+                parsed = _parse_tool_output(output)
+                after = AfterToolCallContext(
+                    harness=self,
+                    metadata=dict(self._current_run_metadata or {}),
+                    call_id=call_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    original_output=output,
+                    output=output,
+                    parsed_output=parsed,
+                    duration_ms=(time.perf_counter() - start) * 1000,
+                )
+                self.hooks.fire_after_tool_call(after)
+                output = after.output
+                parsed = _parse_tool_output(output)
+                metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+                if name == "subagent":
+                    span.set_attributes({
+                        "subagent.name": metadata.get("agent"),
+                        "subagent.tool_mode": metadata.get("tool_mode"),
+                        "subagent.tools": metadata.get("tools"),
+                    })
+                if self.tracing and self.tracing.capture_tool_results:
+                    span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
+                if parsed.get("ok") is False:
+                    span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
+                return output, cancelled
             finally:
                 _CURRENT_TOOL_CALL.reset(token)
-            parsed = _parse_tool_output(output)
-            metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
-            if name == "subagent":
-                span.set_attributes({
-                    "subagent.name": metadata.get("agent"),
-                    "subagent.tool_mode": metadata.get("tool_mode"),
-                    "subagent.tools": metadata.get("tools"),
-                })
-            if self.tracing and self.tracing.capture_tool_results:
-                span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
-            if parsed.get("ok") is False:
-                span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
-            return output
 
     def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput]]:
         """Run one batch of model tool calls; preserve model order in returned outputs."""
         if self._should_run_sequentially(calls):
-            results = [self._traced_call_output(run_tracer, call.id, call.name, call.arguments) for call in calls]
+            results = [self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index) for index, call in enumerate(calls)]
         else:
             results = self._run_calls_in_threads(run_tracer, calls)
-        recorded = [
-            {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
-            for call, output in zip(calls, results)
-        ]
-        outputs = [ToolOutput(call.id, output) for call, output in zip(calls, results)]
+        recorded = []
+        for call, (output, cancelled) in zip(calls, results):
+            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
+            if cancelled:
+                record["cancelled"] = True
+            recorded.append(record)
+        outputs = [ToolOutput(call.id, output) for call, (output, _cancelled) in zip(calls, results)]
         return recorded, outputs
 
     def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
@@ -269,13 +450,13 @@ class Harness:
             return True
         return any((spec := self._tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
 
-    def _run_calls_in_threads(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[str]:
+    def _run_calls_in_threads(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[tuple[str, bool]]:
         """Execute calls concurrently while keeping the OpenTelemetry parent context."""
-        def invoke(call: ModelToolCall) -> str:
-            return self._traced_call_output(run_tracer, call.id, call.name, call.arguments)
+        def invoke(index: int, call: ModelToolCall) -> tuple[str, bool]:
+            return self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
 
         with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_WORKERS)) as executor:
-            futures = [executor.submit(contextvars.copy_context().run, invoke, call) for call in calls]
+            futures = [executor.submit(contextvars.copy_context().run, invoke, index, call) for index, call in enumerate(calls)]
             return [future.result() for future in futures]
 
     @staticmethod
@@ -294,6 +475,11 @@ class Harness:
         tool_names = {tool.name for tool in self.tools}
         if not tool_names.intersection({"skill_read", "skill_run"}):
             raise ValueError("configured skills require exposing skill_read or skill_run")
+
+    def _warn_unmatched_hook_filters(self) -> None:
+        """Warn for currently unmatched hook filter names."""
+        agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in self.config.subagents)}
+        self.hooks.warn_unmatched_filters(tool_names={tool.name for tool in self.tools}, agent_names=agent_names)
 
     @staticmethod
     def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
+from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry
 from .providers import infer_model, parse_model_ref
 from .tools import Json, ToolResult, ToolSpec
 from .tracing import TracingOptions
 
 if TYPE_CHECKING:
     from .core import Harness
+
+
+DEFAULT_SUBAGENT_NAME: Final[str] = "default"
 
 
 class SubAgentConfig(BaseModel):
@@ -27,13 +31,18 @@ class SubAgentConfig(BaseModel):
     builtin_tools: list[str] = Field(default_factory=list)
     tools: list[ToolSpec | Json] = Field(default_factory=list)
     model: str | None = None
-    max_turns: int | None = None
+    max_model_requests: int | None = None
+    max_tool_calls: int | None = None
 
     @model_validator(mode="after")
     def validate_subagent(self) -> "SubAgentConfig":
         """Validate subagent tool policy and display fields."""
         if not self.name.strip():
             raise ValueError("subagent name must not be empty")
+        if self.name == DEFAULT_SUBAGENT_NAME:
+            raise ValueError(f"{DEFAULT_SUBAGENT_NAME!r} is reserved for the framework default subagent")
+        if any(char.isspace() for char in self.name):
+            raise ValueError("subagent name must not contain whitespace")
         if not self.description.strip():
             raise ValueError("subagent description must not be empty")
         if "\n" in self.name or "\r" in self.name:
@@ -81,26 +90,49 @@ def run_subagent_tool(parent: "Harness", configs: list[SubAgentConfig], args: Su
             f"unknown subagent: {args.agent}",
             {"agent": args.agent, "available": available, "error_type": "UnknownSubAgent"},
         )
-    agent_name = config.name if config is not None else "default"
+    agent_name = config.name if config is not None else DEFAULT_SUBAGENT_NAME
     inherited = config is None or config.inherit_parent_tools
     tool_mode = "inherited" if inherited else "explicit"
     effective_tools: list[str] = []
-    try:
-        child = build_child_harness(parent, config)
-        effective_tools = [tool.name for tool in child.tools]
-        result = child.run(args.task, metadata=_child_metadata(parent))
+    parent_call_id = _parent_call_id()
+    before = BeforeSubagentRunContext(
+        harness=parent,
+        metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+        agent=agent_name,
+        task=args.task,
+        inherited=inherited,
+        tool_mode=tool_mode,
+        parent_harness=parent,
+        parent_call_id=parent_call_id,
+    )
+    parent.hooks.fire(before)
+    if before.cancelled:
+        reason = before.cancel_reason or "unspecified"
         return ToolResult(
-            True,
-            result.text,
+            False,
+            f"Subagent execution blocked by hook: {reason}",
             {
                 "agent": agent_name,
                 "inherited": inherited,
                 "tool_mode": tool_mode,
                 "tools": effective_tools,
-                "turns": len(result.responses),
+                "error_type": "SubAgentCancelled",
             },
         )
+    try:
+        child = build_child_harness(parent, config)
+        effective_tools = [tool.name for tool in child.tools]
+        result = child.run(args.task, metadata=_child_metadata(parent))
     except Exception as exc:
+        parent.hooks.fire(AfterSubagentRunContext(
+            harness=parent,
+            metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+            agent=agent_name,
+            task=args.task,
+            error=exc,
+            tools=effective_tools,
+            parent_call_id=parent_call_id,
+        ))
         return ToolResult(
             False,
             str(exc),
@@ -112,6 +144,27 @@ def run_subagent_tool(parent: "Harness", configs: list[SubAgentConfig], args: Su
                 "error_type": type(exc).__name__,
             },
         )
+    parent.hooks.fire(AfterSubagentRunContext(
+        harness=parent,
+        metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+        agent=agent_name,
+        task=args.task,
+        result=result,
+        tools=effective_tools,
+        usage=result.usage,
+        parent_call_id=parent_call_id,
+    ))
+    return ToolResult(
+        True,
+        result.text,
+        {
+            "agent": agent_name,
+            "inherited": inherited,
+            "tool_mode": tool_mode,
+            "tools": effective_tools,
+            "model_requests": result.usage.model_requests,
+        },
+    )
 
 
 def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Harness":
@@ -128,7 +181,16 @@ def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Ha
         "builtin_tools": [] if inherit_tools else config.builtin_tools,
         "skills_dir": parent_config.skills_dir if child_wants_skills and not inherit_tools else None,
         "selected_skills": parent_config.selected_skills if child_wants_skills and not inherit_tools else None,
-        "max_turns": config.max_turns if config is not None and config.max_turns is not None else parent_config.max_turns,
+        "max_model_requests": (
+            config.max_model_requests
+            if config is not None and config.max_model_requests is not None
+            else parent_config.max_model_requests
+        ),
+        "max_tool_calls": (
+            config.max_tool_calls
+            if config is not None and config.max_tool_calls is not None
+            else parent_config.max_tool_calls
+        ),
         "subagents": [],
     })
     child_model = parent.model
@@ -148,6 +210,8 @@ def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Ha
         tools=_effective_custom_tools(parent, config),
         tracing=_child_tracing(parent, config),
         skills=parent.skills if inherit_tools else None,
+        hooks=_child_hooks(parent, config),
+        subagent_hooks={},
     )
 
 
@@ -172,7 +236,7 @@ def _child_tracing(parent: "Harness", config: SubAgentConfig | None) -> TracingO
     """Return child tracing options that share the parent's tracer."""
     if parent.tracing is None:
         return None
-    name = config.name if config is not None else "default"
+    name = config.name if config is not None else DEFAULT_SUBAGENT_NAME
     return parent.tracing.model_copy(update={
         "agent_name": f"subagent.{name}",
         "agent_description": config.description if config is not None else "Framework default subagent",
@@ -190,6 +254,19 @@ def _child_metadata(parent: "Harness") -> Json:
     if tool_call := current_tool_call_context():
         metadata["parent_call_id"] = tool_call["call_id"]
     return metadata
+
+
+def _parent_call_id() -> str | None:
+    """Return the current parent tool call id when running as a tool."""
+    from .core import current_tool_call_context
+
+    tool_call = current_tool_call_context()
+    return str(tool_call["call_id"]) if tool_call else None
+
+
+def _child_hooks(parent: "Harness", config: SubAgentConfig | None) -> HookRegistry | list | None:
+    """Return the explicitly configured child hook registry."""
+    return parent.subagent_hooks.get(config.name if config is not None else DEFAULT_SUBAGENT_NAME)
 
 
 def _same_provider(parent: "Harness", child_model_ref: str) -> bool:

@@ -689,6 +689,8 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     try:
         result = spec.handler(args)
     except Exception as exc:
+        if getattr(exc, "_thinharness_strict_hook", False):
+            raise
         return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
     if isinstance(result, ToolResult):
         return result.as_json()
