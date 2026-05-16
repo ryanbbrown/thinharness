@@ -43,6 +43,7 @@ StopReason = Literal[
     "cancelled_by_hook",
     "cancelled",
     "output_validation_failed",
+    "tool_retries_exceeded",
     "unexpected_model_behavior",
 ]
 
@@ -83,6 +84,7 @@ class HarnessConfig(BaseModel):
     output_type: OutputSpec | None = None
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
+    tool_retries: int = Field(default=1, ge=0)
 
     @model_validator(mode="after")
     def validate_skills(self) -> HarnessConfig:
@@ -112,6 +114,16 @@ class RunUsage:
     tool_calls: int = 0
     cancelled_tool_calls: int = 0
     output_retries: int = 0
+    tool_retries: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ToolCallExecution:
+    """Internal per-call execution data with control-flow signals."""
+
+    output: str
+    cancelled: bool
+    retry_kind: str | None = None
 
 
 class HarnessError(RuntimeError):
@@ -130,7 +142,7 @@ class Harness:
         config: HarnessConfig | None = None,
         *,
         model: Model | None = None,
-        tools: list[ToolSpec | Json] | None = None,
+        tools: list[ToolSpec] | None = None,
         tracing: TracingOptions | None = None,
         skills: SkillRegistry | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
@@ -295,6 +307,26 @@ class Harness:
                 terminal_error = HarnessError("output validation exceeded output_retries")
                 raise terminal_error
 
+        def check_tool_retry_limits(calls: list[ModelToolCall], executions: list[ToolCallExecution]) -> None:
+            """Track retryable tool failures and raise if any tool exceeds its budget."""
+            nonlocal terminal_error, stop_reason
+            for call, execution in zip(calls, executions, strict=True):
+                if execution.retry_kind is None or execution.cancelled:
+                    continue
+                usage.tool_retries[call.name] = usage.tool_retries.get(call.name, 0) + 1
+                max_retries = self._tool_max_retries(call.name)
+                if usage.tool_retries[call.name] > max_retries:
+                    self.hooks.fire(LimitReachedContext(
+                        harness=self,
+                        metadata=dict(run_metadata),
+                        limit_kind="tool_retries",
+                        limit_value=max_retries,
+                        current_count=usage.tool_retries[call.name],
+                    ))
+                    stop_reason = "tool_retries_exceeded"
+                    terminal_error = HarnessError(f"tool {call.name!r} exceeded max_retries={max_retries}")
+                    raise terminal_error
+
         try:
             try:
                 conversation_id = str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None
@@ -418,9 +450,10 @@ class Harness:
                                 return result
                             check_tool_limit(len(turn.tool_calls))
                             usage.tool_calls += len(turn.tool_calls)
-                            recorded, outputs = await self._execute_tool_batch(run_tracer, turn.tool_calls)
-                            usage.cancelled_tool_calls += sum(1 for record in recorded if record.get("cancelled") is True)
+                            recorded, outputs, executions = await self._execute_tool_batch(run_tracer, turn.tool_calls)
+                            usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
                             tool_call_records.extend(recorded)
+                            check_tool_retry_limits(turn.tool_calls, executions)
                             tool_outputs = outputs
                             turn = await advance_model(lambda tool_outputs=tool_outputs: session.continue_with_tools(
                                 tool_outputs,
@@ -504,23 +537,9 @@ class Harness:
         """Close owned async resources when leaving a lifecycle."""
         await self.aclose()
 
-    def add_tool(self, tool: ToolSpec | Json) -> None:
-        """Register a custom tool using a ToolSpec or API-style dict."""
-        if isinstance(tool, dict):
-            parameters = tool.get("args_model") or tool.get("parameters") or {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            }
-            spec = ToolSpec(
-                name=str(tool["name"]),
-                description=str(tool.get("description", "")),
-                parameters=parameters,
-                handler=tool["handler"],
-                sequential=bool(tool.get("sequential", False)),
-            )
-        else:
-            spec = tool
+    def add_tool(self, tool: ToolSpec) -> None:
+        """Register a custom tool using a ToolSpec."""
+        spec = tool
         if not callable(spec.handler):
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
         if spec.name == "subagent" and spec.metadata.get("framework_tool") != "subagent":
@@ -556,7 +575,7 @@ class Harness:
             return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
         return await _invoke_tool(spec, arguments or {})
 
-    async def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> tuple[str, bool]:
+    async def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> ToolCallExecution:
         """Execute one model tool call with tracing."""
         with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
             token = _CURRENT_TOOL_CALL.set({"call_id": call_id, "name": name})
@@ -584,6 +603,7 @@ class Harness:
                 else:
                     output = await self._call_output(name, arguments)
                 parsed = _parse_tool_output(output)
+                retry_kind = None if cancelled else _tool_retry_kind(parsed)
                 after = AfterToolCallContext(
                     harness=self,
                     metadata=dict(self._current_run_metadata or {}),
@@ -607,13 +627,15 @@ class Harness:
                     })
                 if self.tracing and self.tracing.capture_tool_results:
                     span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
-                if parsed.get("ok") is False:
+                if retry_kind is not None:
+                    span.set_error(f'Tool "{name}" failed', retry_kind)
+                elif parsed.get("ok") is False:
                     span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
-                return output, cancelled
+                return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind)
             finally:
                 _CURRENT_TOOL_CALL.reset(token)
 
-    async def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput]]:
+    async def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput], list[ToolCallExecution]]:
         """Run one batch of model tool calls; preserve model order in returned outputs."""
         if self._should_run_sequentially(calls):
             results = [
@@ -623,13 +645,13 @@ class Harness:
         else:
             results = await self._run_calls_concurrently(run_tracer, calls)
         recorded = []
-        for call, (output, cancelled) in zip(calls, results, strict=True):
-            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
-            if cancelled:
+        for call, execution in zip(calls, results, strict=True):
+            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": execution.output}
+            if execution.cancelled:
                 record["cancelled"] = True
             recorded.append(record)
-        outputs = [ToolOutput(call.id, output) for call, (output, _cancelled) in zip(calls, results, strict=True)]
-        return recorded, outputs
+        outputs = [ToolOutput(call.id, execution.output) for call, execution in zip(calls, results, strict=True)]
+        return recorded, outputs, results
 
     def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
         """Decide whether the batch must execute serially."""
@@ -637,18 +659,18 @@ class Harness:
             return True
         return any((spec := self._tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
 
-    async def _run_calls_concurrently(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[tuple[str, bool]]:
+    async def _run_calls_concurrently(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[ToolCallExecution]:
         """Execute calls concurrently while preserving model request order."""
         sem = asyncio.Semaphore(MAX_PARALLEL_TOOL_WORKERS)
 
-        async def invoke(index: int, call: ModelToolCall) -> tuple[str, bool]:
+        async def invoke(index: int, call: ModelToolCall) -> ToolCallExecution:
             """Invoke one traced tool call under the shared concurrency limit."""
             async with sem:
                 return await self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
 
         tasks = [asyncio.create_task(invoke(index, call)) for index, call in enumerate(calls)]
         task_index = {task: index for index, task in enumerate(tasks)}
-        results: list[tuple[str, bool] | None] = [None] * len(tasks)
+        results: list[ToolCallExecution | None] = [None] * len(tasks)
         pending = set(tasks)
         try:
             while pending:
@@ -667,6 +689,13 @@ class Harness:
             await asyncio.gather(*pending, return_exceptions=True)
             raise
         return [result for result in results if result is not None]
+
+    def _tool_max_retries(self, name: str) -> int:
+        """Return the retry budget for one tool name."""
+        spec = self._tool_map.get(str(name))
+        if spec is not None and spec.max_retries is not None:
+            return spec.max_retries
+        return self.config.tool_retries
 
     @staticmethod
     def _validate_unique_tools(tools: list[ToolSpec]) -> None:
@@ -766,6 +795,15 @@ def _parse_tool_output(output: str) -> Json:
     except json.JSONDecodeError:
         return {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
     return parsed if isinstance(parsed, dict) else {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
+
+
+def _tool_retry_kind(parsed: Json) -> str | None:
+    """Return the retry error type from a parsed tool output envelope."""
+    metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+    error_type = metadata.get("error_type")
+    if metadata.get("retry") is True and isinstance(error_type, str):
+        return error_type
+    return None
 
 
 def _structured_retry_message(error: str, instruction: str) -> str:

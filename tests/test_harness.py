@@ -108,7 +108,9 @@ def test_custom_tool_can_use_pydantic_args_model(tmp_path: Path) -> None:
     assert json.loads(output["content"]) == {"echo": "okok"}
     invalid = tool_output(call_tool(custom, '{"value":"ok","count":0}'))
     assert invalid["ok"] is False
-    assert "invalid arguments" in invalid["content"]
+    assert invalid["metadata"]["error_type"] == "ValidationError"
+    assert invalid["metadata"]["retry"] is True
+    assert "Invalid arguments" in invalid["content"]
 
 def test_custom_tool_invalid_json_is_structured(tmp_path: Path) -> None:
     custom = ToolSpec("echo", "Echo input", {"type": "object", "properties": {}}, lambda args: "ok")
@@ -116,6 +118,8 @@ def test_custom_tool_invalid_json_is_structured(tmp_path: Path) -> None:
     output = json.loads(call_tool(custom, "{bad json"))
 
     assert output["ok"] is False
+    assert output["metadata"]["error_type"] == "InvalidArguments"
+    assert output["metadata"]["retry"] is True
     assert "invalid JSON arguments" in output["content"]
 
 def test_builtin_tool_selection_is_explicit(tmp_path: Path) -> None:
@@ -181,13 +185,7 @@ def test_selected_skills_without_skills_dir_fails() -> None:
 
 def test_child_harness_tool_surfaces_follow_subagent_policy(tmp_path: Path) -> None:
     parent_echo = echo_tool()
-    explicit_tool = {
-        "name": "explicit",
-        "description": "Explicit sequential tool",
-        "parameters": {"type": "object", "properties": {}},
-        "handler": lambda args: "ok",
-        "sequential": True,
-    }
+    explicit_tool = ToolSpec("explicit", "Explicit sequential tool", {"type": "object", "properties": {}}, lambda args: "ok", sequential=True)
     parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[parent_echo])
     parent.add_tool(create_subagent_tool(parent, []))
 

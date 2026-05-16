@@ -181,7 +181,7 @@ class LimitReachedContext(HookContext):
     """Context for a hard run limit being reached."""
 
     event: ClassVar[HookEvent] = "limit_reached"
-    limit_kind: Literal["model_requests", "tool_calls"]
+    limit_kind: Literal["model_requests", "tool_calls", "tool_retries"]
     limit_value: int
     current_count: int
 

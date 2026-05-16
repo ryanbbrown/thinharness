@@ -41,19 +41,13 @@ class ClosingProvider:
         self.closed += 1
 
 
-def test_subagent_config_validation_accepts_tool_specs_and_dict_tools() -> None:
+def test_subagent_config_validation_accepts_tool_specs() -> None:
     spec = echo_tool()
-    dict_tool = {
-        "name": "dict_echo",
-        "description": "Dict echo",
-        "parameters": {"type": "object", "properties": {}},
-        "handler": lambda args: "ok",
-        "sequential": True,
-    }
-    config = SubAgentConfig(name="research.1", description="Research helper.", tools=[spec, dict_tool])
+    sequential_tool = ToolSpec("sequential_echo", "Sequential echo", {"type": "object", "properties": {}}, lambda args: "ok", sequential=True)
+    config = SubAgentConfig(name="research.1", description="Research helper.", tools=[spec, sequential_tool])
     inherited = SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True)
 
-    assert config.tools == [spec, dict_tool]
+    assert config.tools == [spec, sequential_tool]
     assert inherited.inherit_parent_tools is True
     with pytest.raises(ValueError, match="inherit_parent_tools"):
         SubAgentConfig(name="bad", description="Bad helper.", inherit_parent_tools=True, builtin_tools=["read"])
@@ -332,7 +326,8 @@ def test_blank_subagent_name_is_normal_argument_validation_error(tmp_path: Path)
     output = tool_output(call_tool(tool, '{"task":"x","agent":""}'))
 
     assert output["ok"] is False
-    assert "invalid arguments" in output["content"]
+    assert output["metadata"]["error_type"] == "ValidationError"
+    assert "Invalid arguments" in output["content"]
 
 def test_subagent_tool_name_is_reserved_for_custom_tools(tmp_path: Path) -> None:
     custom = ToolSpec("subagent", "Not the framework tool.", {"type": "object", "properties": {}}, lambda args: "bad")

@@ -30,13 +30,14 @@ class SubAgentConfig(BaseModel):
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     inherit_parent_tools: bool = False
     builtin_tools: list[str] = Field(default_factory=list)
-    tools: list[ToolSpec | Json] = Field(default_factory=list)
+    tools: list[ToolSpec] = Field(default_factory=list)
     model: str | None = None
     max_model_requests: int | None = None
     max_tool_calls: int | None = None
     output_type: Any | None = None
     output_mode: Literal["auto", "native", "tool", "prompted"] = "auto"
     output_retries: int = Field(default=1, ge=0)
+    tool_retries: int = Field(default=1, ge=0)
 
     @model_validator(mode="after")
     def validate_subagent(self) -> SubAgentConfig:
@@ -212,6 +213,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
         "output_type": config.output_type if config is not None else None,
         "output_mode": config.output_mode if config is not None else "auto",
         "output_retries": config.output_retries if config is not None else 1,
+        "tool_retries": config.tool_retries if config is not None else parent_config.tool_retries,
         "subagents": [],
     })
     child_model = parent.model
@@ -247,7 +249,7 @@ def _select_config(configs: list[SubAgentConfig], agent: str | None) -> SubAgent
     return None
 
 
-def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> list[ToolSpec | Json]:
+def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> list[ToolSpec]:
     """Return custom tools to register on the child harness."""
     if config is None or config.inherit_parent_tools:
         return [tool for tool in parent.tools if tool.name != "subagent"]
@@ -318,8 +320,6 @@ def _subagent_tool_description(configs: list[SubAgentConfig]) -> str:
     return "\n".join(lines)
 
 
-def _tool_name(tool: ToolSpec | Json) -> str:
-    """Return a tool name from a ToolSpec or dict-style config."""
-    if isinstance(tool, ToolSpec):
-        return tool.name
-    return str(tool.get("name", ""))
+def _tool_name(tool: ToolSpec) -> str:
+    """Return a tool name from a ToolSpec."""
+    return tool.name

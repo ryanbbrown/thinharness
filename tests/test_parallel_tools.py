@@ -161,20 +161,20 @@ def test_truncate_spill_files_do_not_collide_under_parallel_reads(tmp_path: Path
     assert saved_paths[0] != saved_paths[1]
     assert all(Path(path).exists() for path in saved_paths)
 
-def test_dict_tool_can_opt_into_sequential(tmp_path: Path) -> None:
+def test_tool_spec_can_opt_into_sequential(tmp_path: Path) -> None:
     delay = 0.15
-    sequential_dict_tool = {
-        "name": "slow_b",
-        "description": "Slow, sequential",
-        "parameters": {"type": "object", "properties": {}},
-        "handler": lambda args: (time.sleep(delay), "slow_b")[1],
-        "sequential": True,
-    }
+    sequential_tool = ToolSpec(
+        "slow_b",
+        "Slow, sequential",
+        {"type": "object", "properties": {}},
+        lambda args: (time.sleep(delay), "slow_b")[1],
+        sequential=True,
+    )
     client = MultiCallClient([("slow_a", "{}"), ("slow_b", "{}")])
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
         model=_fake_openai(client),
-        tools=[slow_tool("slow_a", delay), sequential_dict_tool],
+        tools=[slow_tool("slow_a", delay), sequential_tool],
     )
 
     start = time.monotonic()

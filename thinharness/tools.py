@@ -53,6 +53,12 @@ class ToolSpec:
     handler: ToolHandler
     sequential: bool = False
     metadata: Json = field(default_factory=dict)
+    max_retries: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate per-tool retry configuration."""
+        if self.max_retries is not None and self.max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
 
     def response_tool(self) -> Json:
         """Return an OpenAI Responses API function tool definition."""
@@ -87,6 +93,14 @@ class ToolResult:
         )
 
 
+class ModelRetry(Exception):
+    """Raised by a tool handler to ask the model to try again with a hint message."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
 @dataclass
 class SearchMatch:
     """A single match extracted from rg --json output."""
@@ -114,6 +128,10 @@ class AllowedPath:
 
 class PathValidationError(ValueError):
     """Raised when a tool path or selector escapes its allowed policy."""
+
+
+class ArgumentShapeError(ValueError):
+    """Raised when model-provided tool arguments are not a JSON object."""
 
 
 class PathPolicy:
@@ -681,14 +699,22 @@ def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> str | Any:
     """Parse and validate raw tool arguments."""
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else raw_args
+        if not isinstance(args, dict):
+            raise ArgumentShapeError("tool arguments must be a JSON object")
     except json.JSONDecodeError as exc:
-        return ToolResult(False, f"invalid JSON arguments: {exc}").as_json()
-    if not isinstance(args, dict):
-        return ToolResult(False, "tool arguments must be a JSON object").as_json()
-    try:
-        return spec.parse_args(args)
-    except ValidationError as exc:
-        return ToolResult(False, f"invalid arguments: {exc}").as_json()
+        return _retry_envelope("InvalidArguments", f"invalid JSON arguments: {exc}")
+    except ArgumentShapeError as exc:
+        return _retry_envelope("InvalidArguments", str(exc))
+    if _is_args_model(spec.parameters):
+        try:
+            return spec.parameters.model_validate(args)
+        except ValidationError as exc:
+            return _retry_envelope(
+                "ValidationError",
+                _format_validation_errors(exc),
+                errors=exc.errors(include_url=False, include_context=False),
+            )
+    return args
 
 
 def _normalize_result(result: Any) -> str:
@@ -700,6 +726,42 @@ def _normalize_result(result: Any) -> str:
     return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str)).as_json()
 
 
+def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> str:
+    """Return a failed tool envelope that asks the model to retry."""
+    metadata: Json = {"error_type": error_type, "retry": True}
+    if errors is not None:
+        metadata["errors"] = errors
+    return ToolResult(False, message, metadata).as_json()
+
+
+def _format_validation_errors(error: ValidationError) -> str:
+    """Format Pydantic validation errors as compact retry guidance."""
+    lines = ["Invalid arguments:"]
+    for item in error.errors():
+        location = _format_error_location(item.get("loc", ()))
+        message = item.get("msg", "Invalid value")
+        if item.get("type") != "missing" and "input" in item:
+            message = f"{message} (got {_format_error_input(item['input'])})"
+        lines.append(f"- {location}: {message}")
+    return "\n".join(lines)
+
+
+def _format_error_location(location: Any) -> str:
+    """Format a Pydantic error location as a dotted path."""
+    if not location:
+        return "<root>"
+    if not isinstance(location, tuple):
+        location = (location,)
+    return ".".join(str(part) for part in location)
+
+
+def _format_error_input(value: Any) -> str:
+    """Return a small display value for invalid Pydantic input."""
+    if isinstance(value, str):
+        return repr(value)
+    return type(value).__name__
+
+
 def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     """Invoke a sync tool handler and normalize the result to structured JSON."""
     args = _prepare_args(spec, raw_args)
@@ -707,6 +769,8 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
         return args
     try:
         result = spec.handler(args)
+    except ModelRetry as exc:
+        return _retry_envelope("ModelRetry", exc.message)
     except Exception as exc:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
@@ -740,6 +804,8 @@ async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> str:
                 raise
         if inspect.isawaitable(result):
             result = await result
+    except ModelRetry as exc:
+        return _retry_envelope("ModelRetry", exc.message)
     except Exception as exc:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise

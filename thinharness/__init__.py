@@ -37,7 +37,7 @@ from .providers import (
 )
 from .skills import Skill, SkillRegistry
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
-from .tools import FileTools, PathPolicy, PathValidationError, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
+from .tools import FileTools, ModelRetry, PathPolicy, PathValidationError, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
 __all__ = [
@@ -47,6 +47,7 @@ __all__ = [
     "HarnessError",
     "HarnessResult",
     "RunUsage",
+    "ModelRetry",
     "UnexpectedModelBehavior",
     "AfterSubagentRunContext",
     "AfterToolCallContext",
