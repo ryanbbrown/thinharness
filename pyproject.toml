@@ -16,15 +16,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.14"]
 tracing = [
     "opentelemetry-api>=1.24",
     "opentelemetry-sdk>=1.24",
     "opentelemetry-exporter-otlp-proto-http>=1.24",
 ]
 
+[tool.setuptools.package-data]
+thinharness = ["py.typed"]
+
 [tool.setuptools.packages.find]
 include = ["thinharness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160
+extend-exclude = ["vendor", "experiments", ".context"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

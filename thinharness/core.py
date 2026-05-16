@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .hooks import (
+    _CURRENT_TOOL_CALL,
     AfterToolCallContext,
     BeforeToolCallContext,
     Hook,
@@ -25,16 +26,14 @@ from .hooks import (
     UserPromptSubmitContext,
     apply_prompt_context,
 )
-from .providers import Model, ModelToolCall, ProviderError, ResponsesClient, ToolOutput, infer_model
+from .providers import Model, ModelToolCall, ProviderError, ToolOutput, infer_model
 from .skills import SkillRegistry
-from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig
-from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool, object_schema
+from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
+from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, call_tool
 from .tools import builtin_tools as make_builtin_tools
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
-
 MAX_PARALLEL_TOOL_WORKERS = 16
-_CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
 StopReason = Literal["end_turn", "provider_error", "limit_reached", "error", "cancelled_by_hook"]
 
 
@@ -73,7 +72,7 @@ class HarnessConfig(BaseModel):
     subagents: list[SubAgentConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_skills(self) -> "HarnessConfig":
+    def validate_skills(self) -> HarnessConfig:
         """Validate explicit skill discovery settings."""
         if self.selected_skills is not None and self.skills_dir is None:
             raise ValueError("selected_skills requires skills_dir")
@@ -87,7 +86,7 @@ class HarnessResult:
     text: str
     responses: list[Json] = field(default_factory=list)
     tool_call_records: list[Json] = field(default_factory=list)
-    usage: "RunUsage" = field(default_factory=lambda: RunUsage())
+    usage: RunUsage = field(default_factory=lambda: RunUsage())
     stop_reason: StopReason = "end_turn"
 
 
@@ -112,8 +111,6 @@ class Harness:
         config: HarnessConfig | None = None,
         *,
         model: Model | None = None,
-        adapter: Model | None = None,
-        client: ResponsesClient | Any | None = None,
         tools: list[ToolSpec | Json] | None = None,
         tracing: TracingOptions | None = None,
         skills: SkillRegistry | None = None,
@@ -126,14 +123,13 @@ class Harness:
         self.root = Path(self.config.root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
-        self.model = model or adapter or infer_model(
+        self.model = model or infer_model(
             self.model_ref,
             api_key=self.config.api_key,
             base_url=self.config.base_url,
             timeout=self.config.request_timeout,
             temperature=self.config.temperature,
             extra_body=self.config.extra_body,
-            client=client,
         )
         self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         filesystem_tools = make_builtin_tools(
@@ -150,8 +146,6 @@ class Harness:
             read_paths=self.config.read_paths,
             write_paths=self.config.write_paths,
         )
-        from .subagents import create_subagent_tool
-
         builtin_candidates = [*filesystem_tools, *self.skills.specs(), create_subagent_tool(self, self.config.subagents)]
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
         self.tools: list[ToolSpec] = builtin
@@ -228,7 +222,7 @@ class Harness:
                 metadata=dict(run_metadata),
                 limit_kind="tool_calls",
                 limit_value=self.config.max_tool_calls,
-                current_count=self.config.max_tool_calls,
+                current_count=usage.tool_calls + batch_size,
             ))
             stop_reason = "limit_reached"
             terminal_error = HarnessError(f"tool calls would exceed max_tool_calls={self.config.max_tool_calls}")
@@ -236,7 +230,8 @@ class Harness:
 
         try:
             try:
-                with run_tracer.agent(conversation_id=str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None) as agent_span:
+                conversation_id = str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None
+                with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     try:
                         self.hooks.fire(RunStartContext(
                             harness=self,
@@ -335,7 +330,11 @@ class Harness:
     def add_tool(self, tool: ToolSpec | Json) -> None:
         """Register a custom tool using a ToolSpec or API-style dict."""
         if isinstance(tool, dict):
-            parameters = tool.get("args_model") or tool.get("parameters") or object_schema({})
+            parameters = tool.get("args_model") or tool.get("parameters") or {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
             spec = ToolSpec(
                 name=str(tool["name"]),
                 description=str(tool.get("description", "")),
@@ -352,7 +351,7 @@ class Harness:
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
         self.tools.append(spec)
-        self._tool_map = {tool.name: tool for tool in self.tools}
+        self._tool_map[spec.name] = spec
         if not getattr(self, "_suppress_hook_filter_warnings", False):
             self._warn_unmatched_hook_filters()
 
@@ -436,12 +435,12 @@ class Harness:
         else:
             results = self._run_calls_in_threads(run_tracer, calls)
         recorded = []
-        for call, (output, cancelled) in zip(calls, results):
+        for call, (output, cancelled) in zip(calls, results, strict=True):
             record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": output}
             if cancelled:
                 record["cancelled"] = True
             recorded.append(record)
-        outputs = [ToolOutput(call.id, output) for call, (output, _cancelled) in zip(calls, results)]
+        outputs = [ToolOutput(call.id, output) for call, (output, _cancelled) in zip(calls, results, strict=True)]
         return recorded, outputs
 
     def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
@@ -489,8 +488,7 @@ class Harness:
         by_name = {tool.name: tool for tool in tools}
         selected: list[ToolSpec] = []
         seen: set[str] = set()
-        for raw_name in selected_names:
-            name = raw_name.lower()
+        for name in selected_names:
             if name in seen:
                 raise ValueError(f"duplicate selected builtin tool: {name}")
             if name not in by_name:
@@ -499,11 +497,6 @@ class Harness:
             selected.append(by_name[name])
             seen.add(name)
         return selected
-
-
-def current_tool_call_context() -> Json | None:
-    """Return the current tool call context for nested tool handlers."""
-    return _CURRENT_TOOL_CALL.get()
 
 
 def _parse_tool_output(output: str) -> Json:

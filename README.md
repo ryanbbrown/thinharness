@@ -6,7 +6,7 @@ The harness provides:
 
 - A small provider-agnostic tool loop.
 - Responses-like model classes for OpenAI Responses, Anthropic Messages, and OpenRouter.
-- Provider classes for auth, base URLs, client injection, and gateway/proxy customization.
+- Provider classes for auth, base URLs, and gateway/proxy customization.
 - OpenTelemetry-compatible tracing for agent runs, model calls, and tool calls.
 - Built-in filesystem tools: `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search`.
 - Agent-oriented code search adapted from `pgr`, backed by `rg --json`.

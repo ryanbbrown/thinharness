@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from pydantic.dataclasses import dataclass
 
 from .tools import Json
 
@@ -31,7 +32,7 @@ class TracingOptions(BaseModel):
     capture_tool_results: bool = False
 
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+@dataclass
 class OtlpTracing:
     """Handle returned by create_otlp_tracing."""
 
@@ -78,7 +79,7 @@ class RunTracer:
         self.options = options
 
     @contextmanager
-    def agent(self, *, conversation_id: str | None = None) -> Iterator["_SpanAdapter"]:
+    def agent(self, *, conversation_id: str | None = None) -> Iterator[_SpanAdapter]:
         """Trace a harness run."""
         options = self.options
         name = options.agent_name if options else "thinharness"
@@ -92,7 +93,7 @@ class RunTracer:
             yield span
 
     @contextmanager
-    def model(self, model: Any) -> Iterator["_SpanAdapter"]:
+    def model(self, model: Any) -> Iterator[_SpanAdapter]:
         """Trace one model request."""
         model_name = str(getattr(model, "model", "unknown") or "unknown")
         provider_name = getattr(getattr(model, "provider", None), "name", None)
@@ -105,7 +106,7 @@ class RunTracer:
             yield span
 
     @contextmanager
-    def tool(self, *, tool_name: str, call_id: str, arguments: str) -> Iterator["_SpanAdapter"]:
+    def tool(self, *, tool_name: str, call_id: str, arguments: str) -> Iterator[_SpanAdapter]:
         """Trace one local tool execution."""
         options = self.options
         attributes = {
@@ -119,7 +120,7 @@ class RunTracer:
             yield span
 
     @contextmanager
-    def _span(self, name: str, kind: str, attributes: Json) -> Iterator["_SpanAdapter"]:
+    def _span(self, name: str, kind: str, attributes: Json) -> Iterator[_SpanAdapter]:
         """Start an OpenTelemetry span or a no-op span."""
         if not self.options:
             yield _SpanAdapter(_NoopSpan())

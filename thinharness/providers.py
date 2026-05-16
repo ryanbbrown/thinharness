@@ -6,13 +6,12 @@ import json
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
-from pydantic.dataclasses import dataclass
 
 from .tools import Json
-
 
 # =============================================================================
 # Normalized model types
@@ -33,8 +32,8 @@ class ModelTurn:
     """A normalized model response turn."""
 
     text: str = ""
-    tool_calls: list[ModelToolCall] = Field(default_factory=list)
-    raw: Json = Field(default_factory=dict)
+    tool_calls: list[ModelToolCall] = field(default_factory=list)
+    raw: Json = field(default_factory=dict)
 
 
 @dataclass
@@ -58,7 +57,7 @@ class Model(Protocol):
     model: str
 
     @property
-    def provider(self) -> "Provider":
+    def provider(self) -> Provider:
         """Return the model provider."""
         ...
 
@@ -67,7 +66,7 @@ class Model(Protocol):
         """Return the model provider API key."""
         ...
 
-    def new_session(self) -> "ModelSession":
+    def new_session(self) -> ModelSession:
         """Create isolated state for one model run."""
         ...
 
@@ -101,18 +100,6 @@ class ProviderError(RuntimeError):
 # =============================================================================
 
 
-class ResponsesClient:
-    """Tiny stdlib client for OpenAI-compatible /responses endpoints."""
-
-    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
-        self.provider = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout)
-        self.api_key = self.provider.api_key
-
-    def create(self, payload: Json) -> Json:
-        """Create a response through the configured endpoint."""
-        return self.provider.post_json("/responses", payload)
-
-
 class Provider:
     """Provider transport, auth, and endpoint configuration."""
 
@@ -143,23 +130,11 @@ class OpenAIProvider(Provider):
     api_key_env = "OPENAI_API_KEY"
     default_base_url = "https://api.openai.com/v1"
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        timeout: int = 120,
-        client: Any | None = None,
-    ) -> None:
+    def __init__(self, *, api_key: str | None = None, base_url: str | None = None, timeout: int = 120) -> None:
         super().__init__(api_key=api_key, base_url=base_url or os.getenv("OPENAI_BASE_URL"), timeout=timeout)
-        self.client = client
-        if not self.api_key and client:
-            self.api_key = getattr(client, "api_key", None)
 
     def create_response(self, payload: Json) -> Json:
         """Create a Responses API response."""
-        if self.client:
-            return self.client.create(payload)
         return self.post_json("/responses", payload)
 
 
@@ -230,7 +205,7 @@ class OpenAIResponsesModel:
         """Create an isolated Responses API session."""
         return OpenAIResponsesSession(self)
 
-    def _payload(self, *, input_payload: Any, tools: list[Json], instructions: str | None = None, metadata: Json | None = None) -> Json:
+    def build_payload(self, *, input_payload: Any, tools: list[Json], instructions: str | None = None, metadata: Json | None = None) -> Json:
         """Build a Responses API payload."""
         payload: Json = {"model": self.model, "input": input_payload, "tools": tools}
         if instructions:
@@ -261,7 +236,7 @@ class OpenAIResponsesSession:
     ) -> ModelTurn:
         """Start a Responses API run."""
         self.previous_response_id = previous_response_id
-        payload = self.model._payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
+        payload = self.model.build_payload(input_payload=prompt, instructions=instructions, tools=tools, metadata=metadata)
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return self._complete(payload)
@@ -272,7 +247,7 @@ class OpenAIResponsesSession:
             {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
             for output in outputs
         ]
-        payload = self.model._payload(input_payload=input_payload, tools=tools, metadata=metadata)
+        payload = self.model.build_payload(input_payload=input_payload, tools=tools, metadata=metadata)
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return self._complete(payload)
@@ -441,13 +416,12 @@ def infer_model(
     timeout: int = 120,
     temperature: float | None = None,
     extra_body: Json | None = None,
-    client: Any | None = None,
 ) -> Model:
     """Create a model from a provider:model reference."""
     provider_name, model_name = parse_model_ref(model_ref)
     settings = ModelSettings(temperature=temperature, extra_body=extra_body or {})
     if provider_name == "openai":
-        provider = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout, client=client)
+        provider = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout)
         return OpenAIResponsesModel(model_name, provider=provider, settings=settings)
     if provider_name == "anthropic":
         provider = AnthropicProvider(api_key=api_key, base_url=base_url, timeout=timeout)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Annotated, Any, Callable, Iterator, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -16,11 +17,11 @@ from .tools import (
     StrictArgs,
     ToolResult,
     ToolSpec,
-    coerce_args,
-    validate_glob_selector,
     _path_error,
     _rg_error_message,
     _timeout_error_message,
+    coerce_args,
+    validate_glob_selector,
 )
 
 
@@ -38,7 +39,10 @@ class JsonlSearchArgs(StrictArgs):
 
     query: str = Field(default="", description="Optional ripgrep query. If omitted, scan all rows in scope.")
     path_glob: str = Field(default="**/*.jsonl", description="Glob filter; defaults to **/*.jsonl.")
-    fields: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict, description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.")
+    fields: dict[str, Annotated[int, Field(ge=0)]] = Field(
+        default_factory=dict,
+        description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
+    )
     where: list[JsonlWhereFilter] = Field(default_factory=list, description="Filters AND-ed together.")
     max_files: int = Field(default=10, ge=1)
     max_matches_per_file: int = Field(default=3, ge=1)

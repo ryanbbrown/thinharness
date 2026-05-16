@@ -6,13 +6,13 @@ import json
 import os
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic.dataclasses import dataclass
 
-from .tools import Json, PathValidationError, ToolResult, ToolSpec, coerce_args, contained_path, _path_error, _timeout_error_message
+from .tools import Json, PathValidationError, ToolResult, ToolSpec, _path_error, _timeout_error_message, coerce_args, contained_path
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,13 @@ class SkillRegistry:
             return []
         return [
             ToolSpec("skill_read", "Read a skill's SKILL.md or another contained file, with a file tree.", SkillReadArgs, self.skill_read),
-            ToolSpec("skill_run", "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.", SkillRunArgs, self.skill_run, sequential=True),
+            ToolSpec(
+                "skill_run",
+                "Run a script inside a skill directory with JSON-array args. No sandboxing is applied.",
+                SkillRunArgs,
+                self.skill_run,
+                sequential=True,
+            ),
         ]
 
     def skill_read(self, args: SkillReadArgs | Json) -> ToolResult:

@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from .tools import Json, ToolSpec
+
+_CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
+
+
+def current_tool_call_context() -> Json | None:
+    """Return the current tool call context for nested tool handlers."""
+    return _CURRENT_TOOL_CALL.get()
 
 if TYPE_CHECKING:
     from .core import Harness, HarnessResult, RunUsage, StopReason
@@ -73,7 +82,7 @@ class HookContext:
     """Mutable lifecycle context passed to hook handlers."""
 
     event: ClassVar[HookEvent]
-    harness: "Harness"
+    harness: Harness
     metadata: Json = field(default_factory=dict)
 
 
@@ -136,7 +145,7 @@ class BeforeSubagentRunContext(HookContext):
     task: str
     inherited: bool
     tool_mode: str
-    parent_harness: "Harness"
+    parent_harness: Harness
     parent_call_id: str | None = None
     cancelled: bool = False
     cancel_reason: str = ""
@@ -149,10 +158,10 @@ class AfterSubagentRunContext(HookContext):
     event: ClassVar[HookEvent] = "after_subagent_run"
     agent: str
     task: str
-    result: "HarnessResult | None" = None
+    result: HarnessResult | None = None
     error: BaseException | None = None
     tools: list[str] = field(default_factory=list)
-    usage: "RunUsage | None" = None
+    usage: RunUsage | None = None
     parent_call_id: str | None = None
 
 
@@ -161,10 +170,10 @@ class RunEndContext(HookContext):
     """Context for the terminal run outcome."""
 
     event: ClassVar[HookEvent] = "run_end"
-    result: "HarnessResult | None" = None
+    result: HarnessResult | None = None
     error: BaseException | None = None
-    stop_reason: "StopReason" = "end_turn"
-    usage: "RunUsage | None" = None
+    stop_reason: StopReason = "end_turn"
+    usage: RunUsage | None = None
 
 
 @dataclass(kw_only=True)
@@ -283,6 +292,6 @@ def _parse_hook_output(output: str) -> Json | None:
 def _mark_strict_hook_exception(exc: BaseException) -> None:
     """Mark strict hook failures so tool plumbing can preserve them."""
     try:
-        setattr(exc, "_thinharness_strict_hook", True)
+        exc._thinharness_strict_hook = True
     except Exception:
         return

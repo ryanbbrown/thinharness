@@ -1,6 +1,6 @@
 """Public API for the filesystem harness."""
 
-from .core import Harness, HarnessConfig, HarnessError, HarnessResult, ResponsesClient, RunUsage
+from .core import Harness, HarnessConfig, HarnessError, HarnessResult, RunUsage
 from .hooks import (
     AfterSubagentRunContext,
     AfterToolCallContext,
@@ -19,8 +19,8 @@ from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
     Model,
-    ModelSettings,
     ModelSession,
+    ModelSettings,
     ModelToolCall,
     ModelTurn,
     OpenAIProvider,
@@ -34,7 +34,7 @@ from .providers import (
 )
 from .skills import Skill, SkillRegistry
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
-from .tools import FileTools, PathValidationError, PathPolicy, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
+from .tools import FileTools, PathPolicy, PathValidationError, ToolResult, ToolSpec, builtin_tools, call_tool, contained_path
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
 __all__ = [
@@ -43,7 +43,6 @@ __all__ = [
     "HarnessConfig",
     "HarnessError",
     "HarnessResult",
-    "ResponsesClient",
     "RunUsage",
     "AfterSubagentRunContext",
     "AfterToolCallContext",

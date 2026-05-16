@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
-from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry
+from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context
 from .providers import infer_model, parse_model_ref
 from .tools import Json, ToolResult, ToolSpec
 from .tracing import TracingOptions
@@ -35,23 +35,16 @@ class SubAgentConfig(BaseModel):
     max_tool_calls: int | None = None
 
     @model_validator(mode="after")
-    def validate_subagent(self) -> "SubAgentConfig":
+    def validate_subagent(self) -> SubAgentConfig:
         """Validate subagent tool policy and display fields."""
-        if not self.name.strip():
-            raise ValueError("subagent name must not be empty")
         if self.name == DEFAULT_SUBAGENT_NAME:
             raise ValueError(f"{DEFAULT_SUBAGENT_NAME!r} is reserved for the framework default subagent")
-        if any(char.isspace() for char in self.name):
-            raise ValueError("subagent name must not contain whitespace")
-        if not self.description.strip():
-            raise ValueError("subagent description must not be empty")
-        if "\n" in self.name or "\r" in self.name:
-            raise ValueError("subagent name must be a single line")
-        if "\n" in self.description or "\r" in self.description:
-            raise ValueError("subagent description must be a single line")
-        if any(name.lower() == "subagent" for name in self.builtin_tools):
-            raise ValueError("subagent cannot be exposed inside a child subagent")
-        if any(_tool_name(tool).lower() == "subagent" for tool in self.tools):
+        if not self.description.strip() or "\n" in self.description or "\r" in self.description:
+            raise ValueError("subagent description must be a non-empty single line")
+        exposes_subagent = any(name.lower() == "subagent" for name in self.builtin_tools) or any(
+            _tool_name(tool).lower() == "subagent" for tool in self.tools
+        )
+        if exposes_subagent:
             raise ValueError("subagent cannot be exposed inside a child subagent")
         if self.inherit_parent_tools and (self.builtin_tools or self.tools):
             raise ValueError("inherit_parent_tools cannot be combined with builtin_tools or tools")
@@ -69,7 +62,7 @@ class SubAgentArgs(BaseModel):
     agent: str | None = Field(default=None, min_length=1, description="Optional subagent name; omit to use the framework default subagent.")
 
 
-def create_subagent_tool(parent: "Harness", configs: list[SubAgentConfig]) -> ToolSpec:
+def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> ToolSpec:
     """Create the parent-facing subagent delegation tool."""
     return ToolSpec(
         "subagent",
@@ -80,7 +73,7 @@ def create_subagent_tool(parent: "Harness", configs: list[SubAgentConfig]) -> To
     )
 
 
-def run_subagent_tool(parent: "Harness", configs: list[SubAgentConfig], args: SubAgentArgs) -> ToolResult:
+def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args: SubAgentArgs) -> ToolResult:
     """Run a child harness and return its final text as a tool result."""
     config = _select_config(configs, args.agent)
     if args.agent and config is None:
@@ -167,7 +160,7 @@ def run_subagent_tool(parent: "Harness", configs: list[SubAgentConfig], args: Su
     )
 
 
-def build_child_harness(parent: "Harness", config: SubAgentConfig | None) -> "Harness":
+def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harness:
     """Create an isolated child harness for one subagent invocation."""
     from .core import Harness
 
@@ -225,14 +218,14 @@ def _select_config(configs: list[SubAgentConfig], agent: str | None) -> SubAgent
     return None
 
 
-def _effective_custom_tools(parent: "Harness", config: SubAgentConfig | None) -> list[ToolSpec | Json]:
+def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> list[ToolSpec | Json]:
     """Return custom tools to register on the child harness."""
     if config is None or config.inherit_parent_tools:
         return [tool for tool in parent.tools if tool.name != "subagent"]
     return list(config.tools)
 
 
-def _child_tracing(parent: "Harness", config: SubAgentConfig | None) -> TracingOptions | None:
+def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> TracingOptions | None:
     """Return child tracing options that share the parent's tracer."""
     if parent.tracing is None:
         return None
@@ -243,10 +236,8 @@ def _child_tracing(parent: "Harness", config: SubAgentConfig | None) -> TracingO
     })
 
 
-def _child_metadata(parent: "Harness") -> Json:
+def _child_metadata(parent: Harness) -> Json:
     """Build minimal metadata for a child run."""
-    from .core import current_tool_call_context
-
     metadata: Json = {}
     parent_metadata = getattr(parent, "_current_run_metadata", None) or {}
     if conversation_id := parent_metadata.get("conversation_id"):
@@ -258,18 +249,16 @@ def _child_metadata(parent: "Harness") -> Json:
 
 def _parent_call_id() -> str | None:
     """Return the current parent tool call id when running as a tool."""
-    from .core import current_tool_call_context
-
     tool_call = current_tool_call_context()
     return str(tool_call["call_id"]) if tool_call else None
 
 
-def _child_hooks(parent: "Harness", config: SubAgentConfig | None) -> HookRegistry | list | None:
+def _child_hooks(parent: Harness, config: SubAgentConfig | None) -> HookRegistry | list | None:
     """Return the explicitly configured child hook registry."""
     return parent.subagent_hooks.get(config.name if config is not None else DEFAULT_SUBAGENT_NAME)
 
 
-def _same_provider(parent: "Harness", child_model_ref: str) -> bool:
+def _same_provider(parent: Harness, child_model_ref: str) -> bool:
     """Return whether a child model ref uses the same provider as the parent model."""
     child_provider, _ = parse_model_ref(child_model_ref)
     parent_provider = _provider_prefix(getattr(getattr(parent.model, "provider", None), "name", ""))

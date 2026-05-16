@@ -8,12 +8,12 @@ import json
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Any, Callable, TypeGuard, TypeVar, cast
+from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from pydantic.dataclasses import dataclass
 
 Json = dict[str, Any]
 ToolHandler = Callable[[Any], Any]
@@ -40,7 +40,7 @@ DEFAULT_SEARCH_TEST_DIRS = ["test", "tests", "testing", "spec", "specs"]
 # =============================================================================
 
 
-@dataclass(frozen=True, config=ConfigDict(arbitrary_types_allowed=True))
+@dataclass(frozen=True)
 class ToolSpec:
     """A JSON-schema-described callable exposed to the model."""
 
@@ -49,7 +49,7 @@ class ToolSpec:
     parameters: Json | type[BaseModel]
     handler: ToolHandler
     sequential: bool = False
-    metadata: Json = Field(default_factory=dict)
+    metadata: Json = field(default_factory=dict)
 
     def response_tool(self) -> Json:
         """Return an OpenAI Responses API function tool definition."""
@@ -73,7 +73,7 @@ class ToolResult:
 
     ok: bool
     content: str
-    metadata: Json = Field(default_factory=dict)
+    metadata: Json = field(default_factory=dict)
 
     def as_json(self) -> str:
         """Serialize the tool result for a function_call_output item."""
@@ -101,7 +101,7 @@ class SearchFile:
     matches: list[SearchMatch]
 
 
-@dataclass(frozen=True, config=ConfigDict(arbitrary_types_allowed=True))
+@dataclass(frozen=True)
 class AllowedPath:
     """One resolved path allowed by a workspace path policy."""
 
@@ -735,23 +735,6 @@ def _resolve_under_root(root: Path, raw: str | Path) -> Path:
 def _path_error(exc: PathValidationError) -> ToolResult:
     """Return a structured tool result for path policy failures."""
     return ToolResult(False, str(exc), {"error_type": "PathValidationError"})
-
-
-def object_schema(fields: dict[str, str], required: list[str] | None = None) -> Json:
-    """Create a small JSON object schema from compact field type names."""
-    props: Json = {}
-    required = required or [name for name, typ in fields.items() if not typ.endswith("?")]
-    for name, typ in fields.items():
-        base = typ.rstrip("?")
-        if base == "array":
-            props[name] = {"type": "array", "items": {"type": "string"}}
-        elif base == "integer":
-            props[name] = {"type": "integer"}
-        elif base == "boolean":
-            props[name] = {"type": "boolean"}
-        else:
-            props[name] = {"type": "string"}
-    return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
 
 
 def tool_parameters(parameters: Json | type[BaseModel]) -> Json:
