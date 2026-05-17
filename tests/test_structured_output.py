@@ -303,13 +303,23 @@ def test_late_final_result_tool_name_collision_is_rejected(tmp_path) -> None:
         harness.add_tool(ToolSpec("final_result", "reserved", {"type": "object", "properties": {}}, lambda args: "bad"))
 
 
-def test_final_result_is_not_hookable(tmp_path) -> None:
-    with pytest.raises(ValueError, match="unknown tool name: final_result"):
-        Harness(
-            HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
-            model=ScriptedModel([]),
-            hooks=[Hook("before_tool_call", lambda ctx: None, tools=["final_result"])],
+def test_final_result_hook_filter_is_allowed_but_never_fires(tmp_path) -> None:
+    seen = []
+    session = ScriptedSession(
+        start_turn=ModelTurn(
+            text="Done",
+            tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}')],
+            raw={"id": "resp_1"},
         )
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        model=ScriptedModel([session]),
+        hooks=[Hook("before_tool_call", lambda ctx: seen.append(ctx.tool_name), tools=["final_result"])],
+    )
+
+    assert harness.run_sync("make a person").output == Person(name="Ada", age=37)
+    assert seen == []
 
 
 def test_anthropic_native_mode_is_rejected(tmp_path) -> None:

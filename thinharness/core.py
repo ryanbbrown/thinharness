@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -25,6 +26,7 @@ from .hooks import (
     UserPromptSubmitContext,
     apply_prompt_context,
 )
+from .mcp import MCPServer
 from .output import FINAL_RESULT_TOOL_NAME, OutputMode, OutputSchema, OutputSpec, OutputValidationError, resolve_output_spec
 from .providers import (
     Model,
@@ -117,6 +119,7 @@ class HarnessConfig(BaseModel):
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
+    mcp_servers: list[MCPServer] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_skills(self) -> HarnessConfig:
@@ -225,6 +228,10 @@ class Harness:
             self.add_tool(tool)
         self.output_schema = self._build_output_schema()
         self._validate_final_result_collision()
+        self._mcp_servers = list(self.config.mcp_servers)
+        self._resolve_mcp_server_ids()
+        self._mcp_stack: AsyncExitStack | None = None
+        self._mcp_connected = False
         self.hooks = raw_hooks if isinstance(raw_hooks, HookRegistry) else HookRegistry(raw_hooks, strict_hooks=self.config.strict_hooks)
         self._validate_skill_tool_selection()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
@@ -236,6 +243,8 @@ class Harness:
 
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
+        if self._closed:
+            raise HarnessError("harness is closed")
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")
 
@@ -262,7 +271,6 @@ class Harness:
         run_metadata = dict(metadata or {})
         self._current_run_metadata = run_metadata
         self._running = True
-        self._closed = False
 
         def fire_run_end_once() -> None:
             """Emit run_end exactly once for this run."""
@@ -395,6 +403,7 @@ class Harness:
                             max_model_requests=self.config.max_model_requests,
                             max_tool_calls=self.config.max_tool_calls,
                         ))
+                        await self._ensure_mcp_connected()
                         prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
                         self.hooks.fire(prompt_ctx)
                         if prompt_ctx.cancelled:
@@ -588,15 +597,20 @@ class Harness:
         return asyncio.run(_run_and_close())
 
     async def aclose(self) -> None:
-        """Close provider HTTP clients if this harness owns them."""
-        if not self._owns_model:
-            return
+        """Close MCP servers and owned provider HTTP clients."""
         if self._closed:
             return
-        aclose = getattr(self.model.provider, "aclose", None)
-        if aclose is not None:
-            await aclose()
-        self._closed = True
+        try:
+            if self._mcp_stack is not None:
+                await self._mcp_stack.aclose()
+                self._mcp_stack = None
+                self._mcp_connected = False
+            if self._owns_model:
+                aclose = getattr(self.model.provider, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+        finally:
+            self._closed = True
 
     async def __aenter__(self) -> Harness:
         """Enter an async harness lifecycle."""
@@ -696,6 +710,13 @@ class Harness:
                         "subagent.tool_mode": parsed_metadata.get("tool_mode"),
                         "subagent.tools": parsed_metadata.get("tools"),
                     })
+                spec = self._tool_map.get(str(name))
+                spec_metadata = spec.metadata if spec is not None else {}
+                if spec_metadata.get("source") == "mcp":
+                    span.set_attributes({
+                        "mcp.server.id": spec_metadata.get("mcp_server_id"),
+                        "mcp.tool.name": spec_metadata.get("mcp_tool_name"),
+                    })
                 if self.tracing and self.tracing.capture_tool_results:
                     span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
                 if retry_kind is not None:
@@ -786,9 +807,54 @@ class Harness:
             raise ValueError("configured skills require exposing skill_read or skill_run")
 
     def _validate_hook_filters(self) -> None:
-        """Validate hook filters against registered tools and subagents."""
+        """Validate hook filters against registered subagents."""
         agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in self.config.subagents)}
-        self.hooks.validate_filters(tool_names={tool.name for tool in self.tools}, agent_names=agent_names)
+        self.hooks.validate_filters(agent_names=agent_names)
+
+    def _resolve_mcp_server_ids(self) -> None:
+        """Assign stable suffixes to duplicate MCP server ids."""
+        counts: dict[str, int] = {}
+        for server in self._mcp_servers:
+            base_id = server.id
+            counts[base_id] = counts.get(base_id, 0) + 1
+            resolved = base_id if counts[base_id] == 1 else f"{base_id}-{counts[base_id]}"
+            server._resolved_id = resolved
+
+    async def connect(self) -> None:
+        """Open MCP server connections and discover their tools."""
+        if self._closed:
+            raise HarnessError("harness is closed")
+        await self._ensure_mcp_connected()
+
+    async def _ensure_mcp_connected(self) -> None:
+        """Connect MCP servers and append their discovered tools once."""
+        if self._mcp_connected:
+            return
+        if not self._mcp_servers:
+            self._mcp_connected = True
+            return
+        stack = AsyncExitStack()
+        try:
+            mcp_tools: list[ToolSpec] = []
+            seen = set(self._tool_map)
+            if self.output_schema is not None and self.output_schema.mode == "tool":
+                seen.add(FINAL_RESULT_TOOL_NAME)
+            for server in self._mcp_servers:
+                await stack.enter_async_context(server)
+                for tool in await server.list_tools():
+                    if tool.name in seen:
+                        raise HarnessError(
+                            f"MCP tool name collision for {tool.name!r}; use tool_prefix or exclude_tools to disambiguate"
+                        )
+                    seen.add(tool.name)
+                    mcp_tools.append(tool)
+            self.tools.extend(mcp_tools)
+            self._tool_map.update({tool.name: tool for tool in mcp_tools})
+            self._mcp_stack = stack
+            self._mcp_connected = True
+        except BaseException:
+            await stack.aclose()
+            raise
 
     def _build_output_schema(self) -> OutputSchema | None:
         """Build structured-output validation if configured."""

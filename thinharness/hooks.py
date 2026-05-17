@@ -226,13 +226,9 @@ class HookRegistry:
                     _mark_strict_hook_exception(exc)
                     raise
 
-    def validate_filters(self, *, tool_names: set[str], agent_names: set[str]) -> None:
-        """Raise for filters that do not match registered names."""
+    def validate_filters(self, *, agent_names: set[str]) -> None:
+        """Raise for agent filters that do not match registered names."""
         for hook in self.hooks:
-            for name in hook.tools or []:
-                if name not in tool_names:
-                    available = ", ".join(sorted(tool_names)) or "none"
-                    raise ValueError(f"hook filter references unknown tool name: {name}; available: {available}")
             for name in hook.agents or []:
                 if name not in agent_names:
                     available = ", ".join(sorted(agent_names)) or "none"

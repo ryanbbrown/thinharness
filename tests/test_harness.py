@@ -53,24 +53,24 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert client.payloads[1]["input"][0]["type"] == "function_call_output"
     assert "hello" in client.payloads[1]["input"][0]["output"]
 
-def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
+async def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
 
-    assert harness.run_sync("first").text == "done"
-    assert harness.run_sync("second").text == "done"
+    assert (await harness.run("first")).text == "done"
+    assert (await harness.run("second")).text == "done"
 
     assert provider.payloads[0]["messages"] == [{"role": "user", "content": "first"}]
     assert provider.payloads[2]["messages"] == [{"role": "user", "content": "second"}]
 
-def test_openrouter_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
+async def test_openrouter_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
 
-    assert harness.run_sync("first").text == "done"
-    assert harness.run_sync("second").text == "done"
+    assert (await harness.run("first")).text == "done"
+    assert (await harness.run("second")).text == "done"
 
     assert provider.payloads[0]["messages"] == [
         {"role": "system", "content": harness.system_instructions()},

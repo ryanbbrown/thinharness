@@ -15,6 +15,7 @@ from .hooks import (
     RunStartContext,
     UserPromptSubmitContext,
 )
+from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
 from .providers import (
     AnthropicMessagesModel,
@@ -49,6 +50,12 @@ __all__ = [
     "RunUsage",
     "ModelRetry",
     "UnexpectedModelBehavior",
+    "MCPDependencyError",
+    "MCPError",
+    "MCPServer",
+    "MCPServerSSE",
+    "MCPServerStdio",
+    "MCPServerStreamableHTTP",
     "AfterSubagentRunContext",
     "AfterToolCallContext",
     "BeforeSubagentRunContext",

@@ -104,7 +104,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
 
     assert events == [("provider_error", "HarnessError"), ("error", "ValueError")]
 
-def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
+async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
     calls = 0
 
     def fail_once(ctx):
@@ -123,9 +123,9 @@ def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="end hook failed"):
-        harness.run_sync("first")
+        await harness.run("first")
 
-    assert harness.run_sync("second").text == "second"
+    assert (await harness.run("second")).text == "second"
 
 def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> None:
     captured = {}
