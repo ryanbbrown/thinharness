@@ -48,6 +48,14 @@ class SequenceSession:
         """No tests in this file expect user-message continuations."""
         raise AssertionError("unexpected user-message continuation")
 
+    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None):
+        """No tests in this file expect resumed user prompts."""
+        raise AssertionError("unexpected resumed prompt")
+
+    def dump_state(self):
+        """Return no resume state for retry-specific scripted sessions."""
+        return None
+
 
 def _call(name: str, args: str, call_id: str = "call_1") -> ModelToolCall:
     """Build a normalized model tool call."""

@@ -1,59 +1,18 @@
-<p align="center">
-  <img src="ThinHarness.svg" alt="ThinHarness" width="360">
-</p>
+# Comparison
 
-<p align="center">
-  <br/>
-  A minimal filesystem harness for AI agents &mdash;
-  <br/>
-  provider-native tools, lightweight core, no orchestration layer.
-  <br/><br/>
-</p>
+LOC is `tokei` "Code" lines (excludes comments and blanks). Each row is measured
+**strict framework-only**: we strip clearly non-framework code from the upstream
+package — platform/deployment layers, domain-specific modalities (voice,
+realtime), eval/optimizer suites, UI/CLI tools, A2A/declarative wire protocols,
+code-executor backends. Provider implementations stay in (they're part of what
+you import to use the library). Tests, examples, and docs are always excluded.
 
-<div align="center">
+The exact `tokei` command + upstream commit hash for each row appears in an HTML
+comment directly above the row in the table source — view source to verify any
+number. To reproduce locally: clone each upstream repo at the pinned commit, run
+the command shown.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/ryanbbrown/thinharness/ci.yml?branch=main&label=CI)](https://github.com/ryanbbrown/thinharness/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ryanbbrown/thinharness/blob/main/LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/thinharness.svg)](https://pypi.org/project/thinharness/)
-
-</div>
-
-## Why this exists
-
-<!-- ===== A/B for the opening paragraph — pick one (or hybridize), then delete the other and these comments ===== -->
-
-<!-- VERSION A (current) -->
-
-The Python agent harness landscape today is split between two camps. On one side, libraries that wrap a specific coding-agent product — the Claude Agent SDK shells out to a 200k+ LOC Claude Code CLI, and you're effectively importing those opinions whether you want them or not. On the other side, general-purpose frameworks that have grown large enough to be their own learning project: Pydantic AI is 63k LOC, OpenAI Agents SDK is 77k, Google ADK is 90k. If you want a small, general harness for non-coding business work — answering questions over a dataset, running analyses, extracting from documents — you're stuck importing tens of thousands of lines of someone else's opinions to get to the basic loop underneath.
-
-<!-- VERSION B (older, punchier but factually loose — "every harness is built for coding agents" isn't quite right) -->
-
-<!--
-Every agent harness on the market is built for coding agents used interactively. If you want an agent that does something other than edit code — answer business questions, run analyses, extract from documents, whatever — you're importing tens of thousands of lines of someone else's coding-agent opinions to get to the basic loop underneath.
--->
-
-<!-- VERSION C (tighter hybrid attempt — keeps Version A's accuracy, trims for punchiness) -->
-
-<!--
-Most Python agent harnesses are either tied to a coding-agent product or general-purpose enough to be their own learning project. The Claude Agent SDK shells out to a 200k+ LOC Claude Code CLI. Pydantic AI is 63k LOC, OpenAI Agents SDK is 77k, Google ADK is 90k. If you want a small, general harness for non-coding work — answering questions over a dataset, running analyses, extracting from documents — you're importing tens of thousands of lines of someone else's opinions to get to the basic loop.
--->
-
-<!-- ===== end A/B ===== -->
-
-The agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **3,348 lines of Python** across 11 files. The whole thing. You can read it in a sitting. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
-
-<!--
-  LOC measurement scope: strict framework-only. Each row strips clearly
-  non-framework code from the upstream package — platform/deployment layers,
-  domain-specific modalities (voice/realtime), eval/optimizer suites, UI/CLI
-  tools, A2A/declarative wire protocols, code-executor backends. Provider
-  implementations stay IN (they're part of what you import to use the library).
-  The exact tokei command + upstream commit hash for each row is in an HTML
-  comment above the row, so the number is reproducible. Measured 2026-05-16
-  against the commit pinned in each row's comment.
--->
-
-<div align="center">
+Measured 2026-05-16.
 
 <table>
   <thead>
@@ -230,72 +189,31 @@ The agent loop isn't that complicated. Provider call, parse tool calls, run them
 
 <sub>* shells out to the Claude Code CLI binary, which is 200k+ LOC</sub>
 
-</div>
-
 <sub>Out of scope: multi-agent orchestration frameworks like CrewAI, AutoGen, and AG2 follow a different paradigm (agent-to-agent conversation / role workflows) and don't map onto these columns. LlamaIndex centers on RAG and Semantic Kernel on broader AI orchestration — both have agent abstractions, but their scope is wider than what's compared here.</sub>
 
-See [table.md](table.md) for per-cell rationale and how the LOC numbers are measured.
+## Notes on the marks
 
-## Opinions
+- **Hooks** — lifecycle / tool-call interception primitive exposed by the framework. ThinHarness `Hook(...)`; Claude Agent SDK `hooks=` on `ClaudeSDKClient`; deepagents middleware (`permissions.py`, etc.); Pydantic AI `capabilities/hooks.py`; OpenAI Agents SDK `lifecycle.py` (`RunHooks`/`AgentHooks`); Google ADK `before_model_callbacks` etc.; Agno `@hook` decorator with explicit pre/post events; AWS Strands `hooks/` module with event registry; Microsoft Agent Framework `_middleware.py` (`AgentMiddleware`/`FunctionMiddleware`). smolagents only exposes step-level `step_callbacks` (no per-tool-call interception), marked ⚠️.
+- **Subagents** — first-class delegation primitive. ThinHarness ships a `subagent` built-in tool and `SubAgentConfig`; Claude Agent SDK exposes Claude Code's Task tool; deepagents has `middleware/subagents.py`; OpenAI Agents SDK has `handoffs/`; smolagents has managed agents; ADK has multi-agent delegation; Agno has `team/` (Teams); AWS Strands has `multiagent/` (graph, swarm); Microsoft Agent Framework has `_workflows/` with agent executors. Pydantic AI documents an "agent delegation" *pattern* (call one agent inside another's tool function) but ships no class, decorator, or middleware for it — their own multi-agent docs point users to deepagents for that case, so it's marked ❌.
+- **Structured output** — typed final outputs with a validation mechanism. ThinHarness `OutputSchema` with native/tool/prompted modes; Pydantic AI is the reference implementation; OpenAI Agents SDK `agent_output.py`; ADK Pydantic `output_schema`; Agno `response_model`; AWS Strands `tools/structured_output/`; Microsoft Agent Framework `response_format` plumbed through `_types.py`/`_tools.py`; smolagents uses `FinalAnswerTool` + callable `final_answer_checks`. Claude Agent SDK and deepagents return free-form messages with no built-in validation step.
+- **Skills** — Markdown/frontmatter skill discovery and invocation. ThinHarness `skill_read` / `skill_run`; Claude Agent SDK via Claude Code skills; deepagents `middleware/skills.py`; Google ADK ships a `skills/` module with a `SkillRegistry` (marked experimental upstream, but the feature exists); Agno has a full `skills/` module with a Claude-Code-shaped `Skill` dataclass (SKILL.md frontmatter, scripts, references); Microsoft Agent Framework `_skills.py` implements the [agentskills.io](https://agentskills.io/) progressive-disclosure spec (`FileSkill`/`InlineSkill`/`ClassSkill`). Pydantic AI, OpenAI Agents SDK, smolagents, and AWS Strands have no skills primitive.
+- **Multi-provider** — supports more than one model provider directly. Claude Agent SDK is Claude-only (it wraps the Claude Code CLI), so ❌.
+- **MCP** — first-class Model Context Protocol client/server support. ThinHarness does not currently include MCP.
+- **Built-in FS tools** — ships read/write/edit/search-style filesystem tools out of the box. Pydantic AI's slim core ships web/search/image-gen common tools but no filesystem set. OpenAI Agents SDK defines an `apply_patch` editor *protocol* but ships no FS implementation. Google ADK ships `bash_tool` (generic shell) and several hosted-search tools but no FS tool primitives. smolagents executes Python code in a sandbox but has no dedicated FS tool surface. Agno ships `tools/file.py` and `tools/local_file_system.py` for direct FS access. AWS Strands keeps the core SDK tool-free; FS tools live in a separate `strands-agents-tools` package and don't count here. Microsoft Agent Framework ships no FS tool primitives in its core package. Generic shell or code-exec tools don't count here — the column is specifically about typed read/write/edit/search-style primitives.
+- **OTel tracing** — native OpenTelemetry spans for runs/model-calls/tool-calls. ThinHarness emits its own spans; Pydantic AI integrates with Logfire/OTel; OpenAI Agents SDK has a built-in tracing system exportable to OTel; smolagents `monitoring.py` + OpenTelemetry instrumentation; ADK ships a `telemetry/` module; Agno ships a `tracing/` module with an OTel exporter; AWS Strands ships a `telemetry/` module; Microsoft Agent Framework ships `_telemetry.py` with OTel instrumentation. Claude Agent SDK gets ⚠️: the Python SDK itself ships no instrumentation (only W3C traceparent propagation into the CLI subprocess), and there is an open issue ([#452](https://github.com/anthropics/claude-agent-sdk-python/issues/452)) asking for native SDK tracing — but the Claude Code CLI it shells out to does emit OTel spans (`claude_code.interaction`/`llm_request`/`tool`), with subagents documented to nest under parent `claude_code.tool` spans. The CLI's tracing is officially in beta, and real-world users report rough edges (broken nested traces in some cases, custom glue needed to integrate with MLflow). deepagents leans on LangSmith rather than emitting OTel from its own code.
 
-ThinHarness has opinions. They are the reason it stays small.
+## What "strict framework-only" excludes
 
-**No bash.** Business agents don't need a shell. Bash is a giant security surface and the source of an entire genre of agent failure where the model has the exact path you told it and still constructs the wrong command. Cut it and most of those failures stop being possible.
+Carving principle: keep everything you'd import to *use the library as an agent framework* — agent loop, hooks, tools, structured output, skills, subagents, memory, session, tracing, provider/model implementations, MCP. Strip what's clearly outside that scope: deployment layers, evals, UI/CLI tools, voice/realtime modalities, declarative wire protocols.
 
-**Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
+Per-library exclusions for the curious (full commands in the table source HTML comments):
 
-**Search is a first-class affordance.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking — they did the homework on what makes ripgrep output legible to an agent, and we use it. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, no embedding index to keep fresh).
-
-**Parallel LLM calls as a primitive.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — `parallel_llm` lets you fan out from inside the harness. Better than longer prompts. Better than chain-of-retries. *(Coming soon.)*
-
-**Provider classes, not a provider integration empire.** Companies have their own LLM gateways, proxies, and auth setups. ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter — you swap base URLs, plug in your gateway, and move on. We aren't building a 30-provider abstraction layer; you'd replace it anyway.
-
-## Use
-
-```python
-import asyncio
-from thinharness import Harness, HarnessConfig
-
-async def main():
-    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.2")) as harness:
-        result = await harness.run("Read README.md and summarize it.")
-        print(result.text)
-
-asyncio.run(main())
-```
-
-There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 11 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools in [`thinharness/tools.py`](thinharness/tools.py). Reading those two files is faster than reading the docs would be.
-
-## Tool retry
-
-Tool handlers can raise `ModelRetry` when the model should try the same tool again with better arguments. Pydantic argument validation failures, including built-in filesystem tool argument failures, use the same retry path and count against `tool_retries`.
-
-```python
-from pydantic import BaseModel
-from thinharness import Harness, HarnessConfig, ModelRetry, ToolSpec
-
-class UserLookupArgs(BaseModel):
-    user_id: str
-
-def lookup_user(args: UserLookupArgs) -> dict:
-    user = db.get(args.user_id)
-    if user is None:
-        raise ModelRetry(f"user {args.user_id!r} not found; try searching by email instead")
-    return user
-
-harness = Harness(HarnessConfig(model="openai:gpt-5.2", tool_retries=2))
-harness.add_tool(ToolSpec(
-    name="lookup_user",
-    description="Look up a user by id.",
-    parameters=UserLookupArgs,
-    handler=lookup_user,
-))
-```
-
-## Status
-
-Pre-1.0. APIs will shift. Not designed for runs with hundreds of turns — short, focused, audit-friendly loops are the target. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap.
-
-## License
-
-MIT. Search ranking adapted from [pgr](https://github.com/entireio/pgr); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **ThinHarness, deepagents** — nothing stripped; already framework-only.
+- **Claude Agent SDK** — `testing/` (user-facing test helpers).
+- **smolagents** — `cli.py`, `gradio_ui.py`, `vision_web_browser.py` (CLI + UI).
+- **AWS Strands** — `experimental/`, `vended_plugins/`, `multiagent/a2a/` (experimental APIs, opt-in plugins, A2A wire protocol).
+- **Microsoft Agent Framework** — `_evaluation.py`, `a2a/`, `ag_ui/`, `chatkit/`, `declarative/`, `devui/`, `hyperlight/`, `lab/`, `orchestrations/`, `mem0/`, `redis/`, `microsoft/` (evals, wire protocols, UI, runtime backends, storage backends, lab/experimental).
+- **Pydantic AI** — `_a2a.py`, `ag_ui.py`, `ui/`, `durable_exec/`, `embeddings/`, `ext/` (A2A, UI, durable execution runtime, embedding models, ext).
+- **Google ADK** — `a2a/`, `apps/`, `cli/`, `cloud/`, `code_executors/`, `environment/`, `evaluation/`, `examples/`, `integrations/`, `optimization/`, `platform/`.
+- **OpenAI Agents SDK** — `realtime/`, `voice/`, `extensions/experimental`, `extensions/visualization.py`.
+- **Agno** — `api/`, `client/`, `cloud/`, `db/`, `integrations/`, `knowledge/`, `learn/`, `os/`, `remote/`, `scheduler/`, `vectordb/`, `context/`, `culture/`, plus boundary cases `workflow/` and `eval/`. (Agno bundles a full platform layer alongside its agent framework; as-shipped is 254,377 LOC.)

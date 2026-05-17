@@ -124,6 +124,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
     try:
         child = build_child_harness(parent, config)
         effective_tools = [tool.name for tool in child.tools]
+        result = None
         run_error: BaseException | None = None
         run_traceback: TracebackType | None = None
         try:
@@ -160,6 +161,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
                 "error_type": type(exc).__name__,
             },
         )
+    assert result is not None
     parent.hooks.fire(AfterSubagentRunContext(
         harness=parent,
         metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
@@ -193,11 +195,16 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
     parent_config = parent.config
     inherit_tools = config is None or config.inherit_parent_tools
     child_wants_skills = bool(config and any(name.lower() in {"skill_read", "skill_run"} for name in config.builtin_tools))
+    if inherit_tools:
+        child_builtin_tools: list[str] = []
+    else:
+        assert config is not None
+        child_builtin_tools = config.builtin_tools
     child_config = parent_config.model_copy(update={
         "model": config.model if config is not None and config.model is not None else parent_config.model,
         "root": parent.root,
         "system_prompt": DEFAULT_SYSTEM_PROMPT if config is None else config.system_prompt,
-        "builtin_tools": [] if inherit_tools else config.builtin_tools,
+        "builtin_tools": child_builtin_tools,
         "skills_dir": parent_config.skills_dir if child_wants_skills and not inherit_tools else None,
         "selected_skills": parent_config.selected_skills if child_wants_skills and not inherit_tools else None,
         "max_model_requests": (

@@ -712,7 +712,7 @@ def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> str | Any:
             return _retry_envelope(
                 "ValidationError",
                 _format_validation_errors(exc),
-                errors=exc.errors(include_url=False, include_context=False),
+                errors=cast(list[Json], exc.errors(include_url=False, include_context=False)),
             )
     return args
 

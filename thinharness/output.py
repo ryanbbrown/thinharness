@@ -65,7 +65,7 @@ class OutputSchema:
     name: str = FINAL_RESULT_TOOL_NAME
 
     @classmethod
-    def build(cls, output_type: OutputSpec, mode: OutputMode) -> OutputSchema:
+    def build(cls, output_type: OutputSpec, mode: OutputMode | ResolvedOutputMode) -> OutputSchema:
         """Build an output schema from a configured output type and mode."""
         output_type, mode = resolve_output_spec(output_type, mode)
         if output_type is str or mode == "text":
@@ -157,7 +157,7 @@ def strip_markdown_fences(text: str) -> str:
     return match.group(1).strip() if match else stripped
 
 
-def resolve_output_spec(output_type: OutputSpec, mode: OutputMode) -> tuple[Any, ResolvedOutputMode | OutputMode]:
+def resolve_output_spec(output_type: OutputSpec, mode: OutputMode | ResolvedOutputMode) -> tuple[Any, ResolvedOutputMode | OutputMode]:
     """Resolve output marker wrappers into a type and mode."""
     if isinstance(output_type, NativeOutput):
         return output_type.output_type, "native"

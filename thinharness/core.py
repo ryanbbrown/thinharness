@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,7 +26,18 @@ from .hooks import (
     apply_prompt_context,
 )
 from .output import FINAL_RESULT_TOOL_NAME, OutputMode, OutputSchema, OutputSpec, OutputValidationError, resolve_output_spec
-from .providers import Model, ModelCapabilities, ModelToolCall, ModelTurn, ProviderError, StructuredOutputRequest, ToolOutput, infer_model
+from .providers import (
+    Model,
+    ModelCapabilities,
+    ModelSession,
+    ModelToolCall,
+    ModelTurn,
+    ProviderError,
+    ResumableModel,
+    StructuredOutputRequest,
+    ToolOutput,
+    infer_model,
+)
 from .skills import SkillRegistry
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, _invoke_tool
@@ -46,6 +57,27 @@ StopReason = Literal[
     "tool_retries_exceeded",
     "unexpected_model_behavior",
 ]
+
+
+def _build_resume_state(
+    session: ModelSession,
+    stop_reason: StopReason,
+    finalized_via_output_tool: bool,
+    require_dump_state: bool,
+) -> dict[str, Any] | None:
+    """Apply resume lifecycle rules and return an isolated JSON copy."""
+    if stop_reason != "end_turn" or finalized_via_output_tool:
+        return None
+    dump_state = getattr(session, "dump_state", None)
+    if dump_state is None:
+        # Non-resumable custom models may omit dump_state; resumable models must provide it.
+        if require_dump_state:
+            raise HarnessError("resumable model session is missing dump_state()")
+        return None
+    state = dump_state()
+    if state is None:
+        return None
+    return json.loads(json.dumps(state))
 
 
 class HarnessConfig(BaseModel):
@@ -104,6 +136,7 @@ class HarnessResult:
     tool_call_records: list[Json] = field(default_factory=list)
     usage: RunUsage = field(default_factory=lambda: RunUsage())
     stop_reason: StopReason = "end_turn"
+    resume_state: dict[str, Any] | None = None
 
 
 @dataclass
@@ -201,10 +234,21 @@ class Harness:
         self._closed = False
         self._validate_hook_filters()
 
-    async def run(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
+    async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")
+
+        session: ModelSession | None
+        model_supports_resume = hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
+        if resume_from is None:
+            session = None
+            first_turn_kind = "start"
+        else:
+            if not model_supports_resume:
+                raise HarnessError(f"model {type(self.model).__name__} does not support resume")
+            session = cast(ResumableModel, self.model).resume_session(resume_from)
+            first_turn_kind = "resume"
 
         responses: list[Json] = []
         tool_call_records: list[Json] = []
@@ -212,6 +256,7 @@ class Harness:
         result: HarnessResult | None = None
         terminal_error: BaseException | None = None
         stop_reason: StopReason = "end_turn"
+        finalized_via_output_tool = False
         run_end_fired = False
         run_tracer = RunTracer(self.tracing)
         run_metadata = dict(metadata or {})
@@ -299,6 +344,16 @@ class Harness:
                 stop_reason=stop_reason,
             )
 
+        def attach_resume_state(session_to_dump: ModelSession) -> None:
+            """Attach final resume state before run_end hooks observe the result."""
+            if result is not None:
+                result.resume_state = _build_resume_state(
+                    session_to_dump,
+                    stop_reason,
+                    finalized_via_output_tool,
+                    model_supports_resume,
+                )
+
         def retry_or_fail() -> None:
             """Track one structured-output validation retry or fail the run."""
             nonlocal terminal_error, stop_reason
@@ -348,27 +403,36 @@ class Harness:
                             terminal_error = HarnessError(f"run blocked by hook: {reason}")
                             raise terminal_error
                         effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
-                        try:
-                            session = self.model.new_session()
-                        except Exception as exc:
-                            stop_reason = "error"
-                            terminal_error = exc
-                            agent_span.record_exception(exc)
-                            agent_span.set_error(str(exc), type(exc).__name__)
-                            raise
-
                         instructions = self.system_instructions()
                         structured_output = self._structured_output_request()
                         if self.output_schema is not None and self.output_schema.mode == "prompted":
                             instructions = f"{instructions}\n\n{self.output_schema.build_instructions()}"
-                        turn = await advance_model(lambda: session.start(
-                            prompt=effective_prompt,
-                            instructions=instructions,
-                            tools=self.tool_schemas(),
-                            metadata=metadata,
-                            previous_response_id=previous_response_id,
-                            structured_output=structured_output,
-                        ))
+                        if first_turn_kind == "start":
+                            try:
+                                active_session = self.model.new_session()
+                            except Exception as exc:
+                                stop_reason = "error"
+                                terminal_error = exc
+                                agent_span.record_exception(exc)
+                                agent_span.set_error(str(exc), type(exc).__name__)
+                                raise
+                            turn = await advance_model(lambda: active_session.start(
+                                prompt=effective_prompt,
+                                instructions=instructions,
+                                tools=self.tool_schemas(),
+                                metadata=metadata,
+                                structured_output=structured_output,
+                            ))
+                        else:
+                            assert session is not None
+                            active_session = session
+                            turn = await advance_model(lambda: active_session.continue_with_user_prompt(
+                                prompt=effective_prompt,
+                                instructions=instructions,
+                                tools=self.tool_schemas(),
+                                metadata=metadata,
+                                structured_output=structured_output,
+                            ))
                         while True:
                             responses.append(turn.raw)
                             if self.output_schema is not None:
@@ -377,6 +441,7 @@ class Harness:
                                         agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                         turn.finalized_output_mode = self.output_schema.mode
                                         result = build_terminal_result(turn.text, self.output_schema.validate_text(turn.text))
+                                        attach_resume_state(active_session)
                                         fire_run_end_once()
                                         return result
                                 elif self.output_schema.mode == "tool":
@@ -393,7 +458,7 @@ class Harness:
                                             final_id = final.id
                                             assert final_id, "tool-mode final_result retry requires a tool call id"
                                             turn = await advance_model(
-                                                lambda final_id=final_id, retry_message=retry_message: session.continue_with_tools(
+                                                lambda final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
                                                     [ToolOutput(final_id, retry_message)],
                                                     tools=self.tool_schemas(),
                                                     metadata=metadata,
@@ -404,7 +469,9 @@ class Harness:
                                             continue
                                         agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                         turn.finalized_output_mode = self.output_schema.mode
+                                        finalized_via_output_tool = True
                                         result = build_terminal_result(turn.text, value)
+                                        attach_resume_state(active_session)
                                         fire_run_end_once()
                                         return result
                                     if not turn.tool_calls:
@@ -414,7 +481,7 @@ class Harness:
                                             "Call final_result with the final answer.",
                                         )
                                         # There is no final_result call id to answer here, so this correction must be a user message.
-                                        turn = await advance_model(lambda retry_message=retry_message: session.continue_with_user_message(
+                                        turn = await advance_model(lambda retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
@@ -431,7 +498,7 @@ class Harness:
                                             error_message,
                                             "Return only valid JSON for the requested schema.",
                                         )
-                                        turn = await advance_model(lambda retry_message=retry_message: session.continue_with_user_message(
+                                        turn = await advance_model(lambda retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
@@ -441,11 +508,13 @@ class Harness:
                                     agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                     turn.finalized_output_mode = self.output_schema.mode
                                     result = build_terminal_result(turn.text, value)
+                                    attach_resume_state(active_session)
                                     fire_run_end_once()
                                     return result
                             if not turn.tool_calls:
                                 agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                 result = build_terminal_result(turn.text)
+                                attach_resume_state(active_session)
                                 fire_run_end_once()
                                 return result
                             check_tool_limit(len(turn.tool_calls))
@@ -455,7 +524,7 @@ class Harness:
                             tool_call_records.extend(recorded)
                             check_tool_retry_limits(turn.tool_calls, executions)
                             tool_outputs = outputs
-                            turn = await advance_model(lambda tool_outputs=tool_outputs: session.continue_with_tools(
+                            turn = await advance_model(lambda tool_outputs=tool_outputs: active_session.continue_with_tools(
                                 tool_outputs,
                                 tools=self.tool_schemas(),
                                 metadata=metadata,
@@ -498,7 +567,7 @@ class Harness:
             self._current_run_metadata = None
             self._running = False
 
-    def run_sync(self, prompt: str, *, previous_response_id: str | None = None, metadata: Json | None = None) -> HarnessResult:
+    def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")
@@ -512,7 +581,7 @@ class Harness:
         async def _run_and_close() -> HarnessResult:
             """Run and close owned async resources in the same loop."""
             try:
-                return await self.run(prompt, previous_response_id=previous_response_id, metadata=metadata)
+                return await self.run(prompt, resume_from=resume_from, metadata=metadata)
             finally:
                 await self.aclose()
 
@@ -544,10 +613,11 @@ class Harness:
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
         if spec.name == "subagent" and spec.metadata.get("framework_tool") != "subagent":
             raise ValueError("subagent is a reserved tool name")
+        output_schema = getattr(self, "output_schema", None)
         if (
             spec.name == FINAL_RESULT_TOOL_NAME
-            and getattr(self, "output_schema", None) is not None
-            and self.output_schema.mode != "text"
+            and output_schema is not None
+            and output_schema.mode != "text"
         ):
             raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
         if spec.name in self._tool_map:
@@ -618,12 +688,13 @@ class Harness:
                 self.hooks.fire_after_tool_call(after)
                 output = after.output
                 parsed = _parse_tool_output(output)
-                metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+                metadata_value = parsed.get("metadata")
+                parsed_metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
                 if name == "subagent":
                     span.set_attributes({
-                        "subagent.name": metadata.get("agent"),
-                        "subagent.tool_mode": metadata.get("tool_mode"),
-                        "subagent.tools": metadata.get("tools"),
+                        "subagent.name": parsed_metadata.get("agent"),
+                        "subagent.tool_mode": parsed_metadata.get("tool_mode"),
+                        "subagent.tools": parsed_metadata.get("tools"),
                     })
                 if self.tracing and self.tracing.capture_tool_results:
                     span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
@@ -799,7 +870,8 @@ def _parse_tool_output(output: str) -> Json:
 
 def _tool_retry_kind(parsed: Json) -> str | None:
     """Return the retry error type from a parsed tool output envelope."""
-    metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+    metadata_value = parsed.get("metadata")
+    metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
     error_type = metadata.get("error_type")
     if metadata.get("retry") is True and isinstance(error_type, str):
         return error_type

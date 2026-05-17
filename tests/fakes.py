@@ -15,6 +15,8 @@ from thinharness import (
 )
 from thinharness.providers import ModelTurn, ProviderError
 
+SCRIPTED_MODEL_NAME = "scripted-model"
+
 
 class FakeClient(OpenAIProvider):
     def __init__(self) -> None:
@@ -160,14 +162,23 @@ class ScriptedProvider:
     name = "OpenAI"
 
 class ScriptedModel:
-    def __init__(self, sessions, *, model: str = "scripted-model") -> None:
+    def __init__(self, sessions, *, model: str = SCRIPTED_MODEL_NAME) -> None:
         self.model = model
         self.provider = ScriptedProvider()
         self.api_key = "scripted-key"
         self.sessions = list(sessions)
+        self.resume_kind = "scripted"
 
     def new_session(self):
         """Return the next scripted session."""
+        return self.sessions.pop(0)
+
+    def resume_session(self, state):
+        """Return the next scripted session for a resumed run."""
+        if state.get("kind") != self.resume_kind:
+            from thinharness import HarnessError
+
+            raise HarnessError(f"resume_from kind {state.get('kind')!r} does not match {self.resume_kind!r}")
         return self.sessions.pop(0)
 
 class RecordingModel(ScriptedModel):
@@ -181,11 +192,20 @@ class RecordingModel(ScriptedModel):
         return super().new_session()
 
 class ScriptedSession:
-    def __init__(self, *, start_turn: ModelTurn, continue_turn: ModelTurn | None = None, on_start=None, on_continue=None) -> None:
+    def __init__(
+        self,
+        *,
+        start_turn: ModelTurn,
+        continue_turn: ModelTurn | None = None,
+        on_start=None,
+        on_continue=None,
+        dump_state=None,
+    ) -> None:
         self.start_turn = start_turn
         self.continue_turn = continue_turn or ModelTurn(text="done", raw={"id": "done"})
         self.on_start = on_start
         self.on_continue = on_continue
+        self._dump_state = dump_state if dump_state is not None else {"kind": "scripted", "version": 1, "model": SCRIPTED_MODEL_NAME}
 
     async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
         """Return the scripted start turn."""
@@ -205,6 +225,16 @@ class ScriptedSession:
             self.on_continue(message, tools, metadata)
         return self.continue_turn
 
+    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None):
+        """Return the scripted continuation turn after a resumed user prompt."""
+        if self.on_start:
+            self.on_start(prompt, instructions, tools, metadata, None)
+        return self.start_turn
+
+    def dump_state(self):
+        """Return scripted resume state."""
+        return copy.deepcopy(self._dump_state)
+
 class FailingSession:
     async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
         """Raise a provider failure from the child run."""
@@ -217,6 +247,14 @@ class FailingSession:
     async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
+
+    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None):
+        """Never continue after a failed start."""
+        raise AssertionError("should not continue")
+
+    def dump_state(self):
+        """Never provide resume state after a failed start."""
+        return None
 
 def echo_tool() -> ToolSpec:
     """Create a custom echo tool."""

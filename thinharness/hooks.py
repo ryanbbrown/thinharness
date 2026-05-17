@@ -276,6 +276,6 @@ def _parse_hook_output(output: str) -> Json | None:
 def _mark_strict_hook_exception(exc: BaseException) -> None:
     """Mark strict hook failures so tool plumbing can preserve them."""
     try:
-        exc._thinharness_strict_hook = True
+        exc.__dict__["_thinharness_strict_hook"] = True
     except Exception:
         return

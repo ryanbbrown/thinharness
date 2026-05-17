@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, Field
 
 from .tools import Json
+
+if TYPE_CHECKING:
+    from .core import HarnessError
 
 # =============================================================================
 # Normalized model types
@@ -90,6 +94,16 @@ class Model(Protocol):
         ...
 
 
+class ResumableModel(Model, Protocol):
+    """A Model that supports resume_from on Harness.run()."""
+
+    resume_kind: str
+
+    def resume_session(self, state: dict[str, Any]) -> ModelSession:
+        """Create isolated state from a prior run's resume_state."""
+        ...
+
+
 class ModelSession(Protocol):
     """Per-run model state consumed by the harness."""
 
@@ -128,9 +142,65 @@ class ModelSession(Protocol):
         """Continue a model run with a corrective user message."""
         ...
 
+    async def continue_with_user_prompt(
+        self,
+        prompt: str,
+        *,
+        instructions: str,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a resumed model run with a new user prompt."""
+        ...
+
+    def dump_state(self) -> dict[str, Any] | None:
+        """Serialize session state for resume, or None if unavailable."""
+        ...
+
 
 class ProviderError(RuntimeError):
     """Raised when a provider request fails."""
+
+
+_BASE_RESUME_KEYS = frozenset({"kind", "version", "model"})
+
+
+def _resume_error(message: str) -> HarnessError:
+    """Create a HarnessError without importing core at module import time."""
+    from .core import HarnessError
+
+    return HarnessError(message)
+
+
+def _validate_resume_state(
+    state: dict[str, Any],
+    *,
+    expected_kind: str,
+    expected_model: str,
+    required_fields: dict[str, type | tuple[type, ...]],
+) -> None:
+    """Validate resume state shape before any session mutation."""
+    if not isinstance(state, dict):
+        raise _resume_error("resume_from must be a dict")
+    if state.get("kind") != expected_kind:
+        raise _resume_error(f"resume_from kind {state.get('kind')!r} does not match {expected_kind!r}")
+    if state.get("version") != 1:
+        raise _resume_error(f"resume_from version {state.get('version')!r} is not supported")
+    if state.get("model") != expected_model:
+        raise _resume_error(f"resume_from model {state.get('model')!r} does not match current model {expected_model!r}")
+    for field_name, expected_type in required_fields.items():
+        if field_name not in state:
+            raise _resume_error(f"resume_from missing required field: {field_name!r}")
+        if not isinstance(state[field_name], expected_type):
+            raise _resume_error(f"resume_from field {field_name!r} has wrong type")
+    unknown = set(state) - (_BASE_RESUME_KEYS | required_fields.keys())
+    if unknown:
+        raise _resume_error(f"resume_from has unknown keys: {sorted(unknown)!r}")
+    try:
+        json.dumps(state)
+    except (TypeError, ValueError) as exc:
+        raise _resume_error("resume_from must be JSON-serializable") from exc
 
 
 # =============================================================================
@@ -282,6 +352,7 @@ class OpenAIResponsesModel:
     """Responses-like model implemented with OpenAI Responses."""
 
     capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+    resume_kind = "openai"
 
     def __init__(self, model: str, *, provider: OpenAIProvider | None = None, settings: ModelSettings | None = None) -> None:
         self.model = model
@@ -296,6 +367,20 @@ class OpenAIResponsesModel:
     def new_session(self) -> ModelSession:
         """Create an isolated Responses API session."""
         return OpenAIResponsesSession(self)
+
+    def resume_session(self, state: dict[str, Any]) -> ModelSession:
+        """Create an isolated Responses API session from resume state."""
+        _validate_resume_state(
+            state,
+            expected_kind=self.resume_kind,
+            expected_model=self.model,
+            required_fields={"previous_response_id": str},
+        )
+        if not state["previous_response_id"]:
+            raise _resume_error("resume_from field 'previous_response_id' must be non-empty")
+        session = OpenAIResponsesSession(self)
+        session.previous_response_id = state["previous_response_id"]
+        return session
 
     def build_payload(
         self,
@@ -382,6 +467,38 @@ class OpenAIResponsesSession:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
 
+    async def continue_with_user_prompt(
+        self,
+        prompt: str,
+        *,
+        instructions: str,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a resumed Responses API run with a new user prompt."""
+        payload = self.model.build_payload(
+            input_payload=prompt,
+            instructions=instructions,
+            tools=tools,
+            metadata=metadata,
+            structured_output=structured_output,
+        )
+        if self.previous_response_id:
+            payload["previous_response_id"] = self.previous_response_id
+        return await self._complete(payload)
+
+    def dump_state(self) -> dict[str, Any] | None:
+        """Serialize the latest Responses API continuation token."""
+        if not self.previous_response_id:
+            return None
+        return {
+            "kind": self.model.resume_kind,
+            "version": 1,
+            "model": self.model.model,
+            "previous_response_id": self.previous_response_id,
+        }
+
     async def _complete(self, payload: Json) -> ModelTurn:
         """Send a Responses API payload and normalize the response."""
         response = await self.model.provider.create_response(payload)
@@ -393,6 +510,7 @@ class AnthropicMessagesModel:
     """Responses-like model implemented with Anthropic Messages."""
 
     capabilities = ModelCapabilities(supports_json_schema_output=False, default_structured_output_mode="tool")
+    resume_kind = "anthropic"
 
     def __init__(
         self,
@@ -415,6 +533,21 @@ class AnthropicMessagesModel:
     def new_session(self) -> ModelSession:
         """Create an isolated Anthropic Messages session."""
         return AnthropicMessagesSession(self)
+
+    def resume_session(self, state: dict[str, Any]) -> ModelSession:
+        """Create an isolated Anthropic Messages session from resume state."""
+        _validate_resume_state(
+            state,
+            expected_kind=self.resume_kind,
+            expected_model=self.model,
+            required_fields={"system": (str, list), "messages": list},
+        )
+        if not all(isinstance(message, dict) for message in state["messages"]):
+            raise _resume_error("resume_from field 'messages' has wrong type")
+        session = AnthropicMessagesSession(self)
+        session.system = state["system"]
+        session.messages = copy.deepcopy(state["messages"])
+        return session
 
 
 class AnthropicMessagesSession:
@@ -475,6 +608,31 @@ class AnthropicMessagesSession:
         self.messages.append({"role": "user", "content": message})
         return await self._complete(tools=tools, metadata=metadata)
 
+    async def continue_with_user_prompt(
+        self,
+        prompt: str,
+        *,
+        instructions: str,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a resumed Anthropic Messages run with a new user prompt."""
+        if structured_output is not None:
+            raise ProviderError("Anthropic does not support native structured output")
+        self.messages.append({"role": "user", "content": prompt})
+        return await self._complete(tools=tools, metadata=metadata)
+
+    def dump_state(self) -> dict[str, Any] | None:
+        """Serialize the Anthropic transcript for resume."""
+        return {
+            "kind": self.model.resume_kind,
+            "version": 1,
+            "model": self.model.model,
+            "system": self.system,
+            "messages": copy.deepcopy(self.messages),
+        }
+
     async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
         """Send a Messages API request and normalize the response."""
         payload: Json = {
@@ -503,6 +661,7 @@ class OpenRouterModel:
         permissive_native_override=True,
         default_structured_output_mode="tool",
     )
+    resume_kind = "openrouter"
 
     def __init__(self, model: str, *, provider: OpenRouterProvider | None = None, settings: ModelSettings | None = None) -> None:
         self.model = model
@@ -517,6 +676,20 @@ class OpenRouterModel:
     def new_session(self) -> ModelSession:
         """Create an isolated OpenRouter session."""
         return OpenRouterSession(self)
+
+    def resume_session(self, state: dict[str, Any]) -> ModelSession:
+        """Create an isolated OpenRouter session from resume state."""
+        _validate_resume_state(
+            state,
+            expected_kind=self.resume_kind,
+            expected_model=self.model,
+            required_fields={"messages": list},
+        )
+        if not all(isinstance(message, dict) for message in state["messages"]):
+            raise _resume_error("resume_from field 'messages' has wrong type")
+        session = OpenRouterSession(self)
+        session.messages = copy.deepcopy(state["messages"])
+        return session
 
 
 class OpenRouterSession:
@@ -569,6 +742,28 @@ class OpenRouterSession:
         """Continue an OpenRouter run with a corrective user message."""
         self.messages.append({"role": "user", "content": message})
         return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+
+    async def continue_with_user_prompt(
+        self,
+        prompt: str,
+        *,
+        instructions: str,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Continue a resumed OpenRouter run with a new user prompt."""
+        self.messages.append({"role": "user", "content": prompt})
+        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+
+    def dump_state(self) -> dict[str, Any] | None:
+        """Serialize the OpenRouter transcript for resume."""
+        return {
+            "kind": self.model.resume_kind,
+            "version": 1,
+            "model": self.model.model,
+            "messages": copy.deepcopy(self.messages),
+        }
 
     async def _complete(
         self,
