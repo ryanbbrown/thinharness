@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.25", "ruff>=0.14"]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-cov>=7", "ruff>=0.14"]
 tracing = [
     "opentelemetry-api>=1.24",
     "opentelemetry-sdk>=1.24",
@@ -36,6 +36,21 @@ include = ["thinharness*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = [
+    "--cov=thinharness",
+    "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["thinharness"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
 
 [tool.ruff]
 line-length = 160
@@ -48,5 +63,6 @@ select = ["E", "F", "I", "UP", "B"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.25",
+    "pytest-cov>=7",
     "ruff>=0.14",
 ]
