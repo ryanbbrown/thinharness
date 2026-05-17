@@ -13,7 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .tools import Json, ToolResult, ToolSpec
+from .base import Json, ToolResult, ToolSpec
 
 _SHUTDOWN_GRACE_SECONDS = 3
 _INSTALL_HINT = "Install MCP support with: pip install thinharness[mcp]"

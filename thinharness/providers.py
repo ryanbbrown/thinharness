@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, Field
 
-from .tools import Json
+from .tools.base import Json
 
 if TYPE_CHECKING:
     from .core import HarnessError

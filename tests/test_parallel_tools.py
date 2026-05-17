@@ -17,7 +17,7 @@ from thinharness import (
     HarnessConfig,
     ToolSpec,
 )
-from thinharness.tools import FileTools
+from thinharness.tools.filesystem import FileTools
 
 
 def test_tool_spec_sequential_default_and_not_in_schema() -> None:

@@ -24,7 +24,7 @@ from thinharness import (
     build_child_harness,
 )
 from thinharness.providers import ModelToolCall, ToolOutput
-from thinharness.tools import Json, ToolResult, ToolSpec
+from thinharness.tools.base import Json, ToolResult, ToolSpec
 
 pytest.importorskip("mcp")
 

@@ -26,7 +26,6 @@ from .hooks import (
     UserPromptSubmitContext,
     apply_prompt_context,
 )
-from .mcp import MCPServer
 from .output import FINAL_RESULT_TOOL_NAME, OutputMode, OutputSchema, OutputSpec, OutputValidationError, resolve_output_spec
 from .providers import (
     Model,
@@ -40,10 +39,12 @@ from .providers import (
     ToolOutput,
     infer_model,
 )
-from .skills import SkillRegistry
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS, Json, ToolSpec, _invoke_tool
-from .tools import builtin_tools as make_builtin_tools
+from .tools.base import Json, ToolSpec, _invoke_tool
+from .tools.filesystem import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS
+from .tools.filesystem import builtin_tools as make_builtin_tools
+from .tools.mcp import MCPServer
+from .tools.skills import SkillRegistry
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
 MAX_PARALLEL_TOOL_WORKERS = 16

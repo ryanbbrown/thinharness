@@ -38,7 +38,7 @@ from thinharness import (
 )
 from thinharness.hooks import current_tool_call_context
 from thinharness.providers import ModelTurn
-from thinharness.tools import _invoke_tool
+from thinharness.tools.base import _invoke_tool
 
 
 def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:

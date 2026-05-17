@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from thinharness.tools import FileTools
+from thinharness.tools.filesystem import FileTools
 
 
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:

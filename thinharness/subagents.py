@@ -9,9 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context
-from .mcp import MCPServer
 from .providers import infer_model, parse_model_ref
-from .tools import Json, ToolResult, ToolSpec
+from .tools.base import Json, ToolResult, ToolSpec
+from .tools.mcp import MCPServer
 from .tracing import TracingOptions
 
 if TYPE_CHECKING:

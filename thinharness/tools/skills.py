@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .tools import Json, PathValidationError, ToolResult, ToolSpec, _path_error, _timeout_error_message, coerce_args, contained_path
+from .base import Json, PathValidationError, ToolResult, ToolSpec, _path_error, _timeout_error_message, coerce_args, contained_path
 
 
 @dataclass(frozen=True)

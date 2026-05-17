@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from .tools import (
+from .base import (
     Json,
     PathValidationError,
     StrictArgs,

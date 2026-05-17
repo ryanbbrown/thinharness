@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from .tools import Json, ToolSpec
+from .tools.base import Json, ToolSpec
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
 

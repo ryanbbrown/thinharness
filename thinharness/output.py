@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import TypeAdapter, ValidationError
 
 from .providers import StructuredOutputRequest
-from .tools import Json, _clean_schema, _inline_schema_refs
+from .tools.base import Json, _clean_schema, _inline_schema_refs
 
 OutputMode = Literal["auto", "native", "tool", "prompted"]
 ResolvedOutputMode = Literal["native", "tool", "prompted", "text"]

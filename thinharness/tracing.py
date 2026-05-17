@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from .tools import Json
+from .tools.base import Json
 
 try:
     from opentelemetry.trace import SpanKind, Status, StatusCode
