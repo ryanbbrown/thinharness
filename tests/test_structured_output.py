@@ -19,6 +19,7 @@ from thinharness import (
     ModelTurn,
     NativeOutput,
     OpenRouterModel,
+    RunUsage,
     SubAgentConfig,
     TextOutput,
     ToolSpec,
@@ -27,6 +28,7 @@ from thinharness import (
     build_child_harness,
     create_subagent_tool,
 )
+from thinharness.core import _compute_limit_notices
 from thinharness.providers import ProviderError
 from thinharness.subagents import SubAgentArgs, run_subagent_tool
 
@@ -95,7 +97,9 @@ def test_prompted_mode_strips_json_fence(tmp_path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text='```json\n{"name":"Ada","age":37}\n```', raw={"id": "resp_1"}))
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="prompted"), model=ScriptedModel([session]))
 
-    assert harness.run_sync("make a person").output == Person(name="Ada", age=37)
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
 
 
 def test_typed_dict_dataclass_and_list_outputs(tmp_path) -> None:
@@ -160,9 +164,9 @@ def test_tool_mode_invalid_args_retry_uses_tool_output(tmp_path) -> None:
     seen_messages = []
 
     class RecordingSession(ScriptedSession):
-        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
+        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
             seen_messages.append(message)
-            return await super().continue_with_user_message(message, tools=tools, metadata=metadata, structured_output=structured_output)
+            return await super().continue_with_user_message(message, tools=tools, metadata=metadata, structured_output=structured_output, notices=notices)
 
     session = RecordingSession(
         start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')], raw={"id": "bad"}),
@@ -232,6 +236,89 @@ def test_retry_not_counted_when_model_limit_blocks_corrective_request(tmp_path) 
         harness.run_sync("make a person")
 
     assert events == [("limit_reached", 0)]
+
+def test_limit_notice_dedupes_across_structured_output_retries(tmp_path) -> None:
+    session = ScriptedSession(
+        start_turn=ModelTurn(text="not structured", raw={"id": "bad"}),
+        continue_turn=ModelTurn(text="still not structured", raw={"id": "bad-again"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool", output_retries=2, max_tool_calls=0),
+        model=ScriptedModel([session]),
+    )
+
+    with pytest.raises(HarnessError, match="output validation exceeded"):
+        harness.run_sync("make a person")
+
+    assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in session.notice_calls] == [
+        ("start", [("tool_calls", 0)]),
+        ("continue_with_user_message", []),
+        ("continue_with_user_message", []),
+    ]
+    assert session.notice_calls[0][1][0].content == "Tool calls are not available on this run; produce the answer with final_result."
+
+def test_invalid_final_result_correction_receives_near_limit_notice(tmp_path) -> None:
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')], raw={"id": "bad"}),
+        continue_turn=ModelTurn(tool_calls=[
+            ModelToolCall(id="call_final_2", name="final_result", arguments='{"name":"Ada","age":37}')
+        ], raw={"id": "good"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool", max_model_requests=2),
+        model=ScriptedModel([session]),
+    )
+
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
+
+    assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in session.notice_calls] == [
+        ("start", []),
+        ("continue_with_tools", [("model_requests", 1)]),
+    ]
+    assert result.usage.output_retries == 1
+    assert result.usage.tool_calls == 0
+    assert session.notice_calls[1][1][0].content == "Final request: produce the answer now with final_result."
+    assert "final_result" in session.notice_calls[1][1][0].content
+
+def test_limit_notices_ignore_output_retry_usage() -> None:
+    low_retry_usage = RunUsage(model_requests=1, tool_calls=0, output_retries=0)
+    high_retry_usage = RunUsage(model_requests=1, tool_calls=0, output_retries=99)
+    config = HarnessConfig(max_model_requests=2, max_tool_calls=1)
+
+    low_retry_notices = _compute_limit_notices(config, low_retry_usage, set(), final_result_tool_available=True)
+    high_retry_notices = _compute_limit_notices(config, high_retry_usage, set(), final_result_tool_available=True)
+
+    assert low_retry_notices == high_retry_notices
+
+@pytest.mark.parametrize(
+    ("output_mode", "output_type", "turn_text", "mentions_final_result"),
+    [
+        ("tool", Person, "", True),
+        ("native", Person, '{"name":"Ada","age":37}', False),
+        ("prompted", Person, '{"name":"Ada","age":37}', False),
+        ("auto", TextOutput(), "plain", False),
+        ("auto", None, "plain", False),
+    ],
+)
+def test_limit_notices_only_mention_final_result_for_tool_output_mode(tmp_path, output_mode, output_type, turn_text, mentions_final_result) -> None:
+    if output_mode == "tool":
+        turn = ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}')], raw={"id": "done"})
+    else:
+        turn = ModelTurn(text=turn_text, raw={"id": "done"})
+    session = ScriptedSession(start_turn=turn)
+    model = ScriptedModel([session])
+    model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=output_type, output_mode=output_mode, max_model_requests=1, max_tool_calls=0),
+        model=model,
+    )
+
+    harness.run_sync("go")
+
+    content = "\n".join(notice.content for notice in session.notice_calls[0][1])
+    assert ("final_result" in content) is mentions_final_result
 
 
 def test_final_result_mixed_with_tool_calls_is_unexpected_and_dispatches_no_tools(tmp_path) -> None:

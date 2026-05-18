@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-cov>=7", "ruff>=0.14"]
+dev = ["pyright>=1.1.409", "pytest>=8", "pytest-asyncio>=0.25", "pytest-cov>=7", "ruff>=0.14"]
 tracing = [
     "opentelemetry-api>=1.24",
     "opentelemetry-sdk>=1.24",
@@ -59,8 +59,14 @@ extend-exclude = ["vendor", "experiments", ".context"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.pyright]
+include = ["thinharness"]
+exclude = ["vendor", "experiments", ".context", "e2e", "tests"]
+pythonVersion = "3.11"
+
 [dependency-groups]
 dev = [
+    "pyright>=1.1.409",
     "pytest>=8",
     "pytest-asyncio>=0.25",
     "pytest-cov>=7",

@@ -99,22 +99,22 @@ class SequenceSession:
         self.tool_outputs: list[list[ToolOutput]] = []
         self._dump_state = dump_state if dump_state is not None else {"kind": "scripted", "version": 1, "model": "scripted-model"}
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
         """Return the scripted first turn."""
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
+    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
         """Record tool outputs and return the next scripted turn."""
         self.tool_outputs.append(outputs)
         if not self.continue_turns:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
+    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
         """No tests expect user-message continuations."""
         raise AssertionError("unexpected user-message continuation")
 
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None):
+    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
         """Return the scripted turn for a resumed prompt."""
         return self.start_turn
 

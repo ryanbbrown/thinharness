@@ -113,6 +113,30 @@ def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(
         "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"},
     }
 
+def test_subagent_receives_fresh_child_budget_notices(tmp_path: Path) -> None:
+    parent_call = ModelTurn(
+        tool_calls=[
+            ModelToolCall(id="call_1", name="echo", arguments='{"value":"parent"}'),
+            ModelToolCall(id="call_2", name="subagent", arguments='{"task":"help"}'),
+        ],
+        raw={"id": "parent-start"},
+    )
+    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
+    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
+    model = ScriptedModel([parent, child])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=2, max_tool_calls=2),
+        model=model,
+        tools=[echo_tool()],
+    )
+    harness.add_tool(create_subagent_tool(harness, []))
+
+    assert harness.run_sync("delegate").text == "parent done"
+
+    assert parent.notice_calls[0][1] == []
+    assert [(notice.limit_kind, notice.remaining) for notice in parent.notice_calls[1][1]] == [("model_requests", 1), ("tool_calls", 0)]
+    assert child.notice_calls[0][1] == []
+
 def test_default_subagent_does_not_close_shared_parent_provider(tmp_path: Path) -> None:
     parent_call = ModelTurn(
         tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],

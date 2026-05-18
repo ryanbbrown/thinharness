@@ -30,6 +30,7 @@ from .output import FINAL_RESULT_TOOL_NAME, OutputMode, OutputSchema, OutputSpec
 from .providers import (
     Model,
     ModelCapabilities,
+    ModelNotice,
     ModelSession,
     ModelToolCall,
     ModelTurn,
@@ -60,6 +61,75 @@ StopReason = Literal[
     "tool_retries_exceeded",
     "unexpected_model_behavior",
 ]
+LimitNoticeKey = tuple[Literal["limit_warning"], Literal["model_requests", "tool_calls"], int]
+
+
+def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
+    """Return the once-per-run key for a model notice."""
+    assert notice.limit_kind is not None and notice.remaining is not None
+    return (notice.kind, notice.limit_kind, notice.remaining)
+
+
+def _append_notice_once(notices: list[ModelNotice], emitted: set[LimitNoticeKey], notice: ModelNotice) -> None:
+    """Append a notice once per run."""
+    key = _limit_notice_dedup_key(notice)
+    if key in emitted:
+        return
+    notices.append(notice)
+    emitted.add(key)
+
+
+def _compute_limit_notices(
+    config: HarnessConfig,
+    usage: RunUsage,
+    emitted: set[LimitNoticeKey],
+    *,
+    final_result_tool_available: bool,
+) -> list[ModelNotice]:
+    """Return model-facing warnings for the current run budget state."""
+    notices: list[ModelNotice] = []
+    final_model_text = (
+        "Final request: produce the answer now with final_result."
+        if final_result_tool_available
+        else "Final request: produce the answer now; do not request tools."
+    )
+    remaining_model_requests = config.max_model_requests - usage.model_requests
+    if remaining_model_requests == 1:
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=final_model_text,
+            limit_kind="model_requests",
+            remaining=1,
+        ))
+
+    if config.max_tool_calls is None:
+        return notices
+    remaining_tool_calls = config.max_tool_calls - usage.tool_calls
+    if remaining_tool_calls == 0:
+        no_tools_text = (
+            "Tool calls are not available on this run; produce the answer with final_result."
+            if final_result_tool_available and config.max_tool_calls == 0
+            else "No tool calls remain: produce the answer with final_result."
+            if final_result_tool_available
+            else "Tool calls are not available on this run; answer without tools."
+            if config.max_tool_calls == 0
+            else "No tool calls remain: answer now without tools."
+        )
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=no_tools_text,
+            limit_kind="tool_calls",
+            remaining=0,
+        ))
+    elif remaining_tool_calls == 1:
+        tool_phrase = "tool call remains besides final_result" if final_result_tool_available else "tool call remains"
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=f"One {tool_phrase}: avoid fan-out.",
+            limit_kind="tool_calls",
+            remaining=1,
+        ))
+    return notices
 
 
 def _build_resume_state(
@@ -263,6 +333,7 @@ class Harness:
         responses: list[Json] = []
         tool_call_records: list[Json] = []
         usage = RunUsage()
+        emitted_limit_warnings: set[LimitNoticeKey] = set()
         result: HarnessResult | None = None
         terminal_error: BaseException | None = None
         stop_reason: StopReason = "end_turn"
@@ -323,11 +394,22 @@ class Harness:
         async def advance_model(request, *, output_retry: bool = False) -> ModelTurn:
             """Run one provider request with limit, usage, and tracing ceremony."""
             check_model_limit()
+            notices = _compute_limit_notices(
+                self.config,
+                usage,
+                emitted_limit_warnings,
+                final_result_tool_available=self.output_schema is not None and self.output_schema.mode == "tool",
+            )
             if output_retry:
                 usage.output_retries += 1
             with run_tracer.model(self.model) as model_span:
+                if notices:
+                    model_span.set_attributes({
+                        "thinharness.model.notices.count": len(notices),
+                        "thinharness.model.notices.kinds": [notice.kind for notice in notices],
+                    })
                 try:
-                    advanced_turn = await request()
+                    advanced_turn = await request(notices)
                     usage.model_requests += 1
                 except Exception as exc:
                     model_span.record_exception(exc)
@@ -426,22 +508,24 @@ class Harness:
                                 agent_span.record_exception(exc)
                                 agent_span.set_error(str(exc), type(exc).__name__)
                                 raise
-                            turn = await advance_model(lambda: active_session.start(
+                            turn = await advance_model(lambda notices: active_session.start(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
                                 metadata=metadata,
                                 structured_output=structured_output,
+                                notices=notices,
                             ))
                         else:
                             assert session is not None
                             active_session = session
-                            turn = await advance_model(lambda: active_session.continue_with_user_prompt(
+                            turn = await advance_model(lambda notices: active_session.continue_with_user_prompt(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
                                 metadata=metadata,
                                 structured_output=structured_output,
+                                notices=notices,
                             ))
                         while True:
                             responses.append(turn.raw)
@@ -468,11 +552,12 @@ class Harness:
                                             final_id = final.id
                                             assert final_id, "tool-mode final_result retry requires a tool call id"
                                             turn = await advance_model(
-                                                lambda final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
+                                                lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
                                                     [ToolOutput(final_id, retry_message)],
                                                     tools=self.tool_schemas(),
                                                     metadata=metadata,
                                                     structured_output=structured_output,
+                                                    notices=notices,
                                                 ),
                                                 output_retry=True,
                                             )
@@ -491,11 +576,12 @@ class Harness:
                                             "Call final_result with the final answer.",
                                         )
                                         # There is no final_result call id to answer here, so this correction must be a user message.
-                                        turn = await advance_model(lambda retry_message=retry_message: active_session.continue_with_user_message(
+                                        turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
                                             structured_output=structured_output,
+                                            notices=notices,
                                         ), output_retry=True)
                                         continue
                                 elif not turn.tool_calls:
@@ -508,11 +594,12 @@ class Harness:
                                             error_message,
                                             "Return only valid JSON for the requested schema.",
                                         )
-                                        turn = await advance_model(lambda retry_message=retry_message: active_session.continue_with_user_message(
+                                        turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
                                             structured_output=structured_output,
+                                            notices=notices,
                                         ), output_retry=True)
                                         continue
                                     agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
@@ -534,11 +621,12 @@ class Harness:
                             tool_call_records.extend(recorded)
                             check_tool_retry_limits(turn.tool_calls, executions)
                             tool_outputs = outputs
-                            turn = await advance_model(lambda tool_outputs=tool_outputs: active_session.continue_with_tools(
+                            turn = await advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
                                 tool_outputs,
                                 tools=self.tool_schemas(),
                                 metadata=metadata,
                                 structured_output=structured_output,
+                                notices=notices,
                             ))
                     except asyncio.CancelledError as exc:
                         stop_reason = "cancelled"

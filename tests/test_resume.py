@@ -192,6 +192,55 @@ def test_resumed_run_can_use_structured_output_and_still_omits_resume_state(tmp_
     assert resumed.output == Answer(value="ok")
     assert resumed.resume_state is None
 
+def test_resumed_user_prompt_receives_limit_notice(tmp_path: Path) -> None:
+    first_session = ScriptedSession(
+        start_turn=ModelTurn(text="ready", raw={"id": "first"}),
+        dump_state={"kind": "scripted", "version": 1, "model": "scripted"},
+    )
+    resumed_session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "second"}))
+    model = _ScriptedResumeModel([first_session, resumed_session])
+    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=model).run_sync("first")
+
+    resumed = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=model).run_sync(
+        "follow-up",
+        resume_from=first.resume_state,
+    )
+
+    assert resumed.text == "done"
+
+    assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in resumed_session.notice_calls] == [
+        ("continue_with_user_prompt", [("model_requests", 1)])
+    ]
+
+def test_resumed_user_prompt_runs_prompt_submit_hooks_before_notices(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+    events: list[str] = []
+    first_session = ScriptedSession(
+        start_turn=ModelTurn(text="ready", raw={"id": "first"}),
+        dump_state={"kind": "scripted", "version": 1, "model": "scripted"},
+    )
+    resumed_session = ScriptedSession(
+        start_turn=ModelTurn(text="done", raw={"id": "second"}),
+        on_start=lambda prompt, _instructions, _tools, _metadata, _previous: captured.setdefault("prompt", prompt),
+    )
+    model = _ScriptedResumeModel([first_session, resumed_session])
+    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
+
+    def add_context(ctx) -> None:
+        events.append("user_prompt_submit")
+        ctx.additional_context.append("resume policy")
+
+    resumed = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1),
+        model=model,
+        hooks=[Hook("user_prompt_submit", add_context)],
+    ).run_sync("follow-up", resume_from=first.resume_state)
+
+    assert resumed.text == "done"
+    assert events == ["user_prompt_submit"]
+    assert captured["prompt"] == "follow-up\n\n<hook_context>\nresume policy\n</hook_context>"
+    assert resumed_session.notice_calls[0][1][0].content == "Final request: produce the answer now; do not request tools."
+
 
 def test_no_openai_response_id_omits_resume_state(tmp_path: Path) -> None:
     class NoIdProvider(OpenAIProvider):
@@ -230,7 +279,7 @@ def test_non_clean_exits_omit_resume_state(tmp_path: Path) -> None:
 
 def test_provider_error_omits_resume_state(tmp_path: Path) -> None:
     class FailingProviderSession(_NoResumeSession):
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None) -> ModelTurn:
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None) -> ModelTurn:
             """Fail the provider request."""
             raise ProviderError("provider failed")
 
@@ -415,7 +464,7 @@ async def test_reentrancy_beats_resume_validation(tmp_path: Path) -> None:
     release = asyncio.Event()
 
     class SlowSession(_NoResumeSession):
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
             started.set()
             await release.wait()
             return ModelTurn(text="done", raw={"id": "done"})
@@ -466,18 +515,18 @@ class _NoResumeModel:
 class _NoResumeSession:
     """Minimal session implementing the non-resume run contract."""
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None) -> ModelTurn:
+    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None) -> ModelTurn:
         """Return a terminal text turn."""
         return ModelTurn(text="done", raw={"id": "done"})
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None) -> ModelTurn:
+    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
         """Reject unexpected tool continuation."""
         raise AssertionError("unexpected tool continuation")
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None) -> ModelTurn:
+    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
         """Reject unexpected corrective continuation."""
         raise AssertionError("unexpected user-message continuation")
 
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None) -> ModelTurn:
+    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
         """Reject unexpected resumed continuation."""
         raise AssertionError("unexpected resumed prompt")

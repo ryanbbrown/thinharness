@@ -37,7 +37,7 @@ from thinharness import (
     create_subagent_tool,
 )
 from thinharness.hooks import current_tool_call_context
-from thinharness.providers import ModelTurn
+from thinharness.providers import ModelToolCall, ModelTurn
 from thinharness.tools.base import _invoke_tool
 
 
@@ -52,6 +52,102 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert client.payloads[1]["previous_response_id"] == "resp_1"
     assert client.payloads[1]["input"][0]["type"] == "function_call_output"
     assert "hello" in client.payloads[1]["input"][0]["output"]
+
+def test_max_model_requests_zero_blocks_before_provider_request(tmp_path: Path) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=0), model=ScriptedModel([session]))
+
+    with pytest.raises(HarnessError, match="max_model_requests=0"):
+        harness.run_sync("go")
+
+    assert session.notice_calls == []
+
+def test_final_model_request_notice_is_sent_on_initial_request(tmp_path: Path) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=ScriptedModel([session]))
+
+    assert harness.run_sync("go").text == "done"
+
+    assert session.notice_calls[0][0] == "start"
+    assert [(notice.limit_kind, notice.remaining) for notice in session.notice_calls[0][1]] == [("model_requests", 1)]
+    assert session.notice_calls[0][1][0].content == "Final request: produce the answer now; do not request tools."
+
+def test_warning_only_run_does_not_fire_limit_reached(tmp_path: Path) -> None:
+    events = []
+    session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1, max_tool_calls=0),
+        model=ScriptedModel([session]),
+        hooks=[Hook("limit_reached", lambda ctx: events.append(ctx.limit_kind))],
+    )
+
+    assert harness.run_sync("go").text == "done"
+
+    assert events == []
+
+def test_harness_config_has_no_notice_toggle() -> None:
+    assert "limit_warnings" not in HarnessConfig.model_fields
+    assert "model_notices" not in HarnessConfig.model_fields
+
+def test_limit_notices_are_sent_on_tool_continuation(tmp_path: Path) -> None:
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="echo", arguments='{"value":"ok"}')], raw={"id": "start"}),
+        continue_turn=ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=2, max_tool_calls=1),
+        model=ScriptedModel([session]),
+        tools=[echo_tool()],
+    )
+
+    assert harness.run_sync("go").text == "done"
+
+    assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in session.notice_calls] == [
+        ("start", [("tool_calls", 1)]),
+        ("continue_with_tools", [("model_requests", 1), ("tool_calls", 0)]),
+    ]
+
+def test_exhausted_tool_budget_notice_is_sent_on_initial_request(tmp_path: Path) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=0), model=ScriptedModel([session]))
+
+    assert harness.run_sync("go").text == "done"
+
+    assert [(notice.limit_kind, notice.remaining) for notice in session.notice_calls[0][1]] == [("tool_calls", 0)]
+    assert session.notice_calls[0][1][0].content == "Tool calls are not available on this run; answer without tools."
+
+@pytest.mark.parametrize("max_tool_calls, expected_remaining", [(1, 1), (0, 0)])
+def test_combined_limit_notices_use_stable_order(tmp_path: Path, max_tool_calls: int, expected_remaining: int) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1, max_tool_calls=max_tool_calls),
+        model=ScriptedModel([session]),
+    )
+
+    assert harness.run_sync("go").text == "done"
+
+    assert [(notice.limit_kind, notice.remaining) for notice in session.notice_calls[0][1]] == [
+        ("model_requests", 1),
+        ("tool_calls", expected_remaining),
+    ]
+
+def test_same_turn_tool_overage_does_not_send_continuation_notice(tmp_path: Path) -> None:
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[
+            ModelToolCall(id="call_1", name="echo", arguments='{"value":"one"}'),
+            ModelToolCall(id="call_2", name="echo", arguments='{"value":"two"}'),
+        ], raw={"id": "start"})
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=1),
+        model=ScriptedModel([session]),
+        tools=[echo_tool()],
+    )
+
+    with pytest.raises(HarnessError, match="max_tool_calls=1"):
+        harness.run_sync("go")
+
+    assert [(method, len(notices)) for method, notices in session.notice_calls] == [("start", 1)]
 
 async def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
     provider = FakeAnthropicProvider()
@@ -399,14 +495,14 @@ async def test_external_cancellation_records_run_end_and_allows_rerun(tmp_path: 
     events = []
 
     class WaitingSession:
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None):
+        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
             started.set()
             await asyncio.Event().wait()
 
-        async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None):
+        async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
             raise AssertionError("should not continue")
 
-        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None):
+        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
             raise AssertionError("should not continue")
 
     model = ScriptedModel([
