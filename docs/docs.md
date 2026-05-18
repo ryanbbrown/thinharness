@@ -24,6 +24,8 @@ The contract:
 
 `resume_from` is a new-turn API. It means the prior run completed, and the next call appends a new user message to that conversation. It is not a retry mechanism, an interrupted-tool-call recovery mechanism, or a way to continue the assistant's previous response.
 
+`user_prompt_submit` hooks run for every caller-submitted prompt, including resumed prompts. If a hook adds prompt context on a resumed run, the provider receives the resumed prompt, then hook context, then any harness-owned limit notice.
+
 `resume_state` is emitted only for clean terminal runs where `stop_reason == "end_turn"` and the provider session can produce a usable continuation token. It is `None` after provider errors, tool errors, hook cancellation, max-turn or max-tool limits, structured-output validation exhaustion, tool retry exhaustion, and structured-output `final_result` tool termination.
 
 Provider behavior differs internally:
@@ -31,6 +33,8 @@ Provider behavior differs internally:
 - OpenAI Responses stores conversation state server-side. `resume_state` contains the previous response id, and a later resumed call sends that id as `previous_response_id`.
 - Anthropic Messages is stateless. `resume_state` contains the full message transcript and grows with the conversation.
 - OpenRouter chat completions is stateless. `resume_state` contains the full chat transcript and grows with the conversation.
+
+Model-facing limit notices are real provider input, so they may be part of the conversation state behind `resume_state`. Notice text is scoped to "this run", deduping is per `Harness.run(...)`, and a resumed run may emit a notice that is also visible in prior conversation history.
 
 OpenAI response retention is controlled by the provider. If a stored response is deleted or expires, resuming from that state surfaces as a provider error with the provider's error text.
 

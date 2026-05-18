@@ -1,5 +1,8 @@
 """Public API for the filesystem harness."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _metadata_version
+
 from .core import Harness, HarnessConfig, HarnessError, HarnessResult, RunUsage, UnexpectedModelBehavior
 from .hooks import (
     AfterSubagentRunContext,
@@ -58,7 +61,13 @@ from .tools import (
 )
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
+try:
+    __version__ = _metadata_version("thinharness")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
+
 __all__ = [
+    "__version__",
     "FileTools",
     "Harness",
     "HarnessConfig",

@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from thinharness import Harness, HarnessConfig, Hook
 
-
 MODEL = os.getenv("E2E_SKILLS_MODEL", "anthropic:claude-sonnet-4-5-20250929")
 SYSTEM_PROMPT = """You are an exacting skill-using agent. Read a skill before running any script from it."""
 PROMPT = """

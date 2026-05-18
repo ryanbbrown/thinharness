@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from thinharness import Harness, HarnessConfig, Hook
 
-
 MODEL = os.getenv("E2E_STRUCTURED_MODEL", "openai:gpt-5-mini")
 SYSTEM_PROMPT = """You are a structured-output extraction agent. Use tools before finalizing."""
 PROMPT = """

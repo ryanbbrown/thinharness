@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from thinharness import Harness, HarnessConfig, Hook, MCPServerStdio
 
-
 MODEL = os.getenv("E2E_MCP_MODEL", "openrouter:anthropic/claude-sonnet-4.5")
 SYSTEM_PROMPT = """You are an MCP test agent. Use the discovered MCP tool for arithmetic."""
 PROMPT = """

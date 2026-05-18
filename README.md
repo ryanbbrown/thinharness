@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="ThinHarness.svg" alt="ThinHarness" width="360">
+  <img src="assets/ThinHarness.svg" alt="ThinHarness" width="360">
 </p>
 
 <p align="center">
   <br/>
-  A minimal filesystem harness for AI agents &mdash;
+  A minimal, opinionated agent harness &mdash;
   <br/>
-  provider-native tools, lightweight core, no orchestration layer.
+  focused scope, readable core, easy to fork.
   <br/><br/>
 </p>
 
@@ -20,27 +20,9 @@
 
 ## Why this exists
 
-<!-- ===== A/B for the opening paragraph — pick one (or hybridize), then delete the other and these comments ===== -->
+Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-<!-- VERSION A (current) -->
-
-The Python agent harness landscape today is split between two camps. On one side, libraries that wrap a specific coding-agent product — the Claude Agent SDK shells out to a 200k+ LOC Claude Code CLI, and you're effectively importing those opinions whether you want them or not. On the other side, general-purpose frameworks that have grown large enough to be their own learning project: Pydantic AI is 63k LOC, OpenAI Agents SDK is 77k, Google ADK is 90k. If you want a small, general harness for non-coding business work — answering questions over a dataset, running analyses, extracting from documents — you're stuck importing tens of thousands of lines of someone else's opinions to get to the basic loop underneath.
-
-<!-- VERSION B (older, punchier but factually loose — "every harness is built for coding agents" isn't quite right) -->
-
-<!--
-Every agent harness on the market is built for coding agents used interactively. If you want an agent that does something other than edit code — answer business questions, run analyses, extract from documents, whatever — you're importing tens of thousands of lines of someone else's coding-agent opinions to get to the basic loop underneath.
--->
-
-<!-- VERSION C (tighter hybrid attempt — keeps Version A's accuracy, trims for punchiness) -->
-
-<!--
-Most Python agent harnesses are either tied to a coding-agent product or general-purpose enough to be their own learning project. The Claude Agent SDK shells out to a 200k+ LOC Claude Code CLI. Pydantic AI is 63k LOC, OpenAI Agents SDK is 77k, Google ADK is 90k. If you want a small, general harness for non-coding work — answering questions over a dataset, running analyses, extracting from documents — you're importing tens of thousands of lines of someone else's opinions to get to the basic loop.
--->
-
-<!-- ===== end A/B ===== -->
-
-The agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **3,348 lines of Python** across 11 files. The whole thing. You can read it in a sitting. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,535 lines of Python** across 14 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -58,197 +40,188 @@ The agent loop isn't that complicated. Provider call, parse tool calls, run them
 <table>
   <thead>
     <tr>
-      <th align="left">Library</th>
-      <th align="right">LOC</th>
-      <th align="center">Hooks</th>
-      <th align="center">Subagents</th>
-      <th align="center">Structured&nbsp;output</th>
-      <th align="center">Skills</th>
-      <th align="center">Multi&#8209;provider</th>
-      <th align="center">MCP</th>
-      <th align="center">Built&#8209;in&nbsp;FS&nbsp;tools</th>
-      <th align="center">OTel&nbsp;tracing</th>
+      <td align="left" width="285" bgcolor="#eaeef2"><b>Library</b></td>
+      <td align="center" width="70" bgcolor="#eaeef2"><b>LOC<sup>1</sup></b></td>
+      <td align="center" width="52" bgcolor="#eaeef2"><b>Hooks</b></td>
+      <td align="center" width="70" bgcolor="#eaeef2"><b>Subagents</b></td>
+      <td align="center" width="68" bgcolor="#eaeef2"><b>Structured<br>output</b></td>
+      <td align="center" width="52" bgcolor="#eaeef2"><b>Skills</b></td>
+      <td align="center" width="82" bgcolor="#eaeef2"><b>FS<br>tools</b></td>
+      <td align="center" width="62" bgcolor="#eaeef2"><b>OTel<br>tracing</b></td>
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness @ 14ac220 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-17 -->
     <tr>
-      <td align="left"><b>ThinHarness</b></td>
-      <td align="right"><b>3,348</b></td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
+      <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>4,535</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
+      <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
     </tr>
     <!-- LOC: tokei src/claude_agent_sdk/ -t Python --exclude testing  ·  anthropics/claude-agent-sdk-python @ c352a50 -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" width="20" height="20" alt="">
-        &nbsp;Claude Agent SDK<sup>*</sup>
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" width="20" height="20" align="absmiddle" alt="">
+        &nbsp;Claude&nbsp;Agent&nbsp;SDK<sup>2</sup>
       </td>
-      <td align="right">8,202</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">⚠️</td>
+      <td align="right" bgcolor="#ffffff">8,202</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">⚠️</td>
     </tr>
     <!-- LOC: tokei src/smolagents/ -t Python --exclude cli.py --exclude gradio_ui.py --exclude vision_web_browser.py  ·  huggingface/smolagents @ 025b6ad -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/huggingface.svg" width="20" height="20" alt="">
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/huggingface.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;smolagents
       </td>
-      <td align="right">10,091</td>
-      <td align="center">⚠️</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">10,091</td>
+      <td align="center" bgcolor="#ffffff">⚠️</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei libs/deepagents/deepagents/ -t Python  ·  langchain-ai/deepagents @ 7465d77 -->
+    <!-- Substrate (see footnote 3): deepagents is a thin wrapper over LangChain/LangGraph.
+         Effective import surface ≈105k LOC, measured with the same strict filter as the rest of the table:
+           tokei libs/langgraph/langgraph/ libs/prebuilt/langgraph/ -t Python  ·  langchain-ai/langgraph @ 076e2a3  =>  26,144
+           tokei libs/core/langchain_core/ -t Python --exclude document_loaders --exclude documents --exclude embeddings --exclude indexing --exclude retrievers.py --exclude vectorstores --exclude cross_encoders.py  ·  langchain-ai/langchain @ 73d4fd9  =>  54,992
+           tokei libs/langchain_v1/langchain/ -t Python --exclude embeddings  ·  langchain-ai/langchain @ 73d4fd9  =>  ~9,000
+           deepagents itself: 15,369
+    -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" width="20" height="20" alt="">
-        &nbsp;deepagents
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" width="20" height="20" align="absmiddle" alt="">
+        &nbsp;deepagents<sup>3</sup>
       </td>
-      <td align="right">15,369</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
+      <td align="right" bgcolor="#ffffff">15,369</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
     </tr>
     <!-- LOC: tokei src/strands/ -t Python --exclude experimental --exclude vended_plugins --exclude multiagent/a2a  ·  strands-agents/sdk-python @ 1232230 -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/amazonwebservices.svg" width="20" height="20" alt="">
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/amazonwebservices.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;AWS Strands
       </td>
-      <td align="right">25,494</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">25,494</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei python/packages/core/agent_framework/ -t Python --exclude _evaluation.py --exclude a2a --exclude ag_ui --exclude chatkit --exclude declarative --exclude devui --exclude hyperlight --exclude lab --exclude orchestrations --exclude mem0 --exclude redis --exclude microsoft  ·  microsoft/agent-framework @ a60e541 -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/microsoft.svg" width="20" height="20" alt="">
-        &nbsp;Microsoft Agent Framework
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/microsoft.svg" width="20" height="20" align="absmiddle" alt="">
+        &nbsp;Microsoft<br>
+        Agent Framework
       </td>
-      <td align="right">34,751</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">34,751</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei pydantic_ai_slim/pydantic_ai/ -t Python --exclude _a2a.py --exclude ag_ui.py --exclude ui --exclude durable_exec --exclude embeddings --exclude ext  ·  pydantic/pydantic-ai @ ac684b2 -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/pydantic.svg" width="20" height="20" alt="">
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/pydantic.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Pydantic AI
       </td>
-      <td align="right">51,231</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">51,231</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei src/google/adk/ -t Python --exclude a2a --exclude apps --exclude cli --exclude cloud --exclude code_executors --exclude environment --exclude evaluation --exclude examples --exclude integrations --exclude optimization --exclude platform  ·  google/adk-python @ bd062ec -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/google.svg" width="20" height="20" alt="">
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/google.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Google ADK
       </td>
-      <td align="right">57,392</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">57,392</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei src/agents/ -t Python --exclude realtime --exclude voice --exclude extensions/experimental --exclude extensions/visualization.py  ·  openai/openai-agents-python @ 4bd459e -->
     <tr>
-      <td align="left">
-        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/openai.svg" width="20" height="20" alt="">
-        &nbsp;OpenAI Agents SDK
+      <td align="left" bgcolor="#ffffff">
+        <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/openai.svg" width="20" height="20" align="absmiddle" alt="">
+        &nbsp;OpenAI&nbsp;Agents&nbsp;SDK
       </td>
-      <td align="right">72,410</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">❌</td>
-      <td align="center">✅</td>
+      <td align="right" bgcolor="#ffffff">72,410</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei libs/agno/agno/{agent,agents,approval,compression,factory,guardrails,hooks,memory,models,reasoning,registry,run,session,skills,team,tools,tracing,utils} -t Python  ·  agno-agi/agno @ bb7ddb0 -->
     <tr>
-      <td align="left">Agno</td>
-      <td align="right">106,852</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
-      <td align="center">✅</td>
+      <td align="left" bgcolor="#ffffff">
+        <img src="assets/agno-a.svg" width="20" height="20" align="absmiddle" alt="">
+        &nbsp;Agno
+      </td>
+      <td align="right" bgcolor="#ffffff">106,852</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
   </tbody>
-</table>
-
-<sub>* shells out to the Claude Code CLI binary, which is 200k+ LOC</sub>
+</table><sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
+2. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
+3. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
 
 </div>
 
-<sub>Out of scope: multi-agent orchestration frameworks like CrewAI, AutoGen, and AG2 follow a different paradigm (agent-to-agent conversation / role workflows) and don't map onto these columns. LlamaIndex centers on RAG and Semantic Kernel on broader AI orchestration — both have agent abstractions, but their scope is wider than what's compared here.</sub>
-
-See [table.md](table.md) for per-cell rationale and how the LOC numbers are measured.
+See [docs/table.md](docs/table.md) for per-cell rationale and how the LOC numbers are measured.
 
 ## Opinions
 
 ThinHarness has opinions. They are the reason it stays small.
 
-**No bash.** Business agents don't need a shell. Bash is a giant security surface and the source of an entire genre of agent failure where the model has the exact path you told it and still constructs the wrong command. Cut it and most of those failures stop being possible.
+**No bash.** Business agents don't need a shell. Bash is a giant security surface, and agents mess up when writing shell commands more often than you'd initially expect. Cut it and most of those failures stop being possible.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
 
-**Search is a first-class affordance.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking — they did the homework on what makes ripgrep output legible to an agent, and we use it. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, no embedding index to keep fresh).
+**Search is a top priority.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking; pgr [built benchmarks for agentic search](https://entire.io/blog/improving-agentic-search-in-coding-agents) and came up with a great way of exposing ripgrep to agents without raw bash. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
 
-**Parallel LLM calls as a primitive.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — `parallel_llm` lets you fan out from inside the harness. Better than longer prompts. Better than chain-of-retries. *(Coming soon.)*
+**Parallel LLM calls, built in.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — `parallel_llm` lets you fan out from inside the harness. Better than longer prompts. Better than chain-of-retries. *(Coming soon.)*
 
-**Provider classes, not a provider integration empire.** Companies have their own LLM gateways, proxies, and auth setups. ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter — you swap base URLs, plug in your gateway, and move on. We aren't building a 30-provider abstraction layer; you'd replace it anyway.
+**Three providers, no matrix.** ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing
+
+**No compaction.** Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.
+
+**No deployment layer.** Agents still need serving, auth, storage, retries, and observability in production. ThinHarness does not try to own that stack. A bundled deployment layer might work for some teams, but it will miss plenty of real production shapes; instead of adding more code and more options, ThinHarness stays an SDK and lets the host application own deployment.
 
 ## Use
 
@@ -264,38 +237,24 @@ async def main():
 asyncio.run(main())
 ```
 
-There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 11 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools in [`thinharness/tools.py`](thinharness/tools.py). Reading those two files is faster than reading the docs would be.
+There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 14 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
 
-## Tool retry
+## Features
 
-Tool handlers can raise `ModelRetry` when the model should try the same tool again with better arguments. Pydantic argument validation failures, including built-in filesystem tool argument failures, use the same retry path and count against `tool_retries`.
-
-```python
-from pydantic import BaseModel
-from thinharness import Harness, HarnessConfig, ModelRetry, ToolSpec
-
-class UserLookupArgs(BaseModel):
-    user_id: str
-
-def lookup_user(args: UserLookupArgs) -> dict:
-    user = db.get(args.user_id)
-    if user is None:
-        raise ModelRetry(f"user {args.user_id!r} not found; try searching by email instead")
-    return user
-
-harness = Harness(HarnessConfig(model="openai:gpt-5.2", tool_retries=2))
-harness.add_tool(ToolSpec(
-    name="lookup_user",
-    description="Look up a user by id.",
-    parameters=UserLookupArgs,
-    handler=lookup_user,
-))
-```
+- **Filesystem tools:** `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search` with root-scoped path policies.
+- **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
+- **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
+- **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
+- **Resume:** clean new-turn continuation through opaque provider session state.
+- **MCP:** optional MCP client support with lazy tool discovery and collision checks.
+- **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
+- **Tool retries and limit notices:** retryable argument/model mistakes use `ModelRetry`; near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or configurable callbacks. Parent and child runs compute notices from their own local budgets.
+- **Tracing:** OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
 
 ## Status
 
-Pre-1.0. APIs will shift. Not designed for runs with hundreds of turns — short, focused, audit-friendly loops are the target. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap.
+Pre-1.0. APIs may shift. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap.
 
 ## License
 
-MIT. Search ranking adapted from [pgr](https://github.com/entireio/pgr); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. Search ranking adapted from [pgr](https://github.com/entireio/pgr); see [docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).

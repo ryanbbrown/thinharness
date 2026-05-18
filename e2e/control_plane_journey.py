@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from thinharness import Harness, HarnessConfig, HarnessError, Hook, ModelRetry, ToolSpec
 
-
 MODEL = os.getenv("E2E_CONTROL_MODEL", "openrouter:google/gemini-2.5-flash")
 SYSTEM_PROMPT = """You are a control-plane test agent. Follow tool-use instructions exactly."""
 PROMPT = """

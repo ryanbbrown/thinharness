@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from thinharness import Harness, HarnessConfig, Hook
 
-
 MODEL = os.getenv("E2E_WORKSPACE_MODEL", "openai:gpt-5.2")
 SYSTEM_PROMPT = """You are an exacting workspace agent. Use tools when instructed and keep the final answer brief."""
 PROMPT = """
