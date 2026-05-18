@@ -33,7 +33,7 @@ LOC. The table counts the Python SDK package and footnotes that relationship.
 
 ## Notes on the Marks
 
-- **Hooks** — smolagents only exposes step-level `step_callbacks`, not per-tool-call interception, so it is marked `⚠️`.
+- **Tool retries** — only Pydantic AI (`ModelRetry`) and OpenAI Agents (`ModelRetryAdvice` / `ModelRetrySettings`) ship a documented, named primitive that lets a tool function signal "model passed bad args — please retry with this feedback," distinct from generic exception propagation. AWS Strands has hook-based retry via `AfterToolCallEvent.retry=True`, Google ADK has a `ReflectAndRetryToolPlugin`, and Agno has a `RetryAgentRun` exception that retries the whole agent run rather than a single tool — these are marked `⚠️`. Claude Agent SDK, smolagents, deepagents, and Microsoft Agent Framework have no named primitive and are marked `❌`.
 - **Subagents** — Pydantic AI documents an "agent delegation" pattern, where one agent is called inside another's tool function, but ships no class, decorator, or middleware for it. Its own multi-agent docs point users to deepagents for that case, so it is marked `❌`.
 - **Structured output** — Claude Agent SDK and deepagents return free-form messages with no built-in validation step, so they are marked `❌`.
 - **Skills** — Pydantic AI, OpenAI Agents SDK, smolagents, and AWS Strands have no Markdown/frontmatter skills primitive, so they are marked `❌`.
