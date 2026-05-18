@@ -10,3 +10,5 @@ htmlcov/
 .env
 experiments/
 .context/
+vendor/
+.gitmodules

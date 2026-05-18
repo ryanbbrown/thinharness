@@ -197,11 +197,17 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
   </tbody>
-</table><sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
-2. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
-3. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
+</table>
+
+<p align="left">
+  <sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
+  2. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
+  3. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
+</p>
 
 </div>
+
+<br>
 
 See [docs/table.md](docs/table.md) for per-cell rationale and how the LOC numbers are measured.
 
