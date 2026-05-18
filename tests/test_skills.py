@@ -24,8 +24,54 @@ def test_skill_registry_reads_and_runs_skill(tmp_path: Path) -> None:
     run = registry.skill_run({"skill_name": "demo", "script": "scripts/echo.py", "args": ["there"]})
     assert run.ok
     assert "hi there" in run.content
+    assert run.metadata["cmd"][:2] == ["uv", "run"]
 
-def test_skill_run_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
+
+def test_skill_run_runs_shell_cli_without_executable_bit(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "demo"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\n---\nBody", encoding="utf-8")
+    (skill / "scripts" / "tool.sh").write_text('printf "shell:%s:%s\\n" "$1" "$2"\n', encoding="utf-8")
+    registry = SkillRegistry(tmp_path / "skills")
+
+    run = registry.skill_run({"skill_name": "demo", "script": "scripts/tool.sh", "args": ["convert", "--strict"]})
+
+    assert run.ok
+    assert "shell:convert:--strict" in run.content
+    assert run.metadata["cmd"][:2] == ["bash", str(skill / "scripts" / "tool.sh")]
+
+
+@pytest.mark.parametrize(
+    ("script_name", "expected_prefix"),
+    [
+        ("tool.js", ["node"]),
+        ("tool.mjs", ["node"]),
+        ("tool.go", ["go", "run"]),
+        ("tool", []),
+    ],
+)
+def test_skill_run_selects_script_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script_name: str, expected_prefix: list[str]) -> None:
+    skill = tmp_path / "skills" / "demo"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\n---\nBody", encoding="utf-8")
+    script = skill / "scripts" / script_name
+    script.write_text("placeholder\n", encoding="utf-8")
+    registry = SkillRegistry(tmp_path / "skills")
+    captured: dict[str, list[str]] = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="ok\n")
+
+    monkeypatch.setattr("subprocess.run", run)
+
+    result = registry.skill_run({"skill_name": "demo", "script": f"scripts/{script_name}", "args": ["subcommand", "--flag"]})
+
+    assert result.ok
+    assert captured["command"] == [*expected_prefix, str(script), "subcommand", "--flag"]
+
+
+def test_skill_run_timeout_returns_structured_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     skill = tmp_path / "skills" / "demo"
     (skill / "scripts").mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\n---\nBody", encoding="utf-8")
@@ -41,6 +87,7 @@ def test_skill_run_timeout_returns_structured_result(tmp_path: Path, monkeypatch
     assert not result.ok
     assert result.content == "skill script timed out after 1s"
     assert result.metadata["timeout"] == 1
+
 
 def test_skill_registry_aggregates_dirs_and_filters_selected_skills(tmp_path: Path) -> None:
     alpha = tmp_path / "a" / "alpha"

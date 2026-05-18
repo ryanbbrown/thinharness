@@ -16,6 +16,7 @@
 - **Over-budget retry batches are not continued.** When any tool exceeds its retry budget, the harness records local execution, fires `limit_reached`, and ends the run without sending that batch's outputs back to the provider.
 - **Hooks can rewrite tool output but not retry control flow.** The retry signal is captured before `after_tool_call` hooks run, so hooks own the message while the harness owns the budget.
 - **Requested tool calls count against `max_tool_calls`.** A tool blocked by `before_tool_call` still consumed a model-requested call slot. Cancelled calls are tracked separately in `RunUsage.cancelled_tool_calls`.
+- **Skill scripts use extension-based runners.** `skill_run` keeps the simple `script` plus `args` interface, but treats Python and shell as first-class skill helper languages: `.py` runs through `uv run`, and `.sh`/`.bash` runs through `bash`, so CLI subcommands and flags work without executable bits. JavaScript and Go get basic file-runner support through `node` and `go run`, but richer package-manager flows such as npm scripts, Go module setup, or Python installed console commands are deferred until real skills need them.
 
 ## Parallel Tool Execution
 

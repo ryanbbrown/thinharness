@@ -413,7 +413,7 @@ If skills exist and the harness exposes skill tools, the system prompt gets a co
 The exposed tools are:
 
 - `skill_read`: reads `SKILL.md` or another contained skill file and includes a compact file tree.
-- `skill_run`: runs a contained script inside the skill directory. Python scripts are invoked with `PYTHON` or `python3`. This tool is sequential.
+- `skill_run`: runs a contained script inside the skill directory. Python scripts run through `uv run`, shell scripts run through `bash`, JavaScript files run through `node`, Go files run through `go run`, and other files run directly. This tool is sequential.
 
 No sandboxing is applied by `skill_run`; the assumption is that SDK callers choose trusted skill directories.
 

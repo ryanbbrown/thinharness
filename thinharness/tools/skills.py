@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -118,9 +117,7 @@ class SkillRegistry:
             return _path_error(exc)
         if not script.exists() or script.is_dir():
             return ToolResult(False, f"script not found: {args.script}")
-        command = [str(script), *[str(arg) for arg in args.args]]
-        if script.suffix == ".py":
-            command.insert(0, os.environ.get("PYTHON", "python3"))
+        command = _skill_command(script, args.args)
         try:
             proc = subprocess.run(
                 command,
@@ -244,3 +241,19 @@ def _normalize_skill_dirs(skills_dir: str | Path | Sequence[str | Path] | None) 
     if isinstance(skills_dir, str | Path):
         return [Path(skills_dir).expanduser().resolve()]
     return [Path(path).expanduser().resolve() for path in skills_dir]
+
+
+def _skill_command(script: Path, args: Sequence[str]) -> list[str]:
+    """Build the process argv for a skill script."""
+    script_args = [str(arg) for arg in args]
+    match script.suffix:
+        case ".py":
+            return ["uv", "run", str(script), *script_args]
+        case ".sh" | ".bash":
+            return ["bash", str(script), *script_args]
+        case ".js" | ".mjs":
+            return ["node", str(script), *script_args]
+        case ".go":
+            return ["go", "run", str(script), *script_args]
+        case _:
+            return [str(script), *script_args]
