@@ -12,6 +12,17 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, model_validator
 
+from ..output import (
+    OUTPUT_MODES,
+    OutputMode,
+    OutputSchema,
+    OutputSpec,
+    OutputValidationError,
+    resolve_output_schema_for_model,
+    structured_instructions,
+    structured_retry_prompt,
+    validate_turn_output,
+)
 from .base import Json, PathPolicy, PathValidationError, StrictArgs, ToolResult, ToolSpec, coerce_args
 
 if TYPE_CHECKING:
@@ -80,6 +91,9 @@ class ParallelLlmTool:
         request_timeout: int = 120,
         temperature: float | None = None,
         extra_body: dict[str, Any] | None = None,
+        output_type: OutputSpec | None = None,
+        output_mode: OutputMode = "auto",
+        output_retries: int = 1,
     ) -> None:
         self.name = name
         self.description = description
@@ -90,8 +104,15 @@ class ParallelLlmTool:
             raise ValueError("max_prompts must be >= 1")
         if max_attempts < 1 or max_attempts > 10:
             raise ValueError("max_attempts must be between 1 and 10")
+        if output_retries < 0:
+            raise ValueError("output_retries must be >= 0")
+        if output_mode not in OUTPUT_MODES:
+            raise ValueError(f"unknown output_mode: {output_mode}")
         self.max_prompts = max_prompts
         self.max_attempts = max_attempts
+        self.output_type: OutputSpec | None = output_type
+        self.output_mode: OutputMode = output_mode
+        self.output_retries = output_retries
         self._model = model if not isinstance(model, str) else None
         self.model_ref = model if isinstance(model, str) else model_ref
         self.api_key = api_key
@@ -132,30 +153,55 @@ class ParallelLlmTool:
 
         output_path = self.write_policy.resolve(args.output_file) if args.output_file is not None else None
         batch_model, should_close = self._resolve_model()
-        sem = asyncio.Semaphore(args.max_concurrency)
-        instructions = args.system if args.system is not None else ""
-        model_requests = 0
+        try:
+            output_schema = resolve_output_schema_for_model(batch_model, self.output_type, self.output_mode)
+            sem = asyncio.Semaphore(args.max_concurrency)
+            instructions = structured_instructions(args.system or "", output_schema)
+            tools = output_schema.synthetic_tools() if output_schema is not None else []
+            structured_output = output_schema.structured_output_request() if output_schema is not None else None
+            model_requests = 0
 
-        async def run_one(index: int, prompt: str) -> Json:
-            """Run one prompt with retry and return a sparse result entry."""
-            nonlocal model_requests
-            try:
+            async def request_turn(request_prompt: str):
+                """Run one provider request with provider-level retry."""
+                nonlocal model_requests
                 for attempt in range(self.max_attempts):
                     try:
                         async with sem:
                             session = batch_model.new_session()
                             model_requests += 1
-                            turn = await session.start(prompt=prompt, instructions=instructions, tools=[])
-                            return {"index": index, "ok": True, "result": turn.text}
+                            return await session.start(
+                                prompt=request_prompt,
+                                instructions=instructions,
+                                tools=tools,
+                                structured_output=structured_output,
+                            )
                     except ProviderError as exc:
                         if attempt == self.max_attempts - 1 or not _is_retryable(exc):
-                            return {"index": index, "ok": False, "error": str(exc)}
+                            raise
                         await _sleep_retry(_retry_delay(attempt))
-            except Exception as exc:
-                return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            raise AssertionError("unreachable parallel_llm retry loop exit")
+                raise AssertionError("unreachable parallel_llm provider retry loop exit")
 
-        try:
+            async def run_one(index: int, prompt: str) -> Json:
+                """Run one prompt with retry and return a sparse result entry."""
+                request_prompt = prompt
+                try:
+                    for output_attempt in range(self.output_retries + 1):
+                        try:
+                            turn = await request_turn(request_prompt)
+                        except ProviderError as exc:
+                            return {"index": index, "ok": False, "error": str(exc)}
+                        try:
+                            value = validate_turn_output(turn, output_schema)
+                        except OutputValidationError as exc:
+                            if output_attempt == self.output_retries:
+                                return {"index": index, "ok": False, "error": f"output validation failed: {exc}"}
+                            request_prompt = structured_retry_prompt(prompt, exc)
+                            continue
+                        return _success_entry(index, turn.text, value, output_schema)
+                except Exception as exc:
+                    return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                raise AssertionError("unreachable parallel_llm output retry loop exit")
+
             results = await asyncio.gather(*(run_one(index, prompt) for index, prompt in enumerate(prompts)))
         finally:
             if should_close:
@@ -263,6 +309,13 @@ def _batch_payload(results: list[Json], model_requests: int) -> Json:
         "model_requests": model_requests,
         "results": results,
     }
+
+
+def _success_entry(index: int, text: str, value: Any, output_schema: OutputSchema | None) -> Json:
+    """Build one successful result entry."""
+    if output_schema is None or output_schema.mode == "text":
+        return {"index": index, "ok": True, "result": text}
+    return {"index": index, "ok": True, "result": output_schema.adapter.dump_python(value, mode="json")}
 
 
 def _is_retryable(exc: ProviderError) -> bool:

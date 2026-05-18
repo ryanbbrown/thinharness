@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from pydantic import BaseModel
+
 from thinharness import Harness, HarnessConfig, Hook, ParallelLlmTool
 
 AGENT_MODEL = os.getenv("E2E_PARALLEL_AGENT_MODEL", "openai:gpt-5-mini")
@@ -31,6 +33,13 @@ After both tool calls finish, answer with PARALLEL_LLM_AGENT_DONE.
 """.strip()
 
 
+class ColorCount(BaseModel):
+    """Structured custom parallel output."""
+
+    name: str
+    count: int
+
+
 def main() -> None:
     if _should_skip(AGENT_MODEL, CUSTOM_TOOL_MODEL):
         return
@@ -41,11 +50,13 @@ def main() -> None:
 
         custom_tool = ParallelLlmTool(
             name="parallel_json",
-            description="Run independent prompts that each return one compact JSON object string.",
+            description="Run independent prompts that each return one validated JSON object.",
             model=CUSTOM_TOOL_MODEL,
             root=root,
             max_prompts=4,
             max_attempts=1,
+            output_type=ColorCount,
+            output_mode="prompted",
         ).spec()
 
         harness = Harness(
@@ -74,7 +85,7 @@ def main() -> None:
         assert builtin_payload["succeeded"] == 2, builtin_payload
         assert custom_payload["total"] == 2, custom_payload
         assert custom_payload["succeeded"] == 2, custom_payload
-        parsed_custom = [_parse_json_object(item["result"]) for item in custom_payload["results"]]
+        parsed_custom = [item["result"] for item in custom_payload["results"]]
         assert parsed_custom == [{"name": "red", "count": 1}, {"name": "blue", "count": 2}], parsed_custom
         print(f"PASS parallel_llm_agent_journey agent_model={AGENT_MODEL} custom_tool_model={CUSTOM_TOOL_MODEL} tools={tool_names}")
 
@@ -90,21 +101,6 @@ def _should_skip(*models: str) -> bool:
             print(f"SKIP parallel_llm_agent_journey: {env_name} is not set for {model}")
             return True
     return False
-
-
-def _parse_json_object(text: str) -> dict:
-    """Parse a JSON object even if a provider wraps it in light formatting."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        stripped = stripped.removeprefix("json").strip()
-    if not stripped.startswith("{"):
-        stripped = stripped[stripped.index("{"):]
-    if not stripped.endswith("}"):
-        stripped = stripped[:stripped.rindex("}") + 1]
-    parsed = json.loads(stripped)
-    assert isinstance(parsed, dict), parsed
-    return parsed
 
 
 if __name__ == "__main__":

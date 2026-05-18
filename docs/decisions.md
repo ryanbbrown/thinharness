@@ -17,7 +17,7 @@
 - **Hooks can rewrite tool output but not retry control flow.** The retry signal is captured before `after_tool_call` hooks run, so hooks own the message while the harness owns the budget.
 - **Requested tool calls count against `max_tool_calls`.** A tool blocked by `before_tool_call` still consumed a model-requested call slot. Cancelled calls are tracked separately in `RunUsage.cancelled_tool_calls`.
 - **Skill scripts use extension-based runners.** `skill_run` keeps the simple `script` plus `args` interface, but treats Python and shell as first-class skill helper languages: `.py` runs through `uv run`, and `.sh`/`.bash` runs through `bash`, so CLI subcommands and flags work without executable bits. JavaScript and Go get basic file-runner support through `node` and `go run`, but richer package-manager flows such as npm scripts, Go module setup, or Python installed console commands are deferred until real skills need them.
-- **Parallel LLM model settings are host-owned.** The model-facing `parallel_llm` arguments cannot override model or temperature. The built-in exposes `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` on `HarnessConfig`; custom `ParallelLlmTool` instances take those settings at construction. Provider/model-specific temperature support is not registry-validated by ThinHarness; unsupported settings surface as provider errors.
+- **Parallel LLM model settings are host-owned.** The model-facing `parallel_llm` arguments cannot override model, temperature, or output schema. The built-in exposes `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` on `HarnessConfig`; custom `ParallelLlmTool` instances take model settings and optional structured-output settings at construction. Provider/model-specific temperature support is not registry-validated by ThinHarness; unsupported settings surface as provider errors.
 
 ## Parallel Tool Execution
 
@@ -49,6 +49,7 @@
 - **Structured output retries are corrective model requests.** `output_retries` counts retry requests after invalid structured output, not total validation attempts.
 - **Subagents do not inherit parent structured output.** The default subagent runs unstructured. Named subagents opt into structured output only through their own `SubAgentConfig`.
 - **Validated subagent output is serialized with `OutputSchema.dump`.** Structured child results cross the parent tool boundary as canonical JSON text.
+- **Custom parallel LLM tools can validate structured output.** The built-in `parallel_llm` remains text-only, while `ParallelLlmTool(...).spec()` can opt into `output_type`, `output_mode`, and `output_retries`. It uses the same schema-resolution and turn-validation helpers as `Harness.run()`, and successful entries contain JSON-compatible parsed values.
 - **Streaming structured output is deferred.** The current run loop is turn-based; partial validation and streaming processors are not part of the current design.
 
 ## Resume
@@ -87,7 +88,3 @@
 - **Lock-held shutdown stays simple.** A rare shared-server timing path can allow a replacement session while the old session finishes tearing down. The current shutdown behavior is accepted instead of adding more lifecycle locking.
 - **MCP dynamic capability updates are deferred.** `tools/list_changed` notifications are not handled; the harness uses the tool snapshot discovered at connection time.
 - **MCP prompts, resources, sampling, OAuth, and `.mcp.json` discovery are out of scope.** The current feature only turns MCP tools into harness tools over the supported transports.
-
-## Deferred Features
-
-- **Validated structured `parallel_llm` output is deferred.** `parallel_llm` exists for text-result fan-out and can be renamed/configured through `ParallelLlmTool`, but schema-validated per-entry output belongs in a follow-up feature.

@@ -26,7 +26,15 @@ from .hooks import (
     UserPromptSubmitContext,
     apply_prompt_context,
 )
-from .output import FINAL_RESULT_TOOL_NAME, OutputMode, OutputSchema, OutputSpec, OutputValidationError, resolve_output_spec
+from .output import (
+    FINAL_RESULT_TOOL_NAME,
+    OutputMode,
+    OutputSchema,
+    OutputSpec,
+    OutputValidationError,
+    resolve_output_schema_for_model,
+    structured_instructions,
+)
 from .providers import (
     Model,
     ModelCapabilities,
@@ -505,10 +513,8 @@ class Harness:
                             terminal_error = HarnessError(f"run blocked by hook: {reason}")
                             raise terminal_error
                         effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
-                        instructions = self.system_instructions()
+                        instructions = structured_instructions(self.system_instructions(), self.output_schema)
                         structured_output = self._structured_output_request()
-                        if self.output_schema is not None and self.output_schema.mode == "prompted":
-                            instructions = f"{instructions}\n\n{self.output_schema.build_instructions()}"
                         if first_turn_kind == "start":
                             try:
                                 active_session = self.model.new_session()
@@ -957,17 +963,7 @@ class Harness:
 
     def _build_output_schema(self) -> OutputSchema | None:
         """Build structured-output validation if configured."""
-        if self.config.output_type is None:
-            return None
-        _, mode = resolve_output_spec(self.config.output_type, self.config.output_mode)
-        if mode == "auto":
-            mode = self.model_capabilities.default_structured_output_mode
-        if mode == "native" and not self.model_capabilities.supports_json_schema_output:
-            if not self.model_capabilities.permissive_native_override:
-                raise ValueError(f"{self.model.provider.name} does not support native structured output")
-        if mode == "tool" and not self.model_capabilities.supports_tools:
-            raise ValueError(f"{self.model.provider.name} does not support tool structured output")
-        return OutputSchema.build(self.config.output_type, mode)
+        return resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
 
     def _validate_final_result_collision(self) -> None:
         """Reserve final_result for synthetic structured output."""

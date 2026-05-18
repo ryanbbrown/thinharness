@@ -70,12 +70,18 @@ Use `output_file` when combined results may be large. Inline output returns comp
 
 `max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields for the built-in. Parallel attempts are reported as `model_requests` in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.
 
-The model-facing arguments do not include model or temperature overrides. The built-in uses `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` when set, otherwise it falls back to the parent harness model and temperature. Custom `ParallelLlmTool` instances own their model, temperature, API settings, prompt cap, and retry budget.
+The model-facing arguments do not include model, temperature, or output-schema overrides. The built-in uses `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` when set, otherwise it falls back to the parent harness model and temperature. Custom `ParallelLlmTool` instances own their model, temperature, API settings, prompt cap, retry budget, and optional structured output schema.
 
 For a custom, renameable version, construct the same tool as a normal `ToolSpec`:
 
 ```python
 from thinharness import ParallelLlmTool
+from pydantic import BaseModel
+
+
+class InvoiceFields(BaseModel):
+    vendor: str
+    total: float
 
 extract_tool = ParallelLlmTool(
     name="parallel_extract",
@@ -86,7 +92,14 @@ extract_tool = ParallelLlmTool(
     write_paths=["outputs"],
     max_prompts=50,
     max_attempts=2,
+    output_type=InvoiceFields,
+    output_mode="auto",
+    output_retries=1,
 ).spec()
 
 harness = Harness(HarnessConfig(root="."), tools=[extract_tool])
 ```
+
+When `output_type` is set on a custom `ParallelLlmTool`, each successful result entry contains the parsed JSON-compatible value rather than raw text. `output_mode` accepts the same modes as harness structured output: `auto`, `native`, `tool`, `prompted`, and `text`.
+
+For structured custom tools, pass a description that tells the parent model the tool returns validated result values rather than raw text.

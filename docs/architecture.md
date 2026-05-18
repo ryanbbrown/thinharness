@@ -141,11 +141,12 @@ The design choices are recorded in `docs/decisions.md`. The most important decis
 - One sequential tool forces the whole batch to execute serially in model order.
 - Hooks can change tool output, but the harness captures retry control flow before `after_tool_call` hooks run.
 - Structured output is provider-neutral at the harness boundary and provider-specific only inside adapters.
+- Structured-output schema resolution and turn validation are shared through `thinharness/output.py`.
 - The synthetic `final_result` structured-output tool is not a normal registered tool.
 - Resume is a clean-new-turn API, not interrupted continuation or failed-request retry.
 - Subagents are opt-in through the `subagent` tool, and child runs start fresh.
 - MCP support is optional and discovered tools are appended once per harness lifecycle.
-- `parallel_llm` is available as an opt-in built-in and as a configurable `ParallelLlmTool(...).spec()`.
+- `parallel_llm` is available as an opt-in text-only built-in and as a configurable `ParallelLlmTool(...).spec()` that can opt into structured output.
 
 ## File Mechanics
 
@@ -416,11 +417,11 @@ The reason this is separate from generic `search` is that JSONL is naturally chu
 
 `ParallelLlmArgs` accepts either inline `prompts` or a `prompts_file` containing a JSON array of strings. `prompts_file` is resolved through the tool's read `PathPolicy`; `output_file` is resolved through the write `PathPolicy` and written atomically as pretty JSON. Inline results are compact JSON inside `ToolResult.content`; file mode returns only a summary and failed indices.
 
-The tool deliberately does not inherit the parent system prompt. If `system` is omitted, per-prompt calls use `instructions=""`; if shared instructions are needed, the caller must pass them explicitly. Each attempt uses a fresh `model.new_session()` and sends `tools=[]`, so there is no tool loop, memory, or continuation state.
+The tool deliberately does not inherit the parent system prompt. If `system` is omitted, per-prompt calls use `instructions=""`; if shared instructions are needed, the caller must pass them explicitly. Each attempt uses a fresh `model.new_session()`, so there is no memory or continuation state.
 
 Batch size and retry budget are host-controlled by `ParallelLlmTool.max_prompts` and `ParallelLlmTool.max_attempts`; the built-in fills these from `HarnessConfig.parallel_llm_max_prompts` and `HarnessConfig.parallel_llm_max_attempts`. The built-in model and temperature can be pinned with `HarnessConfig.builtin_parallel_llm_model` and `HarnessConfig.builtin_parallel_llm_temperature`; otherwise it uses the parent harness model and temperature. The model controls only `max_concurrency`, bounded from 1 to 32. Retries are structured around `ProviderError.status_code`: retryable HTTP statuses are 408, 425, 429, 500, 502, 503, and 504; transport errors with the existing `provider request failed:` prefix are also retried.
 
-The model-facing arguments do not include model or temperature overrides. Custom `ParallelLlmTool` instances own provider parsing, API key, base URL, request timeout, temperature, and `extra_body`.
+The model-facing arguments do not include model, temperature, or output-schema overrides. Custom `ParallelLlmTool` instances own provider parsing, API key, base URL, request timeout, temperature, `extra_body`, and optional `output_type` / `output_mode` / `output_retries`. Structured custom tools use the shared `OutputSchema` helpers from `output.py`; successful structured entries are serialized to JSON-compatible Python values, while the built-in `parallel_llm` remains text-only.
 
 ### `thinharness/tools/skills.py`
 

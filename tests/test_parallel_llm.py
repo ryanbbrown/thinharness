@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from thinharness import Harness, HarnessConfig, ModelToolCall, ModelTurn, ToolOutput
+from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ToolOutput
 from thinharness.providers import ModelSettings, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
 from thinharness.tools.parallel_llm import (
@@ -25,12 +25,27 @@ from thinharness.tools.parallel_llm import (
 class BatchProvider:
     name = "OpenAI"
 
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        """Record provider shutdown."""
+        self.closed = True
+
+
+class ExtractedPerson(BaseModel):
+    """Structured result used by parallel LLM tests."""
+
+    name: str
+    age: int
+
 
 class BatchModel:
     def __init__(self, outcomes: list[Any] | None = None, *, delay: float = 0) -> None:
         self.model = "batch-model"
         self.provider = BatchProvider()
         self.api_key = "batch-key"
+        self.capabilities = ModelCapabilities()
         self.outcomes = list(outcomes or [])
         self.delay = delay
         self.session_requests = 0
@@ -43,17 +58,19 @@ class BatchModel:
         self.session_requests += 1
         return BatchSession(self)
 
-    async def complete(self, prompt: str, instructions: str, tools: list[dict[str, Any]]) -> ModelTurn:
+    async def complete(self, prompt: str, instructions: str, tools: list[dict[str, Any]], structured_output: Any = None) -> ModelTurn:
         """Record one completion and return or raise the scripted outcome."""
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
-        self.calls.append({"prompt": prompt, "instructions": instructions, "tools": tools})
+        self.calls.append({"prompt": prompt, "instructions": instructions, "tools": tools, "structured_output": structured_output})
         try:
             if self.delay:
                 await asyncio.sleep(self.delay)
             outcome = self.outcomes.pop(0) if self.outcomes else f"echo:{prompt}"
             if isinstance(outcome, BaseException):
                 raise outcome
+            if isinstance(outcome, ModelTurn):
+                return outcome
             return ModelTurn(text=str(outcome), raw={"output_text": str(outcome)})
         finally:
             self.in_flight -= 1
@@ -65,7 +82,7 @@ class BatchSession:
 
     async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
         """Run one batch completion."""
-        return await self.model.complete(prompt, instructions, tools)
+        return await self.model.complete(prompt, instructions, tools, structured_output)
 
     async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
         """Batch sessions never continue."""
@@ -139,6 +156,15 @@ async def _call_parallel(parent: Harness, args: dict[str, Any]) -> dict[str, Any
     """Invoke parallel_llm through the normal tool envelope."""
     spec = create_parallel_llm_tool(parent)
     output = await _invoke_tool(spec, args)
+    parsed = json.loads(output)
+    if parsed["ok"]:
+        parsed["payload"] = json.loads(parsed["content"])
+    return parsed
+
+
+async def _call_custom_tool(tool: ParallelLlmTool, args: dict[str, Any]) -> dict[str, Any]:
+    """Invoke a custom ParallelLlmTool through the normal tool envelope."""
+    output = await _invoke_tool(tool.spec(), args)
     parsed = json.loads(output)
     if parsed["ok"]:
         parsed["payload"] = json.loads(parsed["content"])
@@ -309,12 +335,178 @@ async def test_parallel_llm_does_not_inherit_parent_system_prompt(tmp_path: Path
     assert model.calls[0]["instructions"] == ""
 
 
+async def test_custom_parallel_llm_prompted_output_parses_json_results(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
+    tool = ParallelLlmTool(
+        name="parallel_extract",
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="prompted",
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "system": "Return JSON.", "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
+    assert "Return JSON." in model.calls[0]["instructions"]
+    assert "JSON Schema" in model.calls[0]["instructions"]
+
+
+async def test_custom_parallel_llm_invalid_structured_text_returns_failure(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=["not json"])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="prompted",
+        output_retries=0,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["succeeded"] == 0
+    assert result["payload"]["failed"] == 1
+    assert result["payload"]["model_requests"] == 1
+    assert result["payload"]["results"][0]["ok"] is False
+    assert result["payload"]["results"][0]["error"].startswith("output validation failed:")
+
+
+async def test_custom_parallel_llm_structured_retry_uses_fresh_session(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=["not json", '{"name":"Ada","age":37}'])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="prompted",
+        output_retries=1,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract this"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
+    assert result["payload"]["model_requests"] == 2
+    assert model.session_requests == 2
+    assert "failed structured output validation" in model.calls[1]["prompt"]
+    assert "extract this" in model.calls[1]["prompt"]
+
+
+async def test_custom_parallel_llm_tool_mode_accepts_final_result(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[
+        ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}')])
+    ])
+    tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson, output_mode="tool")
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
+    assert [tool_schema["name"] for tool_schema in model.calls[0]["tools"]] == ["final_result"]
+
+
+async def test_custom_parallel_llm_tool_mode_rejects_text_without_tool_call(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="tool",
+        output_retries=0,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"][0]["ok"] is False
+    assert "final_result" in result["payload"]["results"][0]["error"]
+
+
+async def test_custom_parallel_llm_native_mode_sends_structured_output(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
+    model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+    tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson, output_mode="native")
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
+    assert model.calls[0]["tools"] == []
+    assert model.calls[0]["structured_output"].name == "final_result"
+
+
+async def test_custom_parallel_llm_auto_resolves_model_capabilities(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
+    model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+    tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson)
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"][0]["result"] == {"name": "Ada", "age": 37}
+    assert model.calls[0]["structured_output"].name == "final_result"
+
+
+def test_custom_parallel_llm_rejects_unknown_output_mode(tmp_path: Path) -> None:
+    invalid_mode: Any = "nativee"
+
+    with pytest.raises(ValueError, match="unknown output_mode"):
+        ParallelLlmTool(model=BatchModel(), root=tmp_path, output_type=ExtractedPerson, output_mode=invalid_mode)
+
+
+async def test_custom_parallel_llm_text_mode_rejects_structured_output_type(tmp_path: Path) -> None:
+    model = BatchModel()
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="text",
+    )
+
+    result = await _invoke_tool(tool.spec(), {"prompts": ["extract"], "max_concurrency": 1})
+    envelope = json.loads(result)
+
+    assert envelope["ok"] is False
+    assert envelope["content"] == "text output mode requires output_type=str"
+    assert model.calls == []
+
+
+async def test_custom_parallel_llm_closes_owned_model_when_schema_resolution_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    model = BatchModel()
+
+    def fake_infer_model(model_ref: str, **kwargs: Any) -> BatchModel:
+        return model
+
+    monkeypatch.setattr("thinharness.providers.infer_model", fake_infer_model)
+    tool = ParallelLlmTool(
+        model="openai:gpt-child",
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="text",
+    )
+
+    result = await _invoke_tool(tool.spec(), {"prompts": ["extract"], "max_concurrency": 1})
+    envelope = json.loads(result)
+
+    assert envelope["ok"] is False
+    assert envelope["content"] == "text output mode requires output_type=str"
+    assert model.provider.closed is True
+
+
+async def test_builtin_parallel_llm_stays_text_only_with_json_output(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
+    model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
+    parent = _parent(tmp_path, model)
+    spec = create_parallel_llm_tool(parent)
+
+    result = await _call_parallel(parent, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": '{"name":"Ada","age":37}'}]
+    assert model.calls[0]["structured_output"] is None
+    assert model.calls[0]["tools"] == []
+    assert "output_type" not in spec.response_tool()["parameters"]["properties"]
+
+
 async def test_parallel_llm_cancellation_propagates(tmp_path: Path) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
     class BlockingModel(BatchModel):
-        async def complete(self, prompt: str, instructions: str, tools: list[dict[str, Any]]) -> ModelTurn:
+        async def complete(self, prompt: str, instructions: str, tools: list[dict[str, Any]], structured_output: Any = None) -> ModelTurn:
             """Block until the test cancels the surrounding task."""
             started.set()
             await release.wait()

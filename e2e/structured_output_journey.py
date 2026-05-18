@@ -15,7 +15,7 @@ MODEL = os.getenv("E2E_STRUCTURED_MODEL", "openai:gpt-5-mini")
 SYSTEM_PROMPT = """You are a structured-output extraction agent. Use tools before finalizing."""
 PROMPT = """
 Read inventory.txt, then return the requested structured object.
-The sku is TH-001, the count is 7, and the status is ready.
+The sku is TH-001, the count is 7, the status is ready, and source_file must be a relative workspace path.
 """.strip()
 
 

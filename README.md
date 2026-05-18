@@ -198,6 +198,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     </tr>
   </tbody>
 </table>
+<p align="center"><sub><em>* Table focuses on features that differentiate the harnesses. All listed also support MCP, lifecycle hooks, and multi-turn conversations.</em></sub></p>
 
 <p align="left">
   <sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
@@ -222,13 +223,21 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Search is a top priority.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking; pgr [built benchmarks for agentic search](https://entire.io/blog/improving-agentic-search-in-coding-agents) and came up with a great way of exposing ripgrep to agents without raw bash. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
 
-**Parallel LLM calls, built in.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — opt into `parallel_llm` and fan out from inside the harness. Each call is stateless, uses no tools, and returns only assistant text; large batches can write JSON results to `output_file`.
+**Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs reliability beyond a single agent loop — majority vote, ensembled extraction. Set `builtin_parallel_llm_model` to enable the default `parallel_llm` tool for plain-text batches; for validated structured output per call, instantiate `ParallelLlmTool` yourself with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
 **Three providers, no matrix.** ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing
 
 **No compaction.** Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.
 
 **No deployment layer.** Agents still need serving, auth, storage, retries, and observability in production. ThinHarness does not try to own that stack. A bundled deployment layer might work for some teams, but it will miss plenty of real production shapes; instead of adding more code and more options, ThinHarness stays an SDK and lets the host application own deployment.
+
+## Install
+
+```bash
+uv add thinharness     # or pip install thinharness
+```
+
+Requires Python 3.11+.
 
 ## Use
 

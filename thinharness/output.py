@@ -9,11 +9,12 @@ from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
-from .providers import StructuredOutputRequest
+from .providers import Model, ModelCapabilities, ModelTurn, StructuredOutputRequest
 from .tools.base import Json, _clean_schema, _inline_schema_refs
 
-OutputMode = Literal["auto", "native", "tool", "prompted"]
+OutputMode = Literal["auto", "native", "tool", "prompted", "text"]
 ResolvedOutputMode = Literal["native", "tool", "prompted", "text"]
+OUTPUT_MODES = frozenset({"auto", "native", "tool", "prompted", "text"})
 FINAL_RESULT_TOOL_NAME = "final_result"
 
 
@@ -168,6 +169,68 @@ def resolve_output_spec(output_type: OutputSpec, mode: OutputMode | ResolvedOutp
     if isinstance(output_type, TextOutput):
         return output_type.output_type, "text"
     return output_type, mode
+
+
+def resolve_output_schema_for_model(
+    model: Model,
+    output_type: OutputSpec | None,
+    output_mode: OutputMode,
+) -> OutputSchema | None:
+    """Resolve and validate a structured-output schema for a model."""
+    if output_type is None:
+        return None
+    if output_mode not in OUTPUT_MODES:
+        raise ValueError(f"unknown output_mode: {output_mode}")
+    capabilities = getattr(model, "capabilities", ModelCapabilities())
+    resolved_output_type, mode = resolve_output_spec(output_type, output_mode)
+    if mode == "auto":
+        mode = capabilities.default_structured_output_mode
+    if mode == "text" and resolved_output_type is not str:
+        raise ValueError("text output mode requires output_type=str")
+    provider_name = getattr(getattr(model, "provider", None), "name", type(model).__name__)
+    if mode == "native" and not capabilities.supports_json_schema_output:
+        if not capabilities.permissive_native_override:
+            raise ValueError(f"{provider_name} does not support native structured output")
+    if mode == "tool" and not capabilities.supports_tools:
+        raise ValueError(f"{provider_name} does not support tool structured output")
+    return OutputSchema.build(resolved_output_type, mode)
+
+
+def structured_instructions(instructions: str, output_schema: OutputSchema | None) -> str:
+    """Append prompted structured-output instructions when needed."""
+    if output_schema is None or output_schema.mode != "prompted":
+        return instructions
+    schema_instructions = output_schema.build_instructions()
+    if not instructions:
+        return schema_instructions
+    return f"{instructions}\n\n{schema_instructions}"
+
+
+def validate_turn_output(turn: ModelTurn, output_schema: OutputSchema | None) -> Any:
+    """Validate a model turn against a structured-output schema."""
+    if output_schema is None:
+        return turn.text
+    if output_schema.mode == "text":
+        if turn.tool_calls:
+            raise OutputValidationError("model returned tool calls instead of text")
+        return output_schema.validate_text(turn.text)
+    if output_schema.mode == "tool":
+        if len(turn.tool_calls) != 1 or turn.tool_calls[0].name != FINAL_RESULT_TOOL_NAME:
+            raise OutputValidationError("model must call final_result as the only tool call")
+        return output_schema.validate_tool_arguments(turn.tool_calls[0].arguments)
+    if turn.tool_calls:
+        raise OutputValidationError("model returned tool calls instead of structured text")
+    return output_schema.validate_text(turn.text)
+
+
+def structured_retry_prompt(prompt: str, error: OutputValidationError) -> str:
+    """Build a fresh one-shot prompt after structured-output validation fails."""
+    return (
+        "The previous response failed structured output validation.\n\n"
+        f"{error}\n\n"
+        "Try the original prompt again and return only a valid final answer.\n\n"
+        f"Original prompt:\n{prompt}"
+    )
 
 
 def _as_arguments_schema(schema: Json) -> tuple[Json, bool]:
