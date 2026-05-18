@@ -265,7 +265,8 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **Resume:** clean new-turn continuation through opaque provider session state.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
-- **Tool retries and limit notices:** retryable argument/model mistakes use `ModelRetry`; near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or configurable callbacks. Parent and child runs compute notices from their own local budgets.
+- **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
+- **Limit notices:** near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or callbacks; parent and child runs compute them from their own local budgets.
 - **Tracing:** OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
 
 ## Status
