@@ -22,7 +22,7 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,535 lines of Python** across 14 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,759 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -40,9 +40,9 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
 <table>
   <thead>
     <tr>
-      <td align="left" width="285" bgcolor="#eaeef2"><b>Library</b></td>
+      <td align="left" width="256" bgcolor="#eaeef2"><b>Library</b></td>
       <td align="center" width="70" bgcolor="#eaeef2"><b>LOC<sup>1</sup></b></td>
-      <td align="center" width="52" bgcolor="#eaeef2"><b>Hooks</b></td>
+      <td align="center" width="62" bgcolor="#eaeef2"><b>Tool<br>retries<sup>2</sup></b></td>
       <td align="center" width="70" bgcolor="#eaeef2"><b>Subagents</b></td>
       <td align="center" width="68" bgcolor="#eaeef2"><b>Structured<br>output</b></td>
       <td align="center" width="52" bgcolor="#eaeef2"><b>Skills</b></td>
@@ -54,7 +54,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-17 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>4,535</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>4,759</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -66,10 +66,10 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" width="20" height="20" align="absmiddle" alt="">
-        &nbsp;Claude&nbsp;Agent&nbsp;SDK<sup>2</sup>
+        &nbsp;Claude&nbsp;Agent&nbsp;SDK<sup>3</sup>
       </td>
       <td align="right" bgcolor="#ffffff">8,202</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -83,7 +83,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
         &nbsp;smolagents
       </td>
       <td align="right" bgcolor="#ffffff">10,091</td>
-      <td align="center" bgcolor="#ffffff">⚠️</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
@@ -91,7 +91,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
     <!-- LOC: tokei libs/deepagents/deepagents/ -t Python  ·  langchain-ai/deepagents @ 7465d77 -->
-    <!-- Substrate (see footnote 3): deepagents is a thin wrapper over LangChain/LangGraph.
+    <!-- Substrate (see footnote 4): deepagents is a thin wrapper over LangChain/LangGraph.
          Effective import surface ≈105k LOC, measured with the same strict filter as the rest of the table:
            tokei libs/langgraph/langgraph/ libs/prebuilt/langgraph/ -t Python  ·  langchain-ai/langgraph @ 076e2a3  =>  26,144
            tokei libs/core/langchain_core/ -t Python --exclude document_loaders --exclude documents --exclude embeddings --exclude indexing --exclude retrievers.py --exclude vectorstores --exclude cross_encoders.py  ·  langchain-ai/langchain @ 73d4fd9  =>  54,992
@@ -101,10 +101,10 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" width="20" height="20" align="absmiddle" alt="">
-        &nbsp;deepagents<sup>3</sup>
+        &nbsp;deepagents<sup>4</sup>
       </td>
       <td align="right" bgcolor="#ffffff">15,369</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -118,7 +118,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
         &nbsp;AWS Strands
       </td>
       <td align="right" bgcolor="#ffffff">25,494</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
@@ -133,7 +133,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
         Agent Framework
       </td>
       <td align="right" bgcolor="#ffffff">34,751</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -161,7 +161,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
         &nbsp;Google ADK
       </td>
       <td align="right" bgcolor="#ffffff">57,392</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -189,7 +189,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
         &nbsp;Agno
       </td>
       <td align="right" bgcolor="#ffffff">106,852</td>
-      <td align="center" bgcolor="#ffffff">✅</td>
+      <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -201,8 +201,9 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
 
 <p align="left">
   <sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
-  2. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
-  3. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
+  2. Tool retries: a documented primitive (e.g. Pydantic AI's <code>ModelRetry</code>) that lets tools signal "model passed bad args — retry with this feedback," distinct from generic exception propagation.<br>
+  3. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
+  4. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
 </p>
 
 </div>
@@ -221,7 +222,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Search is a top priority.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking; pgr [built benchmarks for agentic search](https://entire.io/blog/improving-agentic-search-in-coding-agents) and came up with a great way of exposing ripgrep to agents without raw bash. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
 
-**Parallel LLM calls, built in.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — `parallel_llm` lets you fan out from inside the harness. Better than longer prompts. Better than chain-of-retries. *(Coming soon.)*
+**Parallel LLM calls, built in.** When a workflow needs reliability you can't get from a single agent loop — majority vote over N independent calls, ensembled extraction, anything where you want full auditability of what went into each call — opt into `parallel_llm` and fan out from inside the harness. Each call is stateless, uses no tools, and returns only assistant text; large batches can write JSON results to `output_file`.
 
 **Three providers, no matrix.** ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing
 
@@ -243,7 +244,7 @@ async def main():
 asyncio.run(main())
 ```
 
-There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 14 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
+There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 15 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
 
 ## Features
 
@@ -251,6 +252,7 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
+- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, with prompt and retry budgets controlled by `HarnessConfig`.
 - **Resume:** clean new-turn continuation through opaque provider session state.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
@@ -259,7 +261,7 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 
 ## Status
 
-Pre-1.0. APIs may shift. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap.
+Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap. Each major feature (MCP, subagents, jsonl_search, parallel_llm, skills) lives in its own file with no hidden dependencies. If you don't use one, that's even less code to worry about. If you want to delete it entirely, that's a one-shot 10-word prompt to a coding agent.
 
 ## License
 
