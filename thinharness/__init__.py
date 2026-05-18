@@ -49,6 +49,8 @@ from .tools import (
     MCPServerStdio,
     MCPServerStreamableHTTP,
     ModelRetry,
+    ParallelLlmArgs,
+    ParallelLlmTool,
     PathPolicy,
     PathValidationError,
     Skill,
@@ -58,6 +60,7 @@ from .tools import (
     builtin_tools,
     call_tool,
     contained_path,
+    create_parallel_llm_tool,
 )
 from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
 
@@ -121,6 +124,8 @@ __all__ = [
     "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
+    "ParallelLlmArgs",
+    "ParallelLlmTool",
     "ToolResult",
     "ToolSpec",
     "ToolOutput",
@@ -130,6 +135,7 @@ __all__ = [
     "builtin_tools",
     "call_tool",
     "contained_path",
+    "create_parallel_llm_tool",
     "create_subagent_tool",
     "create_otlp_tracing",
     "infer_model",

@@ -17,6 +17,7 @@
 - **Hooks can rewrite tool output but not retry control flow.** The retry signal is captured before `after_tool_call` hooks run, so hooks own the message while the harness owns the budget.
 - **Requested tool calls count against `max_tool_calls`.** A tool blocked by `before_tool_call` still consumed a model-requested call slot. Cancelled calls are tracked separately in `RunUsage.cancelled_tool_calls`.
 - **Skill scripts use extension-based runners.** `skill_run` keeps the simple `script` plus `args` interface, but treats Python and shell as first-class skill helper languages: `.py` runs through `uv run`, and `.sh`/`.bash` runs through `bash`, so CLI subcommands and flags work without executable bits. JavaScript and Go get basic file-runner support through `node` and `go run`, but richer package-manager flows such as npm scripts, Go module setup, or Python installed console commands are deferred until real skills need them.
+- **Parallel LLM model settings are host-owned.** The model-facing `parallel_llm` arguments cannot override model or temperature. The built-in exposes `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` on `HarnessConfig`; custom `ParallelLlmTool` instances take those settings at construction. Provider/model-specific temperature support is not registry-validated by ThinHarness; unsupported settings surface as provider errors.
 
 ## Parallel Tool Execution
 
@@ -89,4 +90,4 @@
 
 ## Deferred Features
 
-- **`parallel_llm` remains unimplemented.** The plan exists, and the tools package refactor has landed, but there is no `parallel_llm` built-in tool or public API yet.
+- **Validated structured `parallel_llm` output is deferred.** `parallel_llm` exists for text-result fan-out and can be renamed/configured through `ParallelLlmTool`, but schema-validated per-entry output belongs in a follow-up feature.

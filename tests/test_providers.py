@@ -346,8 +346,9 @@ async def test_provider_wraps_transport_errors() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = OpenAIProvider(api_key="key", base_url="http://example.invalid", http_client=client)
-        with pytest.raises(ProviderError, match="provider request failed"):
+        with pytest.raises(ProviderError, match="provider request failed") as exc_info:
             await provider.post_json("/responses", {})
+    assert exc_info.value.status_code is None
 
 async def test_provider_wraps_http_status_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -355,8 +356,9 @@ async def test_provider_wraps_http_status_errors() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = OpenAIProvider(api_key="key", base_url="http://example.invalid", http_client=client)
-        with pytest.raises(ProviderError, match="provider error 429: rate limited"):
+        with pytest.raises(ProviderError, match="provider error 429: rate limited") as exc_info:
             await provider.post_json("/responses", {})
+    assert exc_info.value.status_code == 429
 
 async def test_provider_wraps_invalid_json() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -364,5 +366,6 @@ async def test_provider_wraps_invalid_json() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = OpenAIProvider(api_key="key", base_url="http://example.invalid", http_client=client)
-        with pytest.raises(ProviderError, match="invalid JSON"):
+        with pytest.raises(ProviderError, match="invalid JSON") as exc_info:
             await provider.post_json("/responses", {})
+    assert exc_info.value.status_code is None

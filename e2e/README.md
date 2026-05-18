@@ -17,3 +17,5 @@ Current journeys:
 - `control_plane_journey.py`: hooks, sequential execution, and retry-limit behavior.
 - `structured_output_journey.py`: Pydantic structured output after tool use.
 - `mcp_journey.py`: local stdio MCP tool discovery and execution.
+- `parallel_llm_tool_journey.py`: direct `ParallelLlmTool` calls across all configured providers.
+- `parallel_llm_agent_journey.py`: an agent run using both built-in `parallel_llm` and a renamed custom `ParallelLlmTool`.

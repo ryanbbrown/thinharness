@@ -176,6 +176,10 @@ class ModelSession(Protocol):
 class ProviderError(RuntimeError):
     """Raised when a provider request fails."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 _BASE_RESUME_KEYS = frozenset({"kind", "version", "model"})
 
@@ -267,7 +271,7 @@ class Provider:
             response = await self._client().post(f"{self.base_url}{path}", json=payload, headers=self.headers())
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise ProviderError(f"provider error {exc.response.status_code}: {exc.response.text}") from exc
+            raise ProviderError(f"provider error {exc.response.status_code}: {exc.response.text}", status_code=exc.response.status_code) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"provider request failed: {exc}") from exc
         try:
@@ -873,6 +877,16 @@ def parse_model_ref(model_ref: str) -> tuple[str, str]:
     if not provider or not model:
         raise ValueError(f"invalid model reference: {model_ref}")
     return provider, model
+
+
+def provider_prefix(name: str) -> str:
+    """Normalize provider display names to model-ref prefixes."""
+    normalized = name.lower().replace(" ", "")
+    return {
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "openrouter": "openrouter",
+    }.get(normalized, normalized)
 
 
 # =============================================================================

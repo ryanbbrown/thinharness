@@ -45,6 +45,7 @@ from .tools.base import Json, ToolSpec, _invoke_tool
 from .tools.filesystem import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
+from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
 from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
 
@@ -190,6 +191,10 @@ class HarnessConfig(BaseModel):
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
+    builtin_parallel_llm_model: str | None = None
+    builtin_parallel_llm_temperature: float | None = None
+    parallel_llm_max_prompts: int = Field(default=100, ge=1)
+    parallel_llm_max_attempts: int = Field(default=4, ge=1, le=10)
     mcp_servers: list[MCPServer] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -287,7 +292,12 @@ class Harness:
             read_paths=self.config.read_paths,
             write_paths=self.config.write_paths,
         )
-        builtin_candidates = [*filesystem_tools, *self.skills.specs(), create_subagent_tool(self, self.config.subagents)]
+        builtin_candidates = [
+            *filesystem_tools,
+            *self.skills.specs(),
+            create_subagent_tool(self, self.config.subagents),
+            create_parallel_llm_tool(self),
+        ]
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
         self.tools: list[ToolSpec] = builtin
         self._validate_unique_tools(self.tools)

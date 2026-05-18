@@ -27,6 +27,8 @@ This tree expands project-owned files and collapses generated, cache, and vendor
 |-- e2e/
 |   |-- control_plane_journey.py     # Live-provider control-plane, hooks, and retry journey.
 |   |-- mcp_journey.py               # Live-provider MCP journey.
+|   |-- parallel_llm_agent_journey.py # Live-provider built-in and custom parallel LLM journey.
+|   |-- parallel_llm_tool_journey.py # Live-provider direct parallel LLM tool journey.
 |   |-- skills_journey.py            # Live-provider skills journey.
 |   |-- structured_output_journey.py # Live-provider structured-output journey.
 |   `-- workspace_tools_journey.py   # Live-provider filesystem tool journey.
@@ -38,6 +40,7 @@ This tree expands project-owned files and collapses generated, cache, and vendor
 |   |-- test_hooks.py                # Hook dispatch, cancellation, strict hooks, and limit hooks.
 |   |-- test_mcp.py                  # MCP lifecycle, discovery, collisions, subagents, and tracing tests.
 |   |-- test_mcp_optional_dependency.py # Optional MCP dependency behavior.
+|   |-- test_parallel_llm.py         # Built-in parallel one-shot LLM tool tests.
 |   |-- test_parallel_tools.py       # Same-turn parallel and sequential tool execution tests.
 |   |-- test_providers.py            # Provider payload conversion and error wrapping tests.
 |   |-- test_resume.py               # Resume state contracts across providers and failure modes.
@@ -62,6 +65,7 @@ This tree expands project-owned files and collapses generated, cache, and vendor
 |       |-- filesystem.py            # read, write, edit, search, list, glob, and jsonl_search wiring.
 |       |-- jsonl.py                 # JSONL-specific search and projection engine.
 |       |-- mcp.py                   # Optional MCP server connection and tool conversion support.
+|       |-- parallel_llm.py          # Opt-in parallel one-shot model completion tool.
 |       `-- skills.py                # Explicit skill discovery plus skill_read and skill_run.
 |-- vendor/
 |   |-- pgr/                         # Search-ranking reference implementation.
@@ -141,7 +145,7 @@ The design choices are recorded in `docs/decisions.md`. The most important decis
 - Resume is a clean-new-turn API, not interrupted continuation or failed-request retry.
 - Subagents are opt-in through the `subagent` tool, and child runs start fresh.
 - MCP support is optional and discovered tools are appended once per harness lifecycle.
-- `parallel_llm` is intentionally deferred.
+- `parallel_llm` is available as an opt-in built-in and as a configurable `ParallelLlmTool(...).spec()`.
 
 ## File Mechanics
 
@@ -161,7 +165,7 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 
 `core.py` is the center of the package.
 
-`HarnessConfig` is a Pydantic model for serializable setup knobs: provider reference, root path, tool selection, filesystem limits, search ranking options, model request settings, tracing config, subagent definitions, structured-output settings, retry budgets, and MCP servers.
+`HarnessConfig` is a Pydantic model for serializable setup knobs: provider reference, root path, tool selection, filesystem limits, search ranking options, model request settings, tracing config, subagent definitions, structured-output settings, retry budgets, parallel LLM batch limits, and MCP servers.
 
 `HarnessResult` is the final return object. It carries:
 
@@ -180,7 +184,7 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 - Infers a provider model unless an explicit `model` object is injected.
 - Builds filesystem tools with path policies and configured limits.
 - Builds a `SkillRegistry`.
-- Adds selected built-ins. The default built-ins are only `read`, `write`, `edit`, `search`, `list`, and `glob`.
+- Adds selected built-ins. The default built-ins are only `read`, `write`, `edit`, `search`, `list`, and `glob`; `parallel_llm` and `subagent` are opt-in by name.
 - Adds custom tools.
 - Builds structured-output schema if configured.
 - Stores MCP servers without connecting them yet.
@@ -196,6 +200,8 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 - `check_tool_retry_limits()` enforces retryable tool-error budgets per tool name.
 
 Tool execution flows through `_execute_tool_batch()`. In `tool_execution="auto"`, a batch is concurrent unless any called `ToolSpec` is sequential. Concurrent execution still preserves model call order in `tool_call_records` and provider continuation outputs.
+
+`parallel_llm` internal provider attempts are tool-specific work. The tool invocation consumes one `tool_calls` slot, but its internal attempts are reported as `model_requests` in the tool payload and metadata rather than in `RunUsage.model_requests`; `max_model_requests` remains the budget for agent-loop turns.
 
 MCP connection is lazy. `_ensure_mcp_connected()` enters each server context, lists tools, checks collisions, and appends discovered `ToolSpec`s exactly once. It also reserves `final_result` when tool-mode structured output is active, so an MCP tool cannot collide with the synthetic output tool.
 
@@ -272,6 +278,8 @@ Provider transports are thin `httpx` wrappers:
 - `AnthropicProvider` posts to `/messages` and uses Anthropic auth headers.
 - `OpenRouterProvider` posts to `/chat/completions` and can add attribution headers.
 
+`ProviderError` preserves the existing user-facing message and also carries `status_code` when an HTTP response exists. Transport, auth, capability, and invalid-JSON failures leave `status_code=None`; this lets retrying callers classify HTTP failures without parsing message text.
+
 Model adapters translate the normalized session contract into provider-specific payloads:
 
 - `OpenAIResponsesModel` uses server-side continuation through `previous_response_id`. Native structured output maps to Responses `text.format`.
@@ -325,7 +333,7 @@ The code accepts tracers that expose either `start_as_current_span()` or `start_
 
 ### `thinharness/tools/__init__.py`
 
-This file re-exports the public tool-layer API: `ToolSpec`, `ToolResult`, `ModelRetry`, path helpers, filesystem tools, JSONL search types, MCP server classes, and skill registry types.
+This file re-exports the public tool-layer API: `ToolSpec`, `ToolResult`, `ModelRetry`, path helpers, filesystem tools, JSONL search types, `ParallelLlmTool`, the `parallel_llm` factory and args type, MCP server classes, and skill registry types.
 
 ### `thinharness/tools/base.py`
 
@@ -401,6 +409,18 @@ The tool can:
 Supported `where` operations are `eq`, `ne`, `in`, `contains`, `regex`, and `exists`. Field paths support dotted keys, numeric indexes, and quoted bracket keys.
 
 The reason this is separate from generic `search` is that JSONL is naturally chunked by line. It gives agents a way to work over structured records without maintaining an embedding index.
+
+### `thinharness/tools/parallel_llm.py`
+
+`parallel_llm.py` implements `ParallelLlmTool`, a normal configurable `ToolSpec` wrapper for batches of independent one-shot model calls. The built-in `parallel_llm` is created by constructing this class from the parent harness's model, root, path policies, and configured prompt/retry caps.
+
+`ParallelLlmArgs` accepts either inline `prompts` or a `prompts_file` containing a JSON array of strings. `prompts_file` is resolved through the tool's read `PathPolicy`; `output_file` is resolved through the write `PathPolicy` and written atomically as pretty JSON. Inline results are compact JSON inside `ToolResult.content`; file mode returns only a summary and failed indices.
+
+The tool deliberately does not inherit the parent system prompt. If `system` is omitted, per-prompt calls use `instructions=""`; if shared instructions are needed, the caller must pass them explicitly. Each attempt uses a fresh `model.new_session()` and sends `tools=[]`, so there is no tool loop, memory, or continuation state.
+
+Batch size and retry budget are host-controlled by `ParallelLlmTool.max_prompts` and `ParallelLlmTool.max_attempts`; the built-in fills these from `HarnessConfig.parallel_llm_max_prompts` and `HarnessConfig.parallel_llm_max_attempts`. The built-in model and temperature can be pinned with `HarnessConfig.builtin_parallel_llm_model` and `HarnessConfig.builtin_parallel_llm_temperature`; otherwise it uses the parent harness model and temperature. The model controls only `max_concurrency`, bounded from 1 to 32. Retries are structured around `ProviderError.status_code`: retryable HTTP statuses are 408, 425, 429, 500, 502, 503, and 504; transport errors with the existing `provider request failed:` prefix are also retried.
+
+The model-facing arguments do not include model or temperature overrides. Custom `ParallelLlmTool` instances own provider parsing, API key, base URL, request timeout, temperature, and `extra_body`.
 
 ### `thinharness/tools/skills.py`
 
@@ -514,7 +534,7 @@ For a granular codebase read, use this order:
 2. `thinharness/core.py` for the run loop.
 3. `thinharness/providers.py` for provider normalization.
 4. `thinharness/tools/base.py` for the tool contract.
-5. `thinharness/tools/filesystem.py` and `thinharness/tools/jsonl.py` for built-in tools.
+5. `thinharness/tools/filesystem.py`, `thinharness/tools/jsonl.py`, and `thinharness/tools/parallel_llm.py` for built-in tools.
 6. `thinharness/output.py` for structured output.
 7. `thinharness/hooks.py` for lifecycle customization.
 8. `thinharness/subagents.py` for delegation.

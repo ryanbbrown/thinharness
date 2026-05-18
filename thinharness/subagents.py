@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context
-from .providers import infer_model, parse_model_ref
+from .providers import infer_model, parse_model_ref, provider_prefix
 from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
 from .tracing import TracingOptions
@@ -317,18 +317,8 @@ def _child_hooks(parent: Harness, config: SubAgentConfig | None) -> HookRegistry
 def _same_provider(parent: Harness, child_model_ref: str) -> bool:
     """Return whether a child model ref uses the same provider as the parent model."""
     child_provider, _ = parse_model_ref(child_model_ref)
-    parent_provider = _provider_prefix(getattr(getattr(parent.model, "provider", None), "name", ""))
+    parent_provider = provider_prefix(getattr(getattr(parent.model, "provider", None), "name", ""))
     return child_provider == parent_provider
-
-
-def _provider_prefix(name: str) -> str:
-    """Normalize provider display names to model-ref prefixes."""
-    normalized = name.lower().replace(" ", "")
-    return {
-        "openai": "openai",
-        "anthropic": "anthropic",
-        "openrouter": "openrouter",
-    }.get(normalized, normalized)
 
 
 def _subagent_tool_description(configs: list[SubAgentConfig]) -> str:

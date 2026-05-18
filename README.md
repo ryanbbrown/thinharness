@@ -22,7 +22,7 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,759 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,812 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -54,7 +54,7 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-17 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>4,759</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>4,812</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -252,7 +252,7 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
-- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, with prompt and retry budgets controlled by `HarnessConfig`.
+- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and retry settings.
 - **Resume:** clean new-turn continuation through opaque provider session state.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.

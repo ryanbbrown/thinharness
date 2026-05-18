@@ -49,3 +49,44 @@ two = await harness.run("Make them more playful.", resume_from=base.resume_state
 For parallel branches, use separate `Harness` instances. A single `Harness` instance still rejects concurrent `run()` calls.
 
 ThinHarness has no separate cross-run message-history parameter. `resume_from` is the supported way to carry prior context across `run()` calls.
+
+## Parallel LLM Batches
+
+`parallel_llm` is an opt-in built-in tool for batches of independent one-shot prompts:
+
+```python
+harness = Harness(HarnessConfig(
+    builtin_tools=["parallel_llm"],
+    builtin_parallel_llm_model="openai:gpt-5.2-mini",  # optional; defaults to the parent model
+    builtin_parallel_llm_temperature=0,
+    parallel_llm_max_prompts=100,
+    parallel_llm_max_attempts=4,
+))
+```
+
+Each batch call is stateless. The per-prompt model session receives `tools=[]`, no memory, no continuation, and no inherited harness system prompt. Pass `system` when the batch needs shared instructions.
+
+Use `output_file` when combined results may be large. Inline output returns compact JSON in the normal `ToolResult.content`; file output writes pretty JSON under the workspace path policy and returns only a summary with failed indices.
+
+`max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields for the built-in. Parallel attempts are reported as `model_requests` in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.
+
+The model-facing arguments do not include model or temperature overrides. The built-in uses `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` when set, otherwise it falls back to the parent harness model and temperature. Custom `ParallelLlmTool` instances own their model, temperature, API settings, prompt cap, and retry budget.
+
+For a custom, renameable version, construct the same tool as a normal `ToolSpec`:
+
+```python
+from thinharness import ParallelLlmTool
+
+extract_tool = ParallelLlmTool(
+    name="parallel_extract",
+    description="Extract fields from independent chunks.",
+    model="openai:gpt-5.2-mini",
+    root=".",
+    read_paths=["inputs"],
+    write_paths=["outputs"],
+    max_prompts=50,
+    max_attempts=2,
+).spec()
+
+harness = Harness(HarnessConfig(root="."), tools=[extract_tool])
+```
