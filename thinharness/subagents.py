@@ -261,6 +261,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
         hooks=_child_hooks(parent, config),
         subagent_hooks={},
         _owns_model=config is not None and config.model is not None,
+        _is_child_run=True,
     )
 
 

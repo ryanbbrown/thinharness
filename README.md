@@ -267,7 +267,32 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
 - **Limit notices:** near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or callbacks; parent and child runs compute them from their own local budgets.
-- **Tracing:** OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
+- **Tracing:** OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents, with opt-in GenAI input/output content attributes for OTLP backends such as Langfuse.
+
+## Tracing
+
+Message, tool argument, and tool result capture are off by default because they can contain user data. For live Langfuse validation, configure OTLP tracing and flush the provider before process exit:
+
+```python
+from thinharness import Harness, HarnessConfig, TracingOptions, create_langfuse_tracing
+
+tracing = create_langfuse_tracing(service_name="thinharness-dev")
+harness = Harness(
+    HarnessConfig(root=".", model="openrouter:anthropic/claude-haiku-4.5"),
+    tracing=TracingOptions(
+        tracer=tracing.tracer,
+        agent_name="thin-agent",
+        capture_messages=True,
+        capture_tool_args=True,
+        capture_tool_results=True,
+    ),
+)
+try:
+    result = harness.run_sync("Inspect the repo and summarize the tracing setup.")
+finally:
+    tracing.force_flush()
+    tracing.shutdown()
+```
 
 ## Status
 

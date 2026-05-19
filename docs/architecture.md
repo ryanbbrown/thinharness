@@ -332,6 +332,50 @@ The code accepts tracers that expose either `start_as_current_span()` or `start_
 
 `create_otlp_tracing()` is an optional-extra helper. It imports OpenTelemetry SDK packages lazily and raises a clear install error if `thinharness[tracing]` is not installed.
 
+`create_langfuse_tracing()` wraps the OTLP helper for Langfuse. It reads `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST`, defaults to the US cloud host, and sends traces to `/api/public/otel/v1/traces`. Current Langfuse OTLP docs recommend `x-langfuse-ingestion-version: 4` for direct ingestion that should appear in Cloud Fast Preview in real time; ThinHarness exposes that as `legacy_ingestion=True` so callers can opt in deliberately for validation or older deployments.
+
+When `capture_messages=True`, ThinHarness writes request content from an explicit `ModelTraceSnapshot`, not from provider payloads after harness notices have been appended. The top-level agent span records the raw caller prompt as `langfuse.trace.input`; model spans record the effective prompt or tool outputs actually sent to the provider. Child agent spans write observation input/output instead of trace input/output so subagents cannot overwrite the root trace in Langfuse. Message shapes follow the OTel GenAI semantic convention as retrieved on 2026-05-19.
+
+| Attribute | Set on | Purpose |
+| --- | --- | --- |
+| `gen_ai.system_instructions` | Top-level agent start | System instructions sent to the run, recorded once. |
+| `gen_ai.input.messages` | Model request | OTel GenAI logical request messages. |
+| `gen_ai.output.messages` | Model response | OTel GenAI assistant response messages. |
+| `gen_ai.prompt` | Model request | Backend-compatible logical input fallback. |
+| `gen_ai.completion` | Model response and top-level result | Backend-compatible text output fallback. |
+| `gen_ai.tool.call.arguments` | Tool span | Opt-in tool arguments when `capture_tool_args=True`. |
+| `gen_ai.tool.call.result` | Tool span | Opt-in tool result when `capture_tool_results=True`. |
+| `langfuse.observation.input` | Model request and child agent start | Langfuse observation input. |
+| `langfuse.observation.output` | Model response and child agent result | Langfuse observation output. |
+| `langfuse.trace.input` | Top-level agent start | Raw caller prompt before hook context injection. |
+| `langfuse.trace.output` | Top-level successful result | Final harness result payload. |
+| `thinharness.model.request.kind` | Model request | Snapshot kind: `start`, `resume`, `tool_outputs`, `correction`, or `output_retry_tool`. |
+| `thinharness.output.mode_requested` | Model request | Requested structured-output mode. Distinct from finalized `thinharness.output.mode`. |
+| `thinharness.model.notices` | Model request | Serialized harness-owned notices kept separate from logical input messages. |
+
+Example:
+
+```python
+from thinharness import Harness, HarnessConfig, TracingOptions, create_langfuse_tracing
+
+tracing = create_langfuse_tracing(service_name="thinharness-dev")
+harness = Harness(
+    HarnessConfig(root=".", model="openrouter:anthropic/claude-haiku-4.5"),
+    tracing=TracingOptions(
+        tracer=tracing.tracer,
+        agent_name="thin-agent",
+        capture_messages=True,
+        capture_tool_args=True,
+        capture_tool_results=True,
+    ),
+)
+try:
+    result = harness.run_sync("Inspect the repo and summarize the tracing setup.")
+finally:
+    tracing.force_flush()
+    tracing.shutdown()
+```
+
 ### `thinharness/tools/__init__.py`
 
 This file re-exports the public tool-layer API: `ToolSpec`, `ToolResult`, `ModelRetry`, path helpers, filesystem tools, JSONL search types, `ParallelLlmTool`, the `parallel_llm` factory and args type, MCP server classes, and skill registry types.

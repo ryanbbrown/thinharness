@@ -1,15 +1,27 @@
-"""OpenTelemetry-compatible tracing helpers."""
+"""OpenTelemetry-compatible tracing helpers.
+
+Model input messages are constructed from provider-neutral ModelTraceSnapshot
+objects, never from provider payloads, because providers.py may already have
+appended harness notices to those payloads. For top-level runs,
+langfuse.trace.input stores the raw caller prompt while the first model span
+stores the effective prompt after hooks. OTel GenAI message shapes follow the
+semantic convention as retrieved on 2026-05-19:
+https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/.
+"""
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass, replace
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from .providers import ModelNotice
 from .tools.base import Json
 
 try:
@@ -48,6 +60,22 @@ class OtlpTracing:
         self.provider.shutdown()
 
 
+@dataclass(frozen=True)
+class ModelTraceSnapshot:
+    """Canonical input for one model span."""
+
+    kind: Literal["start", "resume", "tool_outputs", "correction", "output_retry_tool"]
+    prompt: str | None = None
+    tool_outputs: list[Json] | None = None
+    notices: list[Json] | None = None
+    structured_output: str | None = None
+
+    def with_notices(self, notices: list[ModelNotice]) -> ModelTraceSnapshot:
+        """Return a copy with model-facing notices attached."""
+        serialized = [asdict(notice) for notice in notices]
+        return replace(self, notices=serialized or None)
+
+
 def create_otlp_tracing(
     *,
     service_name: str,
@@ -70,6 +98,35 @@ def create_otlp_tracing(
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     return OtlpTracing(tracer=provider.get_tracer(tracer_name), provider=provider)
+
+
+def create_langfuse_tracing(
+    *,
+    service_name: str,
+    public_key: str | None = None,
+    secret_key: str | None = None,
+    host: str | None = None,
+    legacy_ingestion: bool = False,
+    tracer_name: str = "thinharness",
+) -> OtlpTracing:
+    """Create a Langfuse OTLP tracer provider for live validation."""
+    public_key = public_key or os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = secret_key or os.getenv("LANGFUSE_SECRET_KEY")
+    if not public_key or not secret_key:
+        raise RuntimeError("LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are required for create_langfuse_tracing")
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+    langfuse_host = host or os.getenv("LANGFUSE_HOST") or "https://us.cloud.langfuse.com"
+    headers = {"Authorization": f"Basic {auth}"}
+    if legacy_ingestion:
+        # Current Langfuse docs recommend this for direct OTLP ingestion that
+        # needs real-time Cloud Fast Preview visibility.
+        headers["x-langfuse-ingestion-version"] = "4"
+    return create_otlp_tracing(
+        service_name=service_name,
+        endpoint=langfuse_host.rstrip("/") + "/api/public/otel/v1/traces",
+        headers=headers,
+        tracer_name=tracer_name,
+    )
 
 
 class RunTracer:
@@ -195,17 +252,85 @@ class _NoopSpan:
         """Ignore span status."""
 
 
+def annotate_model_request(span: _SpanAdapter, snapshot: ModelTraceSnapshot, *, capture_messages: bool) -> None:
+    """Write opt-in request content for portable OTel and Langfuse display."""
+    if not capture_messages:
+        return
+    input_payload = _model_request_input(snapshot)
+    span.set_attributes({
+        "gen_ai.input.messages": serialize_attribute_value(_otel_input_messages(snapshot)),
+        "gen_ai.prompt": serialize_attribute_value(input_payload),
+        "langfuse.observation.input": serialize_attribute_value(input_payload),
+        "thinharness.model.request.kind": snapshot.kind,
+        "thinharness.output.mode_requested": snapshot.structured_output,
+        "thinharness.model.notices": serialize_attribute_value(snapshot.notices),
+    })
+
+
 def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool = False) -> None:
     """Add model response attributes to a span."""
     raw = getattr(turn, "raw", {}) or {}
     text = getattr(turn, "text", "") or ""
-    span.set_attributes({
+    attributes = {
         "gen_ai.response.id": raw.get("id"),
         "gen_ai.response.model": _response_model(raw),
         "gen_ai.response.finish_reasons": _finish_reasons(raw),
         **_usage_attributes(raw),
-        "gen_ai.completion": text if capture_messages and text else None,
-    })
+    }
+    if capture_messages and text:
+        attributes.update({
+            "langfuse.observation.output": serialize_attribute_value({"text": text}),
+            "gen_ai.completion": text,
+            "gen_ai.output.messages": serialize_attribute_value(_otel_output_messages(turn)),
+        })
+    span.set_attributes(attributes)
+
+
+def annotate_agent_start(
+    span: _SpanAdapter,
+    *,
+    prompt: str,
+    instructions: str,
+    capture_messages: bool,
+    top_level: bool,
+) -> None:
+    """Write opt-in agent input attributes before provider work runs."""
+    if not capture_messages:
+        return
+    if top_level:
+        span.set_attributes({
+            "langfuse.trace.input": prompt,
+            "gen_ai.system_instructions": serialize_attribute_value([{"type": "text", "content": instructions}]),
+        })
+    else:
+        span.set_attribute("langfuse.observation.input", prompt)
+
+
+def annotate_agent_result(
+    span: _SpanAdapter,
+    *,
+    result: Any,
+    output_schema: Any | None,
+    capture_messages: bool,
+    top_level: bool,
+) -> None:
+    """Write opt-in agent trace or observation output attributes."""
+    if not capture_messages:
+        return
+    output_payload = output_schema.dump(result.output) if output_schema is not None and result.output is not None else None
+    output = {"text": result.text, "output": output_payload, "stop_reason": result.stop_reason}
+    if top_level:
+        span.set_attributes({
+            "langfuse.trace.output": serialize_attribute_value(output),
+            "gen_ai.completion": result.text,
+        })
+    else:
+        span.set_attribute("langfuse.observation.output", serialize_attribute_value(output))
+
+
+def _trace_output_mode(output_schema: Any | None) -> str | None:
+    """Return the requested output mode for tracing."""
+    return str(output_schema.mode) if output_schema is not None else None
 
 
 def serialize_attribute_value(value: Any) -> str | None:
@@ -218,6 +343,54 @@ def serialize_attribute_value(value: Any) -> str | None:
         return json.dumps(value, ensure_ascii=False, default=str)
     except TypeError:
         return str(value)
+
+
+def _model_request_input(snapshot: ModelTraceSnapshot) -> Json | None:
+    """Return the backend-compatible logical request payload."""
+    if snapshot.kind in {"start", "resume"}:
+        return {"prompt": snapshot.prompt}
+    if snapshot.kind in {"tool_outputs", "output_retry_tool"}:
+        return {"tool_outputs": snapshot.tool_outputs or []}
+    if snapshot.kind == "correction":
+        return {"correction": snapshot.prompt}
+    return None
+
+
+def _otel_input_messages(snapshot: ModelTraceSnapshot) -> list[Json] | None:
+    """Return OTel-shaped logical input messages."""
+    if snapshot.kind in {"start", "resume", "correction"}:
+        if snapshot.prompt is None:
+            return None
+        return [{"role": "user", "parts": [{"type": "text", "content": snapshot.prompt}]}]
+    if snapshot.kind in {"tool_outputs", "output_retry_tool"}:
+        return [
+            {
+                "role": "tool",
+                "parts": [{
+                    "type": "tool_result",
+                    "id": output.get("call_id"),
+                    "content": output.get("output"),
+                }],
+            }
+            for output in snapshot.tool_outputs or []
+        ]
+    return None
+
+
+def _otel_output_messages(turn: Any) -> list[Json]:
+    """Return OTel-shaped assistant output messages."""
+    parts: list[Json] = []
+    text = getattr(turn, "text", "") or ""
+    if text:
+        parts.append({"type": "text", "content": text})
+    for call in getattr(turn, "tool_calls", []) or []:
+        parts.append({
+            "type": "tool_call",
+            "id": getattr(call, "id", None),
+            "name": getattr(call, "name", None),
+            "arguments": getattr(call, "arguments", None),
+        })
+    return [{"role": "assistant", "parts": parts}]
 
 
 def _usage_attributes(raw: Json) -> Json:

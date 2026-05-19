@@ -55,7 +55,17 @@ from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
-from .tracing import RunTracer, TracingOptions, annotate_model_span, serialize_attribute_value
+from .tracing import (
+    ModelTraceSnapshot,
+    RunTracer,
+    TracingOptions,
+    _trace_output_mode,
+    annotate_agent_result,
+    annotate_agent_start,
+    annotate_model_request,
+    annotate_model_span,
+    serialize_attribute_value,
+)
 
 MAX_PARALLEL_TOOL_WORKERS = 16
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
@@ -268,6 +278,7 @@ class Harness:
         hooks: list[Hook] | HookRegistry | None = None,
         subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
         _owns_model: bool | None = None,
+        _is_child_run: bool = False,
     ) -> None:
         self.config = config or HarnessConfig()
         if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
@@ -325,6 +336,7 @@ class Harness:
         self._validate_skill_tool_selection()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.tracing = tracing or self.config.tracing
+        self._is_child_run = _is_child_run
         self._current_run_metadata: Json | None = None
         self._running = False
         self._closed = False
@@ -409,7 +421,7 @@ class Harness:
             terminal_error = HarnessError(f"tool calls would exceed max_tool_calls={self.config.max_tool_calls}")
             raise terminal_error
 
-        async def advance_model(request, *, output_retry: bool = False) -> ModelTurn:
+        async def advance_model(request, *, trace_snapshot: ModelTraceSnapshot, output_retry: bool = False) -> ModelTurn:
             """Run one provider request with limit, usage, and tracing ceremony."""
             check_model_limit()
             notices = _compute_limit_notices(
@@ -421,11 +433,11 @@ class Harness:
             if output_retry:
                 usage.output_retries += 1
             with run_tracer.model(self.model) as model_span:
-                if notices:
-                    model_span.set_attributes({
-                        "thinharness.model.notices.count": len(notices),
-                        "thinharness.model.notices.kinds": [notice.kind for notice in notices],
-                    })
+                annotate_model_request(
+                    model_span,
+                    trace_snapshot.with_notices(notices),
+                    capture_messages=bool(self.tracing and self.tracing.capture_messages),
+                )
                 try:
                     advanced_turn = await request(notices)
                     usage.model_requests += 1
@@ -462,6 +474,29 @@ class Harness:
                     finalized_via_output_tool,
                     model_supports_resume,
                 )
+
+        def finalize(
+            text: str,
+            active_session: ModelSession,
+            *,
+            output: Any | None = None,
+            finalized_via_output_tool_value: bool = False,
+        ) -> HarnessResult:
+            """Run terminal bookkeeping for one successful run."""
+            nonlocal result, finalized_via_output_tool
+            if finalized_via_output_tool_value:
+                finalized_via_output_tool = True
+            result = build_terminal_result(text, output)
+            annotate_agent_result(
+                agent_span,
+                result=result,
+                output_schema=self.output_schema,
+                capture_messages=bool(self.tracing and self.tracing.capture_messages),
+                top_level=not self._is_child_run,
+            )
+            attach_resume_state(active_session)
+            fire_run_end_once()
+            return result
 
         def retry_or_fail() -> None:
             """Track one structured-output validation retry or fail the run."""
@@ -514,7 +549,15 @@ class Harness:
                             raise terminal_error
                         effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
                         instructions = structured_instructions(self.system_instructions(), self.output_schema)
+                        annotate_agent_start(
+                            agent_span,
+                            prompt=prompt,
+                            instructions=instructions,
+                            capture_messages=bool(self.tracing and self.tracing.capture_messages),
+                            top_level=not self._is_child_run,
+                        )
                         structured_output = self._structured_output_request()
+                        output_mode = _trace_output_mode(self.output_schema)
                         if first_turn_kind == "start":
                             try:
                                 active_session = self.model.new_session()
@@ -531,7 +574,7 @@ class Harness:
                                 metadata=metadata,
                                 structured_output=structured_output,
                                 notices=notices,
-                            ))
+                            ), trace_snapshot=ModelTraceSnapshot(kind="start", prompt=effective_prompt, structured_output=output_mode))
                         else:
                             assert session is not None
                             active_session = session
@@ -542,18 +585,14 @@ class Harness:
                                 metadata=metadata,
                                 structured_output=structured_output,
                                 notices=notices,
-                            ))
+                            ), trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=effective_prompt, structured_output=output_mode))
                         while True:
                             responses.append(turn.raw)
                             if self.output_schema is not None:
                                 if self.output_schema.mode == "text":
                                     if not turn.tool_calls:
-                                        agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                         turn.finalized_output_mode = self.output_schema.mode
-                                        result = build_terminal_result(turn.text, self.output_schema.validate_text(turn.text))
-                                        attach_resume_state(active_session)
-                                        fire_run_end_once()
-                                        return result
+                                        return finalize(turn.text, active_session, output=self.output_schema.validate_text(turn.text))
                                 elif self.output_schema.mode == "tool":
                                     finals = [call for call in turn.tool_calls if call.name == FINAL_RESULT_TOOL_NAME]
                                     if finals:
@@ -575,16 +614,16 @@ class Harness:
                                                     structured_output=structured_output,
                                                     notices=notices,
                                                 ),
+                                                trace_snapshot=ModelTraceSnapshot(
+                                                    kind="output_retry_tool",
+                                                    tool_outputs=[{"call_id": final_id, "output": retry_message}],
+                                                    structured_output=output_mode,
+                                                ),
                                                 output_retry=True,
                                             )
                                             continue
-                                        agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                         turn.finalized_output_mode = self.output_schema.mode
-                                        finalized_via_output_tool = True
-                                        result = build_terminal_result(turn.text, value)
-                                        attach_resume_state(active_session)
-                                        fire_run_end_once()
-                                        return result
+                                        return finalize(turn.text, active_session, output=value, finalized_via_output_tool_value=True)
                                     if not turn.tool_calls:
                                         retry_or_fail()
                                         retry_message = _structured_retry_message(
@@ -598,6 +637,10 @@ class Harness:
                                             metadata=metadata,
                                             structured_output=structured_output,
                                             notices=notices,
+                                        ), trace_snapshot=ModelTraceSnapshot(
+                                            kind="correction",
+                                            prompt=retry_message,
+                                            structured_output=output_mode,
                                         ), output_retry=True)
                                         continue
                                 elif not turn.tool_calls:
@@ -616,20 +659,16 @@ class Harness:
                                             metadata=metadata,
                                             structured_output=structured_output,
                                             notices=notices,
+                                        ), trace_snapshot=ModelTraceSnapshot(
+                                            kind="correction",
+                                            prompt=retry_message,
+                                            structured_output=output_mode,
                                         ), output_retry=True)
                                         continue
-                                    agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
                                     turn.finalized_output_mode = self.output_schema.mode
-                                    result = build_terminal_result(turn.text, value)
-                                    attach_resume_state(active_session)
-                                    fire_run_end_once()
-                                    return result
+                                    return finalize(turn.text, active_session, output=value)
                             if not turn.tool_calls:
-                                agent_span.set_attribute("gen_ai.completion", turn.text if self.tracing and self.tracing.capture_messages else None)
-                                result = build_terminal_result(turn.text)
-                                attach_resume_state(active_session)
-                                fire_run_end_once()
-                                return result
+                                return finalize(turn.text, active_session)
                             check_tool_limit(len(turn.tool_calls))
                             usage.tool_calls += len(turn.tool_calls)
                             recorded, outputs, executions = await self._execute_tool_batch(run_tracer, turn.tool_calls)
@@ -643,6 +682,10 @@ class Harness:
                                 metadata=metadata,
                                 structured_output=structured_output,
                                 notices=notices,
+                            ), trace_snapshot=ModelTraceSnapshot(
+                                kind="tool_outputs",
+                                tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in tool_outputs],
+                                structured_output=output_mode,
                             ))
                     except asyncio.CancelledError as exc:
                         stop_reason = "cancelled"

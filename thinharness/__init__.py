@@ -62,7 +62,7 @@ from .tools import (
     contained_path,
     create_parallel_llm_tool,
 )
-from .tracing import OtlpTracing, TracingOptions, create_otlp_tracing
+from .tracing import OtlpTracing, TracingOptions, create_langfuse_tracing, create_otlp_tracing
 
 try:
     __version__ = _metadata_version("thinharness")
@@ -136,6 +136,7 @@ __all__ = [
     "call_tool",
     "contained_path",
     "create_parallel_llm_tool",
+    "create_langfuse_tracing",
     "create_subagent_tool",
     "create_otlp_tracing",
     "infer_model",
