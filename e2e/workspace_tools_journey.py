@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ def main() -> None:
         root = Path(raw_root)
         _seed_workspace(root)
         tool_names: list[str] = []
+        trace_dir = root / "traces"
 
         # Config
         harness = Harness(
@@ -48,6 +50,7 @@ def main() -> None:
                 builtin_tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search"],
                 max_model_requests=30,
                 max_tool_calls=12,
+                local_trace_dir=trace_dir,
             ),
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
         )
@@ -64,6 +67,7 @@ def main() -> None:
         assert "incident_count=2" in text
         for name in ["list", "glob", "read", "search", "jsonl_search", "write", "edit"]:
             assert name in tool_names, f"expected tool call: {name}; saw {tool_names}"
+        _assert_local_trace(trace_dir)
         assert "WORKSPACE_TOOLS_DONE" in result.text
         print(f"PASS workspace_tools_journey model={MODEL} tools={tool_names}")
 
@@ -82,6 +86,21 @@ def _seed_workspace(root: Path) -> None:
         '{"kind":"incident","id":"inc-002","severity":"medium"}\n',
         encoding="utf-8",
     )
+
+
+def _assert_local_trace(trace_dir: Path) -> None:
+    trace_files = list(trace_dir.rglob("*.jsonl"))
+    assert trace_files, "local tracing did not create a trace JSONL file"
+    records = []
+    for path in trace_files:
+        records.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    names = {record["name"] for record in records}
+    assert "invoke_agent thinharness" in names
+    assert any(name.startswith("chat ") for name in names)
+    assert "execute_tool read" in names
+    serialized = json.dumps(records)
+    assert "WORKSPACE_TOOLS_DONE" in serialized
+    assert "owner=ThinHarness" in serialized
 
 
 def _should_skip(model: str) -> bool:

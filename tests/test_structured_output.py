@@ -164,9 +164,16 @@ def test_tool_mode_invalid_args_retry_uses_tool_output(tmp_path) -> None:
     seen_messages = []
 
     class RecordingSession(ScriptedSession):
-        async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+        async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
             seen_messages.append(message)
-            return await super().continue_with_user_message(message, tools=tools, metadata=metadata, structured_output=structured_output, notices=notices)
+            return await super().continue_with_user_message(
+                message,
+                instructions=instructions,
+                tools=tools,
+                metadata=metadata,
+                structured_output=structured_output,
+                notices=notices,
+            )
 
     session = RecordingSession(
         start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')], raw={"id": "bad"}),
@@ -475,7 +482,7 @@ def test_structured_finalization_marks_model_span(tmp_path, mode: str, turn: Mod
     if mode == "native":
         model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode=mode, tracing=TracingOptions(tracer=tracer)),
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode=mode, tracing=[TracingOptions(tracer=tracer)]),
         model=model,
     )
 

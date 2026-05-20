@@ -38,8 +38,11 @@ async def test_openai_resume_uses_previous_response_id_only_for_followup(tmp_pat
 
     assert first.resume_state == {"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": "resp_2"}
     assert second.text == "done"
+    assert client.payloads[1]["previous_response_id"] == "resp_1"
+    assert client.payloads[1]["instructions"] == harness.system_instructions()
     assert client.payloads[2]["input"] == "follow-up"
     assert client.payloads[2]["previous_response_id"] == "resp_2"
+    assert client.payloads[2]["instructions"] == harness.system_instructions()
     assert "first" not in json.dumps(client.payloads[2])
 
 
@@ -519,11 +522,11 @@ class _NoResumeSession:
         """Return a terminal text turn."""
         return ModelTurn(text="done", raw={"id": "done"})
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
         """Reject unexpected tool continuation."""
         raise AssertionError("unexpected tool continuation")
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None) -> ModelTurn:
         """Reject unexpected corrective continuation."""
         raise AssertionError("unexpected user-message continuation")
 

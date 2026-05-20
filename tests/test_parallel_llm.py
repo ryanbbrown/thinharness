@@ -84,11 +84,11 @@ class BatchSession:
         """Run one batch completion."""
         return await self.model.complete(prompt, instructions, tools, structured_output)
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
@@ -128,13 +128,13 @@ class MainSession:
             ],
         )
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs: list[ToolOutput], *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Finish after receiving the tool output."""
         parsed = json.loads(outputs[0].output)
         payload = json.loads(parsed["content"])
         return ModelTurn(text=f"done:{payload['succeeded']}", raw={"id": "done"})
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Main session never receives corrections."""
         raise AssertionError("should not correct")
 

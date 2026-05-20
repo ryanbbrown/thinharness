@@ -215,14 +215,14 @@ class ScriptedSession:
             self.on_start(prompt, instructions, tools, metadata, previous_response_id)
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Return the scripted continuation turn."""
         self.notice_calls.append(("continue_with_tools", list(notices or [])))
         if self.on_continue:
             self.on_continue(outputs, tools, metadata)
         return self.continue_turn
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Return the scripted continuation turn after a user message."""
         self.notice_calls.append(("continue_with_user_message", list(notices or [])))
         if self.on_continue:
@@ -245,11 +245,11 @@ class FailingSession:
         """Raise a provider failure from the child run."""
         raise ProviderError("child failed")
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 

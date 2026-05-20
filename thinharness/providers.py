@@ -135,6 +135,7 @@ class ModelSession(Protocol):
         self,
         outputs: list[ToolOutput],
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -147,6 +148,7 @@ class ModelSession(Protocol):
         self,
         message: str,
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -458,6 +460,7 @@ class OpenAIResponsesSession:
         self,
         outputs: list[ToolOutput],
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -475,7 +478,13 @@ class OpenAIResponsesSession:
                 "role": "user",
                 "content": [{"type": "input_text", "text": notice_text}],
             })
-        payload = self.model.build_payload(input_payload=input_payload, tools=tools, metadata=metadata, structured_output=structured_output)
+        payload = self.model.build_payload(
+            input_payload=input_payload,
+            instructions=instructions,
+            tools=tools,
+            metadata=metadata,
+            structured_output=structured_output,
+        )
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
@@ -484,6 +493,7 @@ class OpenAIResponsesSession:
         self,
         message: str,
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -492,6 +502,7 @@ class OpenAIResponsesSession:
         """Continue a Responses API run with a corrective user message."""
         payload = self.model.build_payload(
             input_payload=append_notices_to_text(message, notices),
+            instructions=instructions,
             tools=tools,
             metadata=metadata,
             structured_output=structured_output,
@@ -616,6 +627,7 @@ class AnthropicMessagesSession:
         self,
         outputs: list[ToolOutput],
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -638,6 +650,7 @@ class AnthropicMessagesSession:
         self,
         message: str,
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -765,6 +778,7 @@ class OpenRouterSession:
         self,
         outputs: list[ToolOutput],
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
@@ -782,6 +796,7 @@ class OpenRouterSession:
         self,
         message: str,
         *,
+        instructions: str | None = None,
         tools: list[Json],
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,

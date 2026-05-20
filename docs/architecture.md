@@ -320,7 +320,9 @@ Calling `subagent` without an `agent` argument uses the framework default subage
 
 `tracing.py` is a lightweight OpenTelemetry adapter.
 
-`TracingOptions` accepts a tracer and controls whether message text, tool args, and tool results are captured. Capture is off by default because those fields may contain user data.
+`TracingOptions` accepts one external tracer and controls whether message text, tool args, and tool results are captured for that tracer. Capture is off by default because those fields may contain user data. `HarnessConfig.tracing` accepts a list of these external sinks, so callers can fan out to any OpenTelemetry-compatible backend.
+
+`local_tracing=True` on `HarnessConfig` is the default and creates a local plaintext JSONL tracer. The default base directory is `~/.thinharness/traces`, overridable with `local_trace_dir`; each project writes under an encoded root-path subdirectory. `local_tracing=False` or `THINHARNESS_DISABLE_LOCAL_TRACING=1` disables local trace files. Local tracing captures full prompts, model outputs, tool arguments, tool results, errors, usage, and resume output attributes, so the trace directory should be treated as sensitive local data. When local tracing and external tracers are both configured, ThinHarness fans spans out to every sink while preserving each external sink's capture settings.
 
 `RunTracer` creates three span types:
 
@@ -330,9 +332,9 @@ Calling `subagent` without an `agent` argument uses the framework default subage
 
 The code accepts tracers that expose either `start_as_current_span()` or `start_span()`, which keeps tests simple and avoids coupling too tightly to one tracing implementation.
 
-`create_otlp_tracing()` is an optional-extra helper. It imports OpenTelemetry SDK packages lazily and raises a clear install error if `thinharness[tracing]` is not installed.
+`create_local_tracing()` returns the same local plaintext JSONL tracer used by `local_tracing=True` for callers that want to compose tracing manually. `create_local_tracing_options()` returns full-capture `TracingOptions` for the same local sink shape.
 
-`create_langfuse_tracing()` wraps the OTLP helper for Langfuse. It reads `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST`, defaults to the US cloud host, and sends traces to `/api/public/otel/v1/traces`. Current Langfuse OTLP docs recommend `x-langfuse-ingestion-version: 4` for direct ingestion that should appear in Cloud Fast Preview in real time; ThinHarness exposes that as `legacy_ingestion=True` so callers can opt in deliberately for validation or older deployments.
+`create_otlp_tracing()` is an optional-extra helper. It imports OpenTelemetry SDK packages lazily and raises a clear install error if `thinharness[tracing]` is not installed.
 
 When `capture_messages=True`, ThinHarness writes request content from an explicit `ModelTraceSnapshot`, not from provider payloads after harness notices have been appended. The top-level agent span records the raw caller prompt as `langfuse.trace.input`; model spans record the effective prompt or tool outputs actually sent to the provider. Child agent spans write observation input/output instead of trace input/output so subagents cannot overwrite the root trace in Langfuse. Message shapes follow the OTel GenAI semantic convention as retrieved on 2026-05-19.
 
@@ -353,21 +355,22 @@ When `capture_messages=True`, ThinHarness writes request content from an explici
 | `thinharness.output.mode_requested` | Model request | Requested structured-output mode. Distinct from finalized `thinharness.output.mode`. |
 | `thinharness.model.notices` | Model request | Serialized harness-owned notices kept separate from logical input messages. |
 
-Example:
+Generic OTLP example:
 
 ```python
-from thinharness import Harness, HarnessConfig, TracingOptions, create_langfuse_tracing
+from thinharness import Harness, HarnessConfig, TracingOptions, create_otlp_tracing
 
-tracing = create_langfuse_tracing(service_name="thinharness-dev")
+tracing = create_otlp_tracing(
+    service_name="thinharness-dev",
+    endpoint="https://otel.example.com/v1/traces",
+    headers={"Authorization": "Bearer ..."},
+)
 harness = Harness(
-    HarnessConfig(root=".", model="openrouter:anthropic/claude-haiku-4.5"),
-    tracing=TracingOptions(
+    HarnessConfig(root="."),
+    tracing=[TracingOptions(
         tracer=tracing.tracer,
         agent_name="thin-agent",
-        capture_messages=True,
-        capture_tool_args=True,
-        capture_tool_results=True,
-    ),
+    )],
 )
 try:
     result = harness.run_sync("Inspect the repo and summarize the tracing setup.")

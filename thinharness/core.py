@@ -56,6 +56,7 @@ from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
 from .tracing import (
+    LocalTracing,
     ModelTraceSnapshot,
     RunTracer,
     TracingOptions,
@@ -64,6 +65,7 @@ from .tracing import (
     annotate_agent_start,
     annotate_model_request,
     annotate_model_span,
+    create_local_tracing,
     serialize_attribute_value,
 )
 
@@ -172,6 +174,12 @@ def _build_resume_state(
     return json.loads(json.dumps(state))
 
 
+def _local_tracing_enabled(configured: bool) -> bool:
+    """Return whether local plaintext tracing should be active."""
+    disabled = os.getenv("THINHARNESS_DISABLE_LOCAL_TRACING", "").lower() in {"1", "true", "yes"}
+    return configured and not disabled
+
+
 class HarnessConfig(BaseModel):
     """Configuration for Harness."""
 
@@ -202,7 +210,9 @@ class HarnessConfig(BaseModel):
     write_paths: list[str | Path] | None = None
     temperature: float | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    tracing: TracingOptions | None = None
+    tracing: list[TracingOptions] = Field(default_factory=list)
+    local_tracing: bool = True
+    local_trace_dir: str | Path = "~/.thinharness/traces"
     tool_execution: Literal["auto", "sequential"] = "auto"
     subagents: list[SubAgentConfig] = Field(default_factory=list)
     output_type: OutputSpec | None = None
@@ -273,7 +283,7 @@ class Harness:
         *,
         model: Model | None = None,
         tools: list[ToolSpec] | None = None,
-        tracing: TracingOptions | None = None,
+        tracing: list[TracingOptions] | None = None,
         skills: SkillRegistry | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
         subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
@@ -335,7 +345,21 @@ class Harness:
         self.hooks = raw_hooks if isinstance(raw_hooks, HookRegistry) else HookRegistry(raw_hooks, strict_hooks=self.config.strict_hooks)
         self._validate_skill_tool_selection()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
-        self.tracing = tracing or self.config.tracing
+        self.local_tracing: LocalTracing | None = None
+        external_tracing = list(self.config.tracing if tracing is None else tracing)
+        if _local_tracing_enabled(self.config.local_tracing) and not _is_child_run:
+            self.local_tracing = create_local_tracing(self.config.local_trace_dir, project_root=self.root)
+            self.tracing = [
+                TracingOptions(
+                    tracer=self.local_tracing.tracer,
+                    capture_messages=True,
+                    capture_tool_args=True,
+                    capture_tool_results=True,
+                ),
+                *external_tracing,
+            ]
+        else:
+            self.tracing = external_tracing
         self._is_child_run = _is_child_run
         self._current_run_metadata: Json | None = None
         self._running = False
@@ -433,10 +457,13 @@ class Harness:
             if output_retry:
                 usage.output_retries += 1
             with run_tracer.model(self.model) as model_span:
-                annotate_model_request(
-                    model_span,
-                    trace_snapshot.with_notices(notices),
-                    capture_messages=bool(self.tracing and self.tracing.capture_messages),
+                snapshot = trace_snapshot.with_notices(notices)
+                model_span.for_each(
+                    lambda span, option: annotate_model_request(
+                        span,
+                        snapshot,
+                        capture_messages=option.capture_messages,
+                    )
                 )
                 try:
                     advanced_turn = await request(notices)
@@ -445,7 +472,13 @@ class Harness:
                     model_span.record_exception(exc)
                     model_span.set_error(str(exc), type(exc).__name__)
                     raise
-                annotate_model_span(model_span, advanced_turn, capture_messages=bool(self.tracing and self.tracing.capture_messages))
+                model_span.for_each(
+                    lambda span, option: annotate_model_span(
+                        span,
+                        advanced_turn,
+                        capture_messages=option.capture_messages,
+                    )
+                )
                 if finalized_mode := self._finalized_output_mode_for_turn(advanced_turn):
                     advanced_turn.finalized_output_mode = finalized_mode
                     model_span.set_attributes({
@@ -487,12 +520,14 @@ class Harness:
             if finalized_via_output_tool_value:
                 finalized_via_output_tool = True
             result = build_terminal_result(text, output)
-            annotate_agent_result(
-                agent_span,
-                result=result,
-                output_schema=self.output_schema,
-                capture_messages=bool(self.tracing and self.tracing.capture_messages),
-                top_level=not self._is_child_run,
+            agent_span.for_each(
+                lambda span, option: annotate_agent_result(
+                    span,
+                    result=result,
+                    output_schema=self.output_schema,
+                    capture_messages=option.capture_messages,
+                    top_level=not self._is_child_run,
+                )
             )
             attach_resume_state(active_session)
             fire_run_end_once()
@@ -549,12 +584,14 @@ class Harness:
                             raise terminal_error
                         effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
                         instructions = structured_instructions(self.system_instructions(), self.output_schema)
-                        annotate_agent_start(
-                            agent_span,
-                            prompt=prompt,
-                            instructions=instructions,
-                            capture_messages=bool(self.tracing and self.tracing.capture_messages),
-                            top_level=not self._is_child_run,
+                        agent_span.for_each(
+                            lambda span, option: annotate_agent_start(
+                                span,
+                                prompt=prompt,
+                                instructions=instructions,
+                                capture_messages=option.capture_messages,
+                                top_level=not self._is_child_run,
+                            )
                         )
                         structured_output = self._structured_output_request()
                         output_mode = _trace_output_mode(self.output_schema)
@@ -609,6 +646,7 @@ class Harness:
                                             turn = await advance_model(
                                                 lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
                                                     [ToolOutput(final_id, retry_message)],
+                                                    instructions=instructions,
                                                     tools=self.tool_schemas(),
                                                     metadata=metadata,
                                                     structured_output=structured_output,
@@ -633,6 +671,7 @@ class Harness:
                                         # There is no final_result call id to answer here, so this correction must be a user message.
                                         turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
+                                            instructions=instructions,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
                                             structured_output=structured_output,
@@ -655,6 +694,7 @@ class Harness:
                                         )
                                         turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
                                             retry_message,
+                                            instructions=instructions,
                                             tools=self.tool_schemas(),
                                             metadata=metadata,
                                             structured_output=structured_output,
@@ -678,6 +718,7 @@ class Harness:
                             tool_outputs = outputs
                             turn = await advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
                                 tool_outputs,
+                                instructions=instructions,
                                 tools=self.tool_schemas(),
                                 metadata=metadata,
                                 structured_output=structured_output,
@@ -865,8 +906,11 @@ class Harness:
                         "mcp.server.id": spec_metadata.get("mcp_server_id"),
                         "mcp.tool.name": spec_metadata.get("mcp_tool_name"),
                     })
-                if self.tracing and self.tracing.capture_tool_results:
-                    span.set_attribute("gen_ai.tool.call.result", serialize_attribute_value(output))
+                span.set_attribute_where(
+                    lambda option: option.capture_tool_results,
+                    "gen_ai.tool.call.result",
+                    serialize_attribute_value(output),
+                )
                 if retry_kind is not None:
                     span.set_error(f'Tool "{name}" failed', retry_kind)
                 elif parsed.get("ok") is False:

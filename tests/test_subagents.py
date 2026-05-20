@@ -321,7 +321,7 @@ def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> N
         HarnessConfig(root=tmp_path, builtin_tools=[]),
         model=ScriptedModel([parent, FailingSession()]),
         tools=[echo_tool()],
-        tracing=TracingOptions(tracer=tracer),
+        tracing=[TracingOptions(tracer=tracer)],
     )
     harness.add_tool(create_subagent_tool(harness, []))
 

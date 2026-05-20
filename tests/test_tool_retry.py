@@ -37,14 +37,14 @@ class SequenceSession:
         """Return the scripted first turn."""
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Record tool outputs and return the next scripted turn."""
         self.tool_outputs.append(outputs)
         if not self.continue_turns:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """No tests in this file expect user-message continuations."""
         raise AssertionError("unexpected user-message continuation")
 
@@ -420,7 +420,7 @@ def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
         model=_fake_openai(client),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[Hook("after_tool_call", rewrite)],
-        tracing=TracingOptions(tracer=tracer),
+        tracing=[TracingOptions(tracer=tracer)],
     )
 
     harness.run_sync("go")

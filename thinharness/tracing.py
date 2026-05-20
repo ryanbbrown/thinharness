@@ -11,12 +11,17 @@ https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/.
 
 from __future__ import annotations
 
-import base64
+import contextvars
+import hashlib
 import json
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
+import re
+import threading
+import time
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -61,6 +66,14 @@ class OtlpTracing:
 
 
 @dataclass(frozen=True)
+class LocalTracing:
+    """Handle returned by create_local_tracing."""
+
+    tracer: Any
+    trace_dir: Path
+
+
+@dataclass(frozen=True)
 class ModelTraceSnapshot:
     """Canonical input for one model span."""
 
@@ -74,6 +87,32 @@ class ModelTraceSnapshot:
         """Return a copy with model-facing notices attached."""
         serialized = [asdict(notice) for notice in notices]
         return replace(self, notices=serialized or None)
+
+
+def create_local_tracing(trace_dir: str | Path | None = None, *, project_root: str | Path | None = None) -> LocalTracing:
+    """Create a plaintext JSONL tracer rooted in the local filesystem."""
+    resolved = Path(trace_dir or "~/.thinharness/traces").expanduser().resolve()
+    if project_root is not None:
+        resolved = resolved / _encode_trace_project_path(project_root)
+    return LocalTracing(tracer=_LocalTraceTracer(resolved), trace_dir=resolved)
+
+
+def create_local_tracing_options(
+    trace_dir: str | Path | None = None,
+    *,
+    project_root: str | Path | None = None,
+    agent_name: str = "thinharness",
+    agent_description: str | None = None,
+    conversation_id: str | None = None,
+) -> TracingOptions:
+    """Create full-capture tracing options for a local JSONL trace sink."""
+    local = create_local_tracing(trace_dir, project_root=project_root)
+    return _local_tracing_options(
+        local,
+        agent_name=agent_name,
+        agent_description=agent_description,
+        conversation_id=conversation_id,
+    )
 
 
 def create_otlp_tracing(
@@ -100,57 +139,33 @@ def create_otlp_tracing(
     return OtlpTracing(tracer=provider.get_tracer(tracer_name), provider=provider)
 
 
-def create_langfuse_tracing(
-    *,
-    service_name: str,
-    public_key: str | None = None,
-    secret_key: str | None = None,
-    host: str | None = None,
-    legacy_ingestion: bool = False,
-    tracer_name: str = "thinharness",
-) -> OtlpTracing:
-    """Create a Langfuse OTLP tracer provider for live validation."""
-    public_key = public_key or os.getenv("LANGFUSE_PUBLIC_KEY")
-    secret_key = secret_key or os.getenv("LANGFUSE_SECRET_KEY")
-    if not public_key or not secret_key:
-        raise RuntimeError("LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are required for create_langfuse_tracing")
-    auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
-    langfuse_host = host or os.getenv("LANGFUSE_HOST") or "https://us.cloud.langfuse.com"
-    headers = {"Authorization": f"Basic {auth}"}
-    if legacy_ingestion:
-        # Current Langfuse docs recommend this for direct OTLP ingestion that
-        # needs real-time Cloud Fast Preview visibility.
-        headers["x-langfuse-ingestion-version"] = "4"
-    return create_otlp_tracing(
-        service_name=service_name,
-        endpoint=langfuse_host.rstrip("/") + "/api/public/otel/v1/traces",
-        headers=headers,
-        tracer_name=tracer_name,
-    )
-
-
 class RunTracer:
     """Small wrapper around an OpenTelemetry tracer."""
 
-    def __init__(self, options: TracingOptions | None) -> None:
+    def __init__(self, options: list[TracingOptions]) -> None:
         self.options = options
 
     @contextmanager
-    def agent(self, *, conversation_id: str | None = None) -> Iterator[_SpanAdapter]:
+    def agent(self, *, conversation_id: str | None = None) -> Iterator[_TraceSpan]:
         """Trace a harness run."""
-        options = self.options
-        name = options.agent_name if options else "thinharness"
-        attributes = {
-            "gen_ai.operation.name": "invoke_agent",
-            "gen_ai.agent.name": name,
-            "gen_ai.agent.description": options.agent_description if options else None,
-            "gen_ai.conversation.id": options.conversation_id if options and options.conversation_id else conversation_id,
-        }
-        with self._span(f"invoke_agent {name}", "internal", attributes) as span:
+        spans = [
+            (
+                option,
+                f"invoke_agent {option.agent_name}",
+                {
+                    "gen_ai.operation.name": "invoke_agent",
+                    "gen_ai.agent.name": option.agent_name,
+                    "gen_ai.agent.description": option.agent_description,
+                    "gen_ai.conversation.id": option.conversation_id or conversation_id,
+                },
+            )
+            for option in self.options
+        ]
+        with self._span("internal", spans) as span:
             yield span
 
     @contextmanager
-    def model(self, model: Any) -> Iterator[_SpanAdapter]:
+    def model(self, model: Any) -> Iterator[_TraceSpan]:
         """Trace one model request."""
         model_name = str(getattr(model, "model", "unknown") or "unknown")
         provider_name = getattr(getattr(model, "provider", None), "name", None)
@@ -159,46 +174,129 @@ class RunTracer:
             "gen_ai.provider.name": provider_name,
             "gen_ai.request.model": model_name,
         }
-        with self._span(f"chat {model_name}", "client", attributes) as span:
+        with self._span("client", [(option, f"chat {model_name}", attributes) for option in self.options]) as span:
             yield span
 
     @contextmanager
-    def tool(self, *, tool_name: str, call_id: str, arguments: str) -> Iterator[_SpanAdapter]:
+    def tool(self, *, tool_name: str, call_id: str, arguments: str) -> Iterator[_TraceSpan]:
         """Trace one local tool execution."""
-        options = self.options
-        attributes = {
-            "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": tool_name,
-            "gen_ai.tool.call.id": call_id,
-            "gen_ai.tool.type": "function",
-            "gen_ai.tool.call.arguments": arguments if options and options.capture_tool_args else None,
-        }
-        with self._span(f"execute_tool {tool_name}", "internal", attributes) as span:
+        spans = [
+            (
+                option,
+                f"execute_tool {tool_name}",
+                {
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": tool_name,
+                    "gen_ai.tool.call.id": call_id,
+                    "gen_ai.tool.type": "function",
+                    "gen_ai.tool.call.arguments": arguments if option.capture_tool_args else None,
+                },
+            )
+            for option in self.options
+        ]
+        with self._span("internal", spans) as span:
             yield span
 
     @contextmanager
-    def _span(self, name: str, kind: str, attributes: Json) -> Iterator[_SpanAdapter]:
-        """Start an OpenTelemetry span or a no-op span."""
+    def _span(self, kind: str, spans: list[tuple[TracingOptions, str, Json]]) -> Iterator[_TraceSpan]:
+        """Start OpenTelemetry spans for every configured sink."""
         if not self.options:
-            yield _SpanAdapter(_NoopSpan())
+            yield _TraceSpan([])
             return
 
-        tracer = self.options.tracer
-        kwargs: dict[str, Any] = {"attributes": _compact(attributes)}
-        span_kind = _span_kind(kind)
-        if span_kind is not None:
-            kwargs["kind"] = span_kind
+        with ExitStack() as stack:
+            adapters = [
+                (stack.enter_context(_start_span(option, name, kind, attributes)), option)
+                for option, name, attributes in spans
+            ]
+            yield _TraceSpan(adapters)
 
-        if hasattr(tracer, "start_as_current_span"):
-            with tracer.start_as_current_span(name, **kwargs) as span:
-                yield _SpanAdapter(span)
-            return
 
-        span = tracer.start_span(name, **kwargs)
-        try:
+@contextmanager
+def _start_span(option: TracingOptions, name: str, kind: str, attributes: Json) -> Iterator[_SpanAdapter]:
+    """Start one OpenTelemetry-shaped span."""
+    tracer = option.tracer
+    kwargs: dict[str, Any] = {"attributes": _compact(attributes)}
+    span_kind = _span_kind(kind)
+    if span_kind is not None:
+        kwargs["kind"] = span_kind
+
+    if hasattr(tracer, "start_as_current_span"):
+        with tracer.start_as_current_span(name, **kwargs) as span:
             yield _SpanAdapter(span)
-        finally:
-            span.end()
+        return
+
+    span = tracer.start_span(name, **kwargs)
+    try:
+        yield _SpanAdapter(span)
+    finally:
+        span.end()
+
+
+class _TraceSpan:
+    """Span handle spanning every configured trace sink."""
+
+    def __init__(self, spans: list[tuple[_SpanAdapter, TracingOptions]]) -> None:
+        self.spans = spans
+
+    def for_each(self, callback: Callable[[_SpanAdapter, TracingOptions], None]) -> None:
+        """Run a callback with each child span and its capture policy."""
+        for span, option in self.spans:
+            callback(span, option)
+
+    def set_attributes(self, attributes: Json) -> None:
+        """Set attributes on every child span."""
+        for span, _option in self.spans:
+            span.set_attributes(attributes)
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Set one attribute on every child span."""
+        for span, _option in self.spans:
+            span.set_attribute(key, value)
+
+    def set_attribute_where(self, predicate: Callable[[TracingOptions], bool], key: str, value: Any) -> None:
+        """Set one attribute on child spans whose capture policy allows it."""
+        for span, option in self.spans:
+            if predicate(option):
+                span.set_attribute(key, value)
+
+    def record_exception(self, exc: BaseException) -> None:
+        """Record an exception on every child span."""
+        for span, _option in self.spans:
+            span.record_exception(exc)
+
+    def set_error(self, message: str, error_type: str | None = None) -> None:
+        """Mark every child span as failed."""
+        for span, _option in self.spans:
+            span.set_error(message, error_type)
+
+
+def _local_tracing_options(
+    local: LocalTracing,
+    *,
+    agent_name: str,
+    agent_description: str | None,
+    conversation_id: str | None,
+) -> TracingOptions:
+    """Return full-capture options for a local JSONL trace sink."""
+    return TracingOptions(
+        tracer=local.tracer,
+        agent_name=agent_name,
+        agent_description=agent_description,
+        conversation_id=conversation_id,
+        capture_messages=True,
+        capture_tool_args=True,
+        capture_tool_results=True,
+    )
+
+
+def _encode_trace_project_path(project_root: str | Path) -> str:
+    """Encode one project root as a portable trace-directory segment."""
+    resolved = str(Path(project_root).expanduser().resolve())
+    name = Path(resolved).name or "root"
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip(".-") or "root"
+    digest = hashlib.sha1(resolved.encode()).hexdigest()[:10]
+    return f"{slug}-{digest}"
 
 
 class _SpanAdapter:
@@ -252,6 +350,130 @@ class _NoopSpan:
         """Ignore span status."""
 
 
+class _LocalTraceTracer:
+    """OpenTelemetry-shaped tracer that writes ended spans as JSONL."""
+
+    def __init__(self, trace_dir: Path) -> None:
+        self.trace_dir = trace_dir
+        self.trace_dir.mkdir(parents=True, exist_ok=True)
+        self.current_span: contextvars.ContextVar[_LocalTraceSpan | None] = contextvars.ContextVar("thinharness_local_span", default=None)
+        self.lock = threading.Lock()
+
+    def start_as_current_span(self, name: str, **kwargs: Any) -> Any:
+        """Start a local span context."""
+        return _LocalTraceSpanContext(self, name, kwargs)
+
+    def _write(self, span: _LocalTraceSpan) -> None:
+        """Append one span record to its trace file."""
+        path = self.trace_dir / f"{span.trace_id}.jsonl"
+        with self.lock, path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(span.to_record(), ensure_ascii=False, default=str) + "\n")
+
+
+class _LocalTraceSpanContext:
+    """Context manager for one local span."""
+
+    def __init__(self, tracer: _LocalTraceTracer, name: str, kwargs: dict[str, Any]) -> None:
+        self.tracer = tracer
+        self.name = name
+        self.kwargs = kwargs
+        self.span: _LocalTraceSpan | None = None
+        self.token: contextvars.Token[_LocalTraceSpan | None] | None = None
+
+    def __enter__(self) -> _LocalTraceSpan:
+        """Start and bind the local span."""
+        parent = self.tracer.current_span.get()
+        self.span = _LocalTraceSpan(
+            tracer=self.tracer,
+            name=self.name,
+            kind=str(self.kwargs.get("kind") or ""),
+            attributes=dict(self.kwargs.get("attributes") or {}),
+            trace_id=parent.trace_id if parent is not None else uuid.uuid4().hex,
+            span_id=uuid.uuid4().hex,
+            parent_id=parent.span_id if parent is not None else None,
+            started_at=time.time(),
+        )
+        self.token = self.tracer.current_span.set(self.span)
+        return self.span
+
+    def __exit__(self, exc_type: Any, exc: BaseException | None, tb: Any) -> None:
+        """End and unbind the local span."""
+        assert self.span is not None
+        assert self.token is not None
+        if exc is not None:
+            self.span.record_exception(exc)
+        self.tracer.current_span.reset(self.token)
+        self.span.end()
+
+
+class _LocalTraceSpan:
+    """Mutable local span record."""
+
+    def __init__(
+        self,
+        *,
+        tracer: _LocalTraceTracer,
+        name: str,
+        kind: str,
+        attributes: Json,
+        trace_id: str,
+        span_id: str,
+        parent_id: str | None,
+        started_at: float,
+    ) -> None:
+        self.tracer = tracer
+        self.name = name
+        self.kind = kind
+        self.attributes = attributes
+        self.trace_id = trace_id
+        self.span_id = span_id
+        self.parent_id = parent_id
+        self.started_at = started_at
+        self.ended_at: float | None = None
+        self.status: Any = None
+        self.exceptions: list[Json] = []
+
+    def set_attributes(self, attributes: Json) -> None:
+        """Set span attributes."""
+        self.attributes.update(attributes)
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        """Set one span attribute."""
+        self.attributes[key] = value
+
+    def record_exception(self, exc: BaseException) -> None:
+        """Record an exception."""
+        self.exceptions.append({"type": type(exc).__name__, "message": str(exc)})
+
+    def set_status(self, status: Any) -> None:
+        """Set span status."""
+        self.status = serialize_attribute_value(status)
+
+    def end(self) -> None:
+        """End the span and append it to disk."""
+        if self.ended_at is not None:
+            return
+        self.ended_at = time.time()
+        self.tracer._write(self)
+
+    def to_record(self) -> Json:
+        """Return the JSONL record for this span."""
+        return {
+            "type": "span",
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "parent_id": self.parent_id,
+            "name": self.name,
+            "kind": self.kind,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "duration_ms": (self.ended_at - self.started_at) * 1000 if self.ended_at is not None else None,
+            "attributes": self.attributes,
+            "status": self.status,
+            "exceptions": self.exceptions,
+        }
+
+
 def annotate_model_request(span: _SpanAdapter, snapshot: ModelTraceSnapshot, *, capture_messages: bool) -> None:
     """Write opt-in request content for portable OTel and Langfuse display."""
     if not capture_messages:
@@ -277,12 +499,16 @@ def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool
         "gen_ai.response.finish_reasons": _finish_reasons(raw),
         **_usage_attributes(raw),
     }
-    if capture_messages and text:
+    output_messages = _otel_output_messages(turn)
+    if capture_messages and output_messages and output_messages[0]["parts"]:
         attributes.update({
-            "langfuse.observation.output": serialize_attribute_value({"text": text}),
-            "gen_ai.completion": text,
-            "gen_ai.output.messages": serialize_attribute_value(_otel_output_messages(turn)),
+            "langfuse.observation.output": serialize_attribute_value(
+                {"text": text} if text else {"messages": output_messages}
+            ),
+            "gen_ai.output.messages": serialize_attribute_value(output_messages),
         })
+        if text:
+            attributes["gen_ai.completion"] = text
     span.set_attributes(attributes)
 
 

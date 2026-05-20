@@ -22,7 +22,7 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **4,938 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **5,382 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -51,10 +51,10 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-18 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-20 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>4,938</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>5,382</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -267,32 +267,13 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
 - **Limit notices:** near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or callbacks; parent and child runs compute them from their own local budgets.
-- **Tracing:** OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents, with opt-in GenAI input/output content attributes for OTLP backends such as Langfuse.
+- **Tracing:** local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
 
 ## Tracing
 
-Message, tool argument, and tool result capture are off by default because they can contain user data. For live Langfuse validation, configure OTLP tracing and flush the provider before process exit:
+Local tracing is on by default. It writes full plaintext JSONL traces under `~/.thinharness/traces/<encoded-project-root>/`, including prompts, model outputs, tool arguments, and tool results, so treat that directory as sensitive local data.
 
-```python
-from thinharness import Harness, HarnessConfig, TracingOptions, create_langfuse_tracing
-
-tracing = create_langfuse_tracing(service_name="thinharness-dev")
-harness = Harness(
-    HarnessConfig(root=".", model="openrouter:anthropic/claude-haiku-4.5"),
-    tracing=TracingOptions(
-        tracer=tracing.tracer,
-        agent_name="thin-agent",
-        capture_messages=True,
-        capture_tool_args=True,
-        capture_tool_results=True,
-    ),
-)
-try:
-    result = harness.run_sync("Inspect the repo and summarize the tracing setup.")
-finally:
-    tracing.force_flush()
-    tracing.shutdown()
-```
+Set `local_tracing=False` or `THINHARNESS_DISABLE_LOCAL_TRACING=1` to disable local trace files. External tracing is generic OpenTelemetry: pass any tracer with `start_as_current_span(...)` or `start_span(...)` in `TracingOptions`, and each sink keeps its own capture policy.
 
 ## Status
 

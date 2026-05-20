@@ -79,11 +79,12 @@ async def test_openai_previous_response_id_is_session_scoped() -> None:
     second = model.new_session()
 
     await first.start(prompt="first", instructions="system", tools=tools, previous_response_id="existing")
-    await first.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
+    await first.continue_with_tools([ToolOutput("call_1", "ok")], instructions="system", tools=tools)
     await second.start(prompt="second", instructions="system", tools=tools)
 
     assert client.payloads[0]["previous_response_id"] == "existing"
     assert client.payloads[1]["previous_response_id"] == "resp_1"
+    assert client.payloads[1]["instructions"] == "system"
     assert "previous_response_id" not in client.payloads[2]
 
 async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
@@ -95,10 +96,11 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
     first = await session.start(prompt="hi", instructions="system", tools=[], notices=[notice])
     await session.continue_with_tools(
         [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("call_2", "second")],
+        instructions="system",
         tools=[],
         notices=[notice],
     )
-    await session.continue_with_user_message("fix this", tools=[], notices=[notice])
+    await session.continue_with_user_message("fix this", instructions="system", tools=[], notices=[notice])
     resumed = model.resume_session({"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": "resp_existing"})
     await resumed.continue_with_user_prompt("follow-up", instructions="system", tools=[], notices=[notice])
 
@@ -110,6 +112,8 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
         "content": [{"type": "input_text", "text": _notice_text()}],
     }
     assert client.payloads[2]["input"] == f"fix this\n\n{_notice_text()}"
+    assert client.payloads[1]["instructions"] == "system"
+    assert client.payloads[2]["instructions"] == "system"
     assert client.payloads[3]["input"] == f"follow-up\n\n{_notice_text()}"
     assert client.payloads[3]["previous_response_id"] == "resp_existing"
 

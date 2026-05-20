@@ -103,14 +103,14 @@ class SequenceSession:
         """Return the scripted first turn."""
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Record tool outputs and return the next scripted turn."""
         self.tool_outputs.append(outputs)
         if not self.continue_turns:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_message(self, message, *, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """No tests expect user-message continuations."""
         raise AssertionError("unexpected user-message continuation")
 
@@ -714,7 +714,7 @@ async def test_trace_attribution_survives_after_tool_hook(tmp_path) -> None:
         HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
         model=_fake_openai(MultiCallClient([("remote", '{"value":"ok"}')])),
         hooks=[Hook("after_tool_call", rewrite, tools=["remote"])],
-        tracing=TracingOptions(tracer=tracer),
+        tracing=[TracingOptions(tracer=tracer)],
     )
 
     await harness.run("go")
@@ -741,7 +741,7 @@ async def test_connection_failure_in_run_fires_run_hooks(tmp_path) -> None:
             Hook("run_start", lambda ctx: events.append("start")),
             Hook("run_end", lambda ctx: events.append(ctx.stop_reason)),
         ],
-        tracing=TracingOptions(tracer=tracer),
+        tracing=[TracingOptions(tracer=tracer)],
     )
 
     with pytest.raises(MCPError, match="connect failed"):

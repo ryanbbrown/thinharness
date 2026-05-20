@@ -282,15 +282,16 @@ def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> l
     return list(config.tools)
 
 
-def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> TracingOptions | None:
+def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> list[TracingOptions]:
     """Return child tracing options that share the parent's tracer."""
-    if parent.tracing is None:
-        return None
     name = config.name if config is not None else DEFAULT_SUBAGENT_NAME
-    return parent.tracing.model_copy(update={
-        "agent_name": f"subagent.{name}",
-        "agent_description": config.description if config is not None else "Framework default subagent",
-    })
+    return [
+        option.model_copy(update={
+            "agent_name": f"subagent.{name}",
+            "agent_description": config.description if config is not None else "Framework default subagent",
+        })
+        for option in parent.tracing
+    ]
 
 
 def _child_metadata(parent: Harness) -> Json:
