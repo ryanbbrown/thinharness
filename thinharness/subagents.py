@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
-from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context
+from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .providers import infer_model, parse_model_ref, provider_prefix
 from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
@@ -108,7 +108,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
     parent_call_id = _parent_call_id()
     before = BeforeSubagentRunContext(
         harness=parent,
-        metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+        metadata=_parent_run_metadata(),
         agent=agent_name,
         task=args.task,
         inherited=inherited,
@@ -138,7 +138,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
         run_error: BaseException | None = None
         run_traceback: TracebackType | None = None
         try:
-            result = await child.run(args.task, metadata=_child_metadata(parent))
+            result = await child.run(args.task, metadata=_child_metadata())
         except BaseException as exc:
             # Preserve cancellation and other BaseException exits while still closing the child harness below.
             run_error = exc
@@ -153,7 +153,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
     except Exception as exc:
         parent.hooks.fire(AfterSubagentRunContext(
             harness=parent,
-            metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+            metadata=_parent_run_metadata(),
             agent=agent_name,
             task=args.task,
             error=exc,
@@ -174,7 +174,7 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
     assert result is not None
     parent.hooks.fire(AfterSubagentRunContext(
         harness=parent,
-        metadata=dict(getattr(parent, "_current_run_metadata", None) or {}),
+        metadata=_parent_run_metadata(),
         agent=agent_name,
         task=args.task,
         result=result,
@@ -294,15 +294,22 @@ def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> list[Traci
     ]
 
 
-def _child_metadata(parent: Harness) -> Json:
+def _child_metadata() -> Json:
     """Build minimal metadata for a child run."""
     metadata: Json = {}
-    parent_metadata = getattr(parent, "_current_run_metadata", None) or {}
+    parent_metadata = _parent_run_metadata()
     if conversation_id := parent_metadata.get("conversation_id"):
         metadata["conversation_id"] = conversation_id
     if tool_call := current_tool_call_context():
         metadata["parent_call_id"] = tool_call["call_id"]
     return metadata
+
+
+def _parent_run_metadata() -> Json:
+    """Return copied parent run metadata from the active tool runtime context."""
+    runtime = current_tool_runtime_context() or {}
+    parent_metadata = runtime.get("run_metadata")
+    return dict(parent_metadata) if isinstance(parent_metadata, dict) else {}
 
 
 def _parent_call_id() -> str | None:

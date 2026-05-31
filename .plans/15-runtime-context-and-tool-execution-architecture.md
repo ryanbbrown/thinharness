@@ -1,9 +1,9 @@
 # Plan: Runtime Context and Tool Execution Architecture
 
 ## Overview
-Split `Harness.run()` into explicit runtime modules so the main loop reads as orchestration: start run, advance model, resolve output, execute tool batch, continue, finalize. The end state is a run context module for per-run state and model advancement ceremony, plus a tool execution module for batch and single-call lifecycle policy.
+Split `Harness.run()` into explicit runtime modules so the main loop reads as orchestration: start run, advance model, execute tool batch, continue, finalize. The end state is a run context module for per-run state and model advancement ceremony, plus a tool execution module for batch and single-call lifecycle policy.
 
-This plan intentionally assumes greenfield architecture. Backwards compatibility is not the priority, but existing behavior should remain unless a simpler ideal interface requires a deliberate test update.
+This is a behavior-preserving internal refactor. Public API, provider request shapes, hook semantics, tracing semantics, metadata semantics, resume behavior, and retry accounting should remain unchanged unless a separate explicit decision approves a behavior change.
 
 ## Decisions
 - Create `thinharness/runtime.py` for internal run context and model advancement ceremony.
@@ -12,6 +12,10 @@ This plan intentionally assumes greenfield architecture. Backwards compatibility
 - Remove `_current_run_metadata` from `Harness` by passing run metadata explicitly through `RunContext` and tool/subagent execution.
 - Keep provider-specific session methods in `providers.py`; runtime code should not know provider payload shapes.
 - Write this as one implementation plan with two ordered phases: Phase A extracts run context, Phase B extracts tool execution.
+- Keep `resolve_turn_output(...)` inside `RunContext.advance_model(...)` so output finalization attributes are written before the model span closes.
+- Keep the public `current_tool_call_context()` return shape behavior-preserving: callers should still observe only `{"call_id": ..., "name": ...}`.
+- Add an internal per-call runtime context channel in `hooks.py` for copied run metadata. This may be a separate private contextvar or a private helper that filters a richer context value before `current_tool_call_context()` returns it.
+- Preserve existing direct imports unless tests are updated in the same pass. In particular, keep `_compute_limit_notices` importable from `thinharness.core` for the direct structured-output tests.
 
 ## Steps
 
@@ -30,10 +34,12 @@ class RunContext:
     responses: list[Json] = field(default_factory=list)
     tool_call_records: list[Json] = field(default_factory=list)
     emitted_limit_warnings: set[LimitNoticeKey] = field(default_factory=set)
+    tracer: RunTracer | None = None
     result: HarnessResult | None = None
     terminal_error: BaseException | None = None
     stop_reason: StopReason = "end_turn"
     run_end_fired: bool = False
+    finalized_via_output_tool: bool = False
 ```
 
 Avoid making `RunContext` public in `__init__.py` unless the implementation reveals a strong reason. It is an internal module.
@@ -42,25 +48,37 @@ Move or wrap these responsibilities from `Harness.run()`:
 - `fire_run_end_once`.
 - `check_model_limit`.
 - `check_tool_limit`.
-- structured-output retry budget helper.
-- tool retry budget helper.
+- `retry_or_fail()` for structured-output retry budget accounting.
+- `check_tool_retry_limits(...)` for retryable tool failure accounting.
 - terminal result construction.
 - resume state attachment.
 - model-facing limit notice computation.
-- `advance_model(...)` ceremony: limit check, notices, model tracing, request annotation, provider call, usage increment, response annotation, provider exception annotation.
+- `advance_model(...)` ceremony: limit check, notices, output retry accounting, model tracing, request annotation, provider call, usage increment, response annotation, output resolution, output finalization span annotation, provider exception annotation.
 
 `Harness.run()` should still choose which provider session method to call. It passes a callable into `RunContext.advance_model(...)`:
 
 ```python
-turn = await run_ctx.advance_model(
+turn, decision = await run_ctx.advance_model(
     lambda notices: active_session.start(..., notices=notices),
     trace_snapshot=ModelTraceSnapshot(...),
+    output_retry=False,
 )
 ```
 
 That keeps provider-specific behavior in the session adapter while centralizing the repeated model-request ceremony.
 
-**Verify:** After this step, run `uv run pytest tests/test_harness.py tests/test_hooks.py tests/test_resume.py tests/test_tracing.py`.
+`advance_model(...)` must keep the current `output_retry: bool = False` parameter behavior and increment `usage.output_retries` for structured-output correction turns. It should return both the `ModelTurn` and `OutputTurnDecision`, matching the existing span lifetime: `resolve_turn_output(...)` happens while the model span is still open.
+
+`RunContext` needs access to the per-run `RunTracer` and the active agent span. Either store them on `RunContext` after `run_tracer.agent(...)` is entered, or keep finalization as a small closure in `Harness.run()` that captures the agent span. Do not lose current agent-span result annotation or error annotation behavior.
+
+Avoid circular imports deliberately:
+- Keep public dataclasses and exceptions that are already exported from `thinharness.core` importable from there.
+- Use `from __future__ import annotations` in `runtime.py`.
+- Import `Harness` only under `TYPE_CHECKING` in `runtime.py`; `RunContext.harness` can be annotated without a runtime import.
+- Import `RunContext` locally inside `Harness.run()` if a top-level import would create a cycle.
+- Keep `_compute_limit_notices` importable from `core.py`. If its implementation moves, leave a compatibility import or wrapper in `core.py`.
+
+**Verify:** After this step, run `uv run pytest tests/test_harness.py tests/test_hooks.py tests/test_resume.py tests/test_tracing.py tests/test_structured_output.py`.
 
 ### 2. Refactor `Harness.run()` Around `RunContext`
 Replace the local closure variables in `Harness.run()` with `run_ctx`.
@@ -72,22 +90,32 @@ run_ctx = RunContext(...)
 with run_ctx.agent_span(...) as agent_span:
     run_ctx.fire_run_start(...)
     ...
-    turn = await run_ctx.advance_model(...)
+    turn, decision = await run_ctx.advance_model(...)
     while True:
         run_ctx.responses.append(turn.raw)
-        decision = resolve_turn_output(...)
         ...
+        run_ctx.check_tool_limit(len(turn.tool_calls))
+        run_ctx.usage.tool_calls += len(turn.tool_calls)
         recorded, outputs, executions = await self.tool_executor.execute_batch(run_ctx, turn.tool_calls)
         run_ctx.record_tool_batch(recorded, executions)
+        run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
         run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
-        turn = await run_ctx.advance_model(...)
+        turn, decision = await run_ctx.advance_model(...)
 ```
 
 Do not preserve `_current_run_metadata` as an instance variable. Any code that needs metadata receives `run_ctx.metadata`.
 
 Keep `self._running` and `self._closed` on `Harness`; those are harness lifecycle flags, not per-run state.
 
-**Verify:** Add or update a test that proves a hook/tool/subagent still sees run metadata, then run `uv run pytest tests/test_hooks.py tests/test_subagents.py tests/test_tracing.py`.
+Keep these existing control-flow details visible in the refactor:
+- `await self._ensure_mcp_connected()` still runs before the first model request.
+- The first-turn branch still chooses `active_session.start(...)` vs `active_session.continue_with_user_prompt(...)`; `RunContext.advance_model(...)` should not know provider session payload shapes.
+- `fire_run_end_once()` still runs in an inner `finally`, while `self._running = False` remains in an outer `finally`, so a strict `run_end` hook cannot leave the harness stuck as running.
+- Provider-facing `metadata` remains the original run metadata argument, while hook-facing metadata receives a fresh `dict(run_ctx.metadata)` copy for each hook fire.
+- `check_tool_limit(len(turn.tool_calls))` and `usage.tool_calls += len(turn.tool_calls)` stay before batch execution, so attempted model-requested calls still count if a strict hook or unexpected tool exception aborts the batch.
+- `usage.cancelled_tool_calls` is updated after batch execution returns. If the batch raises before returning, keep current behavior and do not invent partial accounting.
+
+**Verify:** Add or update a test that proves a hook/tool/subagent still sees run metadata. Add or keep coverage proving strict hook failures still leave attempted tool calls counted in `run_end` usage. Then run `uv run pytest tests/test_hooks.py tests/test_subagents.py tests/test_tracing.py tests/test_structured_output.py`.
 
 ### 3. Create `tool_execution.py` with Batch and Single-Call Executors
 Add `thinharness/tool_execution.py`. It should own both batch-level policy and one-call lifecycle policy.
@@ -100,8 +128,6 @@ class ToolCallExecution:
     output: str
     cancelled: bool
     retry_kind: str | None = None
-    parsed_output: Json | None = None
-    trace_metadata: Json = field(default_factory=dict)
 
 class ToolBatchExecutor:
     async def execute_batch(self, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput], list[ToolCallExecution]]:
@@ -135,17 +161,25 @@ class ToolCallExecutor:
 
 `core.py` should not need to know MCP or subagent trace attribution details after this move.
 
-**Verify:** Run `uv run pytest tests/test_parallel_tools.py tests/test_tool_retry.py tests/test_hooks.py tests/test_tracing.py tests/test_mcp.py`.
+Move these tool-execution helpers with the behavior they support:
+- `ToolCallExecution`.
+- `_parse_tool_output`.
+- `_tool_retry_kind`.
+- `MAX_PARALLEL_TOOL_WORKERS` if it remains only tool-execution policy.
+
+`ToolCallExecutor.execute_one()` is the sole writer for per-call context: set it before hooks/tool invocation and reset it in `finally`. Preserve `current_tool_call_context()` as the public reader for `{"call_id": call_id, "name": name}`. Add a separate internal reader for runtime metadata, such as `current_tool_runtime_context()`, returning `{"run_metadata": dict(run_ctx.metadata)}`. Readers such as `subagents.py` should use the public helper for parent call id and the internal runtime helper for metadata.
+
+**Verify:** Run `uv run pytest tests/test_parallel_tools.py tests/test_tool_retry.py tests/test_hooks.py tests/test_tracing.py tests/test_mcp.py tests/test_harness.py`.
 
 ### 4. Wire Tool Execution into `Harness`
-In `Harness.__init__`, construct the tool execution module after tools, hooks, and MCP state are initialized enough for lookup.
+Instantiate the tool execution module per run, after `run_ctx` and the per-run tracer are available. Do not construct a persistent executor in `Harness.__init__` if it needs run-specific state.
 
 Keep the dependency direction simple:
 - `core.py` owns `Harness`.
-- `tool_execution.py` can accept only the specific dependencies it needs: tool map, hooks, config, tracer, metadata, and call invoker.
-- Avoid importing `Harness` at runtime in `tool_execution.py` unless needed for hook contexts. Use `TYPE_CHECKING` if possible.
+- `tool_execution.py` accepts focused runtime dependencies: harness instance for hook context values, tool map, hooks, config values, run tracer, run metadata, and an optional call invoker.
+- Avoid importing `Harness` at runtime in `tool_execution.py`; use `TYPE_CHECKING` for annotations and pass the instance as an object dependency.
 
-One acceptable shape is to instantiate executors per run because they need `RunContext`:
+Use this shape unless implementation proves it awkward:
 
 ```python
 executor = ToolBatchExecutor(
@@ -158,7 +192,7 @@ executor = ToolBatchExecutor(
 )
 ```
 
-Another acceptable shape is a lightweight factory on `Harness`. Pick whichever keeps imports and state easiest to understand.
+Avoid mixing a persistent `self.tool_executor` with a captured per-run `RunContext`. If a lightweight factory on `Harness` is useful, it should still create a new executor for each run.
 
 Remove these methods from `Harness` once replaced:
 - `_traced_call_output`.
@@ -166,7 +200,7 @@ Remove these methods from `Harness` once replaced:
 - `_should_run_sequentially`.
 - `_run_calls_concurrently`.
 
-Keep `_call_output` on `Harness` only if it remains the cleanest way to preserve unknown-tool behavior and custom tool invocation. Otherwise move it into `ToolCallExecutor` as a private helper.
+Move `_call_output` into `ToolCallExecutor` as a private helper unless doing so creates an import cycle. Preserve unknown-tool behavior and invocation through the existing `_invoke_tool(...)` library function.
 
 **Verify:** Run the same tool execution tests plus `uv run pytest tests/test_harness.py`.
 
@@ -181,12 +215,23 @@ Current friction:
 End state:
 - `RunContext.metadata` is passed to tool execution.
 - `ToolCallExecutor` builds hook contexts with that metadata.
-- Subagent execution receives parent metadata from the tool call lifecycle, not from parent instance state.
-- `_CURRENT_TOOL_CALL` can remain for parent call id unless the new tool execution result makes explicit parent call id easier.
+- `ToolCallExecutor` stores `run_metadata=dict(run_ctx.metadata)` in the internal runtime context for the duration of the tool call.
+- Subagent execution reads parent hook metadata from the internal runtime context, not from parent instance state.
+- Subagent execution reads parent call id from `current_tool_call_context()`.
 
-If the cleanest implementation requires changing `run_subagent_tool(parent, configs, args)` to accept optional runtime metadata, do that and update the subagent tool handler factory accordingly.
+Do not rebuild subagent tool handlers per run. They are created during `Harness.__init__` and only receive tool args at invocation time. The runtime metadata injection point is the tool-call context set by `ToolCallExecutor`.
 
-**Verify:** Run `uv run pytest tests/test_subagents.py tests/test_hooks.py tests/test_tracing.py tests/test_mcp.py`.
+When firing hook contexts, keep the current defensive-copy behavior. Each `BeforeToolCallContext`, `AfterToolCallContext`, `BeforeSubagentRunContext`, and `AfterSubagentRunContext` should receive a new `dict(...)` copy so hook mutation cannot leak into later hooks or child metadata.
+
+Preserve current child run metadata projection. Child provider metadata should still include only:
+- `conversation_id` from parent run metadata, when present.
+- `parent_call_id` from the active tool call, when present.
+
+Do not leak arbitrary parent metadata keys into child provider metadata. Subagent hook contexts can receive full copied run metadata, matching current hook behavior.
+
+Metadata reads must remain null-safe. Subagent helpers should tolerate missing runtime context with a fallback equivalent to `{}`.
+
+**Verify:** Add or update a regression test proving mutation of one hook context's metadata does not leak into later tool/subagent hook metadata. Keep or add coverage proving extra parent metadata does not leak into child provider metadata. Then run `uv run pytest tests/test_subagents.py tests/test_hooks.py tests/test_tracing.py tests/test_mcp.py`.
 
 ### 6. Update Tests to Target the New Modules
 Add focused tests for the new modules where useful, but avoid duplicating all integration tests.
@@ -194,6 +239,8 @@ Add focused tests for the new modules where useful, but avoid duplicating all in
 Recommended test updates:
 - A direct `RunContext` test for `run_end` firing once under success and error if this can be done without awkward fakes.
 - A direct `ToolBatchExecutor` test for order preservation and sequential fallback if existing integration tests become too indirect.
+- A structured-output tracing regression if existing coverage no longer directly proves finalization attributes are written on the model span before it closes.
+- A `current_tool_call_context()` regression preserving the public `{"call_id", "name"}` shape while proving internal runtime metadata is available to subagent helpers.
 - Existing integration tests remain the main proof for hooks, cancellation, tracing, MCP attribution, subagents, and retry budgets.
 
 Prefer high-signal tests that would fail if policy leaks back into `core.py`.
@@ -205,6 +252,7 @@ Update `docs/architecture.md` after implementation:
 - Add `runtime.py` as the owner of per-run state and model advancement ceremony.
 - Add `tool_execution.py` as the owner of batch and one-call tool execution.
 - Describe `core.py` as the high-level run orchestrator.
+- Update the module tree and any `core.py` mechanics section that still lists moved helpers such as `fire_run_end_once`, `advance_model`, retry helpers, or `_execute_tool_batch`.
 
 Update `docs/decisions.md` only if a decision changes, such as public behavior around tool metadata or subagent metadata. Do not rewrite old decisions just because files moved.
 
@@ -222,7 +270,8 @@ Update `docs/decisions.md` only if a decision changes, such as public behavior a
 1. Create `tool_execution.py`.
 2. Move batch execution and one-call lifecycle.
 3. Pass `RunContext.metadata` into tool and subagent execution.
-4. Remove old `Harness` tool-execution methods and any transitional metadata path.
+4. Add an internal per-call runtime metadata channel for subagent hooks and child run metadata while preserving public `current_tool_call_context()` shape.
+5. Remove old `Harness` tool-execution methods and any transitional metadata path.
 
 Phase A and Phase B are in one plan because they touch the same internal state. Implement in order; do not parallelize across agents unless write scopes are split very carefully.
 
@@ -255,15 +304,9 @@ Phase A and Phase B are in one plan because they touch the same internal state. 
 Run these before handing off as complete:
 
 ```bash
-uv run pytest tests/test_harness.py tests/test_hooks.py tests/test_tool_retry.py tests/test_parallel_tools.py tests/test_subagents.py tests/test_tracing.py tests/test_mcp.py tests/test_resume.py
+uv run pytest tests/test_harness.py tests/test_hooks.py tests/test_tool_retry.py tests/test_parallel_tools.py tests/test_subagents.py tests/test_tracing.py tests/test_mcp.py tests/test_resume.py tests/test_structured_output.py tests/test_parallel_llm.py
 uv run ruff check .
 uv run pyright
-```
-
-If Pass 1 has not landed yet, also run:
-
-```bash
-uv run pytest tests/test_structured_output.py tests/test_parallel_llm.py
 ```
 
 ## Do Not Touch
@@ -272,9 +315,10 @@ uv run pytest tests/test_structured_output.py tests/test_parallel_llm.py
 - Do not refactor `FileTools` / `JsonlSearch`.
 - Do not refactor `ModelSession` request shape beyond what `RunContext.advance_model(...)` needs.
 - Do not export `RunContext`, `ToolBatchExecutor`, or `ToolCallExecutor` publicly unless the implementation proves they should be public.
+- Do not change public behavior as part of this refactor without first updating this plan with the explicit behavior decision.
 
 ## Considerations
 - Avoid a new god module. `runtime.py` should own per-run state and model advancement ceremony, while `tool_execution.py` owns tool execution. If either module starts importing everything from `core.py`, narrow the constructor inputs.
 - The hardest part is strict hook exceptions and cancellation across concurrent tool calls. Preserve existing tests before simplifying control flow.
-- Passing metadata explicitly may require small signature changes in subagent helpers. That is acceptable in this greenfield project, but keep the resulting interface simpler than the instance-state workaround it replaces.
-- If circular imports appear, use `TYPE_CHECKING`, move tiny shared dataclasses to the module that owns their behavior, or pass callbacks instead of importing `Harness`.
+- Passing metadata explicitly means passing it through `RunContext` into tool execution, then through an internal per-call runtime metadata context into subagent helpers. Avoid a harness instance field for current-run metadata.
+- If circular imports appear, use `TYPE_CHECKING`, local imports, move tiny shared dataclasses to the module that owns their behavior, or pass callbacks instead of importing `Harness`.

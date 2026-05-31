@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review - thinharness</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { border-style: dashed; }
+      .leak { color: #dc2626; }
+      .deep { background: linear-gradient(135deg, #111827, #1f2937); color: white; }
+      .mass { display: grid; grid-template-columns: 5rem 1fr; gap: .5rem; align-items: end; }
+      .iface { background: #fee2e2; border: 1px solid #fca5a5; }
+      .impl { background: #dbeafe; border: 1px solid #93c5fd; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-6xl mx-auto px-6 py-10 space-y-10">
+      <header class="space-y-4">
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500">Architecture review</p>
+          <h1 class="text-4xl font-semibold tracking-normal">thinharness</h1>
+          <p class="text-sm text-slate-600 mt-2">Generated 2026-05-29. Read-only review of runtime modules, tests, e2e journeys, architecture docs, and decisions.</p>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="border border-slate-300 bg-white p-3">solid box = module</div>
+          <div class="border border-dashed border-slate-400 bg-white p-3">dashed line = seam</div>
+          <div class="border border-red-200 bg-red-50 p-3 text-red-700">red = leakage</div>
+          <div class="deep p-3">dark = deep module</div>
+        </div>
+      </header>
+
+      <section id="candidates" class="space-y-8">
+        <article id="structured-output-turn-resolution" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Deepen Structured Turn Resolution</h2>
+            <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/core.py:482</div>
+            <div>thinharness/core.py:628</div>
+            <div>thinharness/output.py:174</div>
+            <div>thinharness/providers.py:949</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <pre class="mermaid">
+flowchart TD
+  T[ModelTurn] --> A[trace finalization helper]
+  T --> B[main structured branch]
+  B --> C[tool retry]
+  B --> D[text retry]
+  B --> E[finalize result]
+  O[OutputSchema] --> A
+  O --> B
+  A -.duplicate validation.-> B
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#dc2626;
+  class A,B leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="deep rounded-lg p-5 h-72 flex flex-col justify-center">
+                <div class="text-xs uppercase tracking-wider text-slate-300">deep module</div>
+                <div class="text-xl font-semibold">Structured turn resolution</div>
+                <div class="mt-4 grid grid-cols-2 gap-2 text-sm text-slate-200">
+                  <div class="rounded border border-slate-500 p-2">final</div>
+                  <div class="rounded border border-slate-500 p-2">retry</div>
+                  <div class="rounded border border-slate-500 p-2">unexpected</div>
+                  <div class="rounded border border-slate-500 p-2">trace facts</div>
+                </div>
+                <div class="mt-5 text-sm text-slate-300">Harness loop receives one decision.</div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> Structured-output validation is performed for tracing and again for control flow, so the interface is smaller than the implementation but not deep enough.</p>
+          <p><strong>Solution.</strong> Concentrate structured turn classification, retry message selection, final output extraction, and trace facts in one module.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">locality: validation lives once</li>
+            <li class="bg-stone-100 p-2 rounded">leverage: tests hit one interface</li>
+            <li class="bg-stone-100 p-2 rounded">depth: loop stays narrow</li>
+          </ul>
+          <section class="rounded-lg border border-emerald-200 bg-emerald-50 p-5 space-y-4">
+            <div>
+              <p class="text-xs uppercase tracking-wider text-emerald-800">Pass 1 end state</p>
+              <h3 class="text-xl font-semibold">Core asks output.py for one turn decision</h3>
+            </div>
+            <div class="grid md:grid-cols-2 gap-4 text-sm">
+              <div class="rounded bg-white border border-emerald-100 p-4">
+                <h4 class="font-semibold mb-2">Files involved</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li><code>thinharness/output.py</code> gains the structured-turn decision module.</li>
+                  <li><code>thinharness/core.py</code> stops spelling out every output mode branch inline.</li>
+                  <li><code>thinharness/tools/parallel_llm.py</code> can later reuse the same decision shape for one-shot calls.</li>
+                  <li><code>tests/test_structured_output.py</code> becomes the main behavior safety net.</li>
+                </ul>
+              </div>
+              <div class="rounded bg-white border border-emerald-100 p-4">
+                <h4 class="font-semibold mb-2">Likely functions</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li>Add a small result type such as <code>OutputTurnDecision</code>.</li>
+                  <li>Add one resolver function in <code>output.py</code>, for example <code>resolve_turn_output(...)</code>.</li>
+                  <li>Retire or shrink <code>Harness._finalized_output_mode_for_turn</code>.</li>
+                  <li>Keep schema building and validation inside <code>OutputSchema</code>.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="rounded bg-white border border-emerald-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">Flow after the pass</h4>
+              <ol class="list-decimal pl-5 space-y-1">
+                <li><code>Harness.run</code> receives a <code>ModelTurn</code>.</li>
+                <li>It calls the output module with the turn, schema, retry count, and retry budget.</li>
+                <li>The output module returns one decision: final value, corrective user message, corrective tool output, unexpected model behavior, or continue to normal tools.</li>
+                <li><code>core.py</code> performs the side effect implied by that decision: finalize, advance the model with a correction, raise, or continue.</li>
+                <li>Tracing reads the decision's finalized mode instead of doing separate validation.</li>
+              </ol>
+            </div>
+            <div class="rounded bg-white border border-emerald-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">What should be easier to read</h4>
+              <p>The main loop should stop containing separate branches for text, tool, native, and prompted output. It should read like: resolve output decision, act on decision, otherwise execute tool calls.</p>
+            </div>
+          </section>
+        </article>
+
+        <article id="tool-call-lifecycle" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Deepen Tool-Call Lifecycle</h2>
+            <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/core.py:851</div>
+            <div>thinharness/core.py:922</div>
+            <div>thinharness/hooks.py:196</div>
+            <div>thinharness/tracing.py:180</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <pre class="mermaid">
+flowchart TD
+  C[_traced_call_output] --> H[before hook]
+  C --> I[invoke tool]
+  C --> A[after hook]
+  C --> R[retry kind]
+  C --> S[subagent attrs]
+  C --> M[MCP attrs]
+  C --> T[trace result]
+  H -.policy leak.-> R
+  A -.policy leak.-> R
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#dc2626;
+  class H,A,R leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="relative h-72">
+                <div class="absolute inset-4 deep rounded-lg p-5">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">deep module</div>
+                  <div class="text-xl font-semibold">One tool-call lifecycle</div>
+                  <div class="grid grid-cols-2 gap-2 mt-4 text-sm text-slate-200">
+                    <div class="border border-slate-500 rounded p-2">hooks</div>
+                    <div class="border border-slate-500 rounded p-2">invoke</div>
+                    <div class="border border-slate-500 rounded p-2">retry</div>
+                    <div class="border border-slate-500 rounded p-2">trace attrs</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> One implementation currently mixes hook timing, tool invocation, retry classification, and attribution for subagents and MCP.</p>
+          <p><strong>Solution.</strong> Keep batch execution as the outer module, but deepen the single-call lifecycle seam so policy has one local implementation.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">locality: hook order central</li>
+            <li class="bg-stone-100 p-2 rounded">leverage: tracing follows policy</li>
+            <li class="bg-stone-100 p-2 rounded">interface: one execution result</li>
+          </ul>
+          <section class="rounded-lg border border-emerald-200 bg-emerald-50 p-5 space-y-4">
+            <div>
+              <p class="text-xs uppercase tracking-wider text-emerald-800">Pass 2 end state, part B</p>
+              <h3 class="text-xl font-semibold">One helper owns one model-requested tool call</h3>
+            </div>
+            <div class="grid md:grid-cols-2 gap-4 text-sm">
+              <div class="rounded bg-white border border-emerald-100 p-4">
+                <h4 class="font-semibold mb-2">Files involved</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li><code>thinharness/core.py</code> keeps batch ordering and provider continuation.</li>
+                  <li>A new internal module or section owns one-call lifecycle policy.</li>
+                  <li><code>thinharness/hooks.py</code> remains the hook dispatch module.</li>
+                  <li><code>thinharness/tracing.py</code> remains the trace annotation module.</li>
+                </ul>
+              </div>
+              <div class="rounded bg-white border border-emerald-100 p-4">
+                <h4 class="font-semibold mb-2">Likely functions</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li>Keep <code>Harness._execute_tool_batch</code> as the batch module.</li>
+                  <li>Replace most of <code>Harness._traced_call_output</code> with a call into a deeper one-call module.</li>
+                  <li>Return <code>ToolCallExecution</code> with output, cancellation, retry kind, parsed output, and trace metadata.</li>
+                  <li>Move MCP and subagent trace attribution out of the middle of the call path.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="rounded bg-white border border-emerald-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">Flow after the pass</h4>
+              <ol class="list-decimal pl-5 space-y-1">
+                <li><code>_execute_tool_batch</code> decides sequential vs concurrent execution.</li>
+                <li>For each call, the one-call module fires <code>before_tool_call</code>.</li>
+                <li>If not cancelled, it invokes the tool through the existing tool interface.</li>
+                <li>It parses output, captures retry kind before after-hooks, fires <code>after_tool_call</code>, then refreshes parsed output.</li>
+                <li>It applies trace attributes from a small metadata object instead of open-coded conditionals.</li>
+                <li>The batch module preserves order and builds provider <code>ToolOutput</code> values.</li>
+              </ol>
+            </div>
+            <div class="rounded bg-white border border-emerald-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">What should be easier to read</h4>
+              <p>The tool path should no longer make the reader hold hook cancellation, retry budgeting, parsed output refresh, subagent metadata, MCP metadata, and trace result capture in one function.</p>
+            </div>
+          </section>
+        </article>
+
+        <article id="run-context" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Extract Run Context</h2>
+            <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/core.py:369</div>
+            <div>thinharness/core.py:398</div>
+            <div>thinharness/core.py:501</div>
+            <div>thinharness/core.py:765</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <div class="space-y-2">
+                <div class="h-9 border-l-4 border-red-400 bg-red-50 p-2 text-sm">closure state: result, stop_reason, terminal_error</div>
+                <div class="h-9 border-l-4 border-red-400 bg-red-50 p-2 text-sm">instance state: _current_run_metadata</div>
+                <div class="h-9 border-l-4 border-red-400 bg-red-50 p-2 text-sm">nested helpers: limits, tracing, finalize</div>
+                <div class="h-9 border-l-4 border-red-400 bg-red-50 p-2 text-sm">main loop: provider, output, tools</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="h-72 deep rounded-lg p-5 flex flex-col justify-center">
+                <div class="text-xs uppercase tracking-wider text-slate-300">deep module</div>
+                <div class="text-xl font-semibold">Run context</div>
+                <div class="mt-4 text-sm text-slate-300">terminal bookkeeping, usage, metadata, notices, and run_end firing stay behind one interface.</div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> `Harness.run` is valuable but its implementation has low locality because many concerns share closure and instance state.</p>
+          <p><strong>Solution.</strong> Move per-run mutable state and terminal bookkeeping into an internal run-context module.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">locality: stop rules central</li>
+            <li class="bg-stone-100 p-2 rounded">leverage: run_end stays once</li>
+            <li class="bg-stone-100 p-2 rounded">interface: no metadata global</li>
+          </ul>
+          <section class="rounded-lg border border-amber-200 bg-amber-50 p-5 space-y-4">
+            <div>
+              <p class="text-xs uppercase tracking-wider text-amber-800">Pass 2 end state, part A</p>
+              <h3 class="text-xl font-semibold">Harness.run has an explicit per-run state object</h3>
+            </div>
+            <div class="grid md:grid-cols-2 gap-4 text-sm">
+              <div class="rounded bg-white border border-amber-100 p-4">
+                <h4 class="font-semibold mb-2">Files involved</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li><code>thinharness/core.py</code> owns the new internal run-context type.</li>
+                  <li><code>thinharness/hooks.py</code> keeps the public hook context types unchanged.</li>
+                  <li><code>tests/test_hooks.py</code>, <code>tests/test_resume.py</code>, and <code>tests/test_harness.py</code> verify lifecycle behavior.</li>
+                </ul>
+              </div>
+              <div class="rounded bg-white border border-amber-100 p-4">
+                <h4 class="font-semibold mb-2">Likely functions</h4>
+                <ul class="list-disc pl-5 space-y-1">
+                  <li>Add an internal dataclass such as <code>RunContext</code>.</li>
+                  <li>Move <code>fire_run_end_once</code>, <code>check_model_limit</code>, <code>check_tool_limit</code>, and <code>finalize</code> into methods.</li>
+                  <li>Pass run metadata explicitly to tool execution instead of relying on <code>self._current_run_metadata</code>.</li>
+                  <li>Keep <code>HarnessResult</code> public shape unchanged.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="rounded bg-white border border-amber-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">Flow after the pass</h4>
+              <ol class="list-decimal pl-5 space-y-1">
+                <li><code>Harness.run</code> creates <code>RunContext</code> with prompt, metadata, usage, responses, tool records, and tracer.</li>
+                <li>The run context fires <code>run_start</code>, tracks terminal errors, and guarantees <code>run_end</code> once.</li>
+                <li>The main loop calls context methods for limit checks and final result construction.</li>
+                <li>Tool execution receives the run context or the fields it needs, so metadata does not live on the harness instance during the run.</li>
+                <li>The outer <code>finally</code> still resets <code>_running</code> and releases transient state.</li>
+              </ol>
+            </div>
+            <div class="rounded bg-white border border-amber-100 p-4 text-sm">
+              <h4 class="font-semibold mb-2">What should be easier to read</h4>
+              <p><code>Harness.run</code> should look like orchestration rather than bookkeeping: start run, advance model, resolve output, execute tools, continue, finalize.</p>
+            </div>
+          </section>
+        </article>
+
+        <article id="model-session-request" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Narrow Model-Session Requests</h2>
+            <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">ports & adapters</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/providers.py:117</div>
+            <div>thinharness/providers.py:435</div>
+            <div>thinharness/providers.py:606</div>
+            <div>tests/fakes.py:211</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <div class="mass h-72">
+                <div class="iface h-56 rounded p-2 text-xs">interface<br />prompt<br />instructions<br />tools<br />metadata<br />previous_response_id<br />structured_output<br />notices</div>
+                <div class="impl h-64 rounded p-2 text-xs">implementation<br />provider-specific payload assembly</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="mass h-72">
+                <div class="iface h-16 rounded p-2 text-xs">interface<br />request object</div>
+                <div class="impl h-64 rounded p-2 text-xs">implementation<br />provider-specific payload assembly and capability checks</div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> The `ModelSession` interface repeats broad kwargs, including fields that only one adapter can use.</p>
+          <p><strong>Solution.</strong> Deepen request construction so provider adapters receive one coherent request shape instead of every harness concern as a method parameter.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">interface shrinks</li>
+            <li class="bg-stone-100 p-2 rounded">locality: capability checks</li>
+            <li class="bg-stone-100 p-2 rounded">leverage: fakes simplify</li>
+          </ul>
+        </article>
+
+        <article id="jsonl-search" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Collapse Or Deepen JSONL Search</h2>
+            <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">local-substitutable</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/tools/filesystem.py:159</div>
+            <div>thinharness/tools/jsonl.py:56</div>
+            <div>tests/test_file_tools.py:144</div>
+            <div>e2e/workspace_tools_journey.py:15</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <pre class="mermaid">
+flowchart LR
+  F[FileTools] -.callbacks.-> J[JsonlSearch]
+  F -.truncate.-> J
+  F -.parse rg.-> J
+  F -.path policy.-> J
+  F -.roots.-> J
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#dc2626;
+  class F,J leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="grid grid-cols-2 gap-3 h-72 items-center">
+                <div class="deep rounded-lg p-4">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">option A</div>
+                  <div class="font-semibold">Filesystem module owns JSONL</div>
+                </div>
+                <div class="deep rounded-lg p-4">
+                  <div class="text-xs uppercase tracking-wider text-slate-300">option B</div>
+                  <div class="font-semibold">JSONL owns search policy</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> `JsonlSearch` has one adapter and a callback-heavy interface, so the seam is more hypothetical than useful.</p>
+          <p><strong>Solution.</strong> Either collapse it into `FileTools` for locality, or deepen it by moving shared search policy behind its own interface.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">deletion test is clear</li>
+            <li class="bg-stone-100 p-2 rounded">locality improves</li>
+            <li class="bg-stone-100 p-2 rounded">interface stops leaking</li>
+          </ul>
+        </article>
+
+        <article id="subagent-construction" class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+          <div class="flex flex-wrap gap-2 items-center">
+            <h2 class="text-2xl font-semibold mr-auto">Localize Child-Run Construction</h2>
+            <span class="rounded-full bg-slate-200 text-slate-800 px-3 py-1 text-xs font-semibold">Speculative</span>
+            <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+          </div>
+          <div class="font-mono text-sm text-slate-700 grid md:grid-cols-2 gap-2">
+            <div>thinharness/subagents.py:24</div>
+            <div>thinharness/subagents.py:201</div>
+            <div>tests/test_subagents.py:157</div>
+            <div>tests/test_subagents.py:184</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before</p>
+              <pre class="mermaid">
+flowchart TD
+  S[SubAgentConfig] --> B[build_child_harness]
+  P[parent config] --> B
+  T[parent tools] --> B
+  M[MCP servers] --> B
+  R[tracing] --> B
+  H[hooks] --> B
+  C[child Harness]
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">After</p>
+              <div class="deep rounded-lg p-5 h-72 flex flex-col justify-center">
+                <div class="text-xs uppercase tracking-wider text-slate-300">deep module</div>
+                <div class="text-xl font-semibold">Child-run policy</div>
+                <div class="mt-4 text-sm text-slate-300">Inheritance axes become implementation details of one module.</div>
+              </div>
+            </div>
+          </div>
+          <p><strong>Problem.</strong> Subagent configuration exposes many inheritance axes and tests need to understand the implementation shape.</p>
+          <p><strong>Solution.</strong> Localize parent-to-child policy inside a child-run construction module if subagent behavior keeps growing.</p>
+          <ul class="grid md:grid-cols-3 gap-2 text-sm">
+            <li class="bg-stone-100 p-2 rounded">locality: inheritance policy</li>
+            <li class="bg-stone-100 p-2 rounded">leverage: fewer fragile tests</li>
+            <li class="bg-stone-100 p-2 rounded">speculative: growth-dependent</li>
+          </ul>
+        </article>
+      </section>
+
+      <section id="top-recommendation" class="rounded-lg border-2 border-emerald-300 bg-emerald-50 p-6">
+        <p class="text-xs uppercase tracking-wider text-emerald-800">Top recommendation</p>
+        <h2 class="text-2xl font-semibold mt-1"><a class="underline" href="#structured-output-turn-resolution">Deepen Structured Turn Resolution</a></h2>
+        <p class="mt-2 text-slate-800">Tackle this first because it has real user-facing complexity, duplicated validation, broad test coverage, and immediate leverage for `Harness.run`, `ParallelLlmTool`, provider adapters, and tracing.</p>
+      </section>
+    </main>
+  </body>
+</html>

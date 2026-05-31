@@ -13,11 +13,17 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 from .tools.base import Json, ToolSpec
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
+_CURRENT_TOOL_RUNTIME: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
 
 
 def current_tool_call_context() -> Json | None:
     """Return the current tool call context for nested tool handlers."""
     return _CURRENT_TOOL_CALL.get()
+
+
+def current_tool_runtime_context() -> Json | None:
+    """Return internal runtime context for nested framework tool handlers."""
+    return _CURRENT_TOOL_RUNTIME.get()
 
 if TYPE_CHECKING:
     from .core import Harness, HarnessResult, RunUsage, StopReason

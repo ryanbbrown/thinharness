@@ -51,13 +51,15 @@ This tree expands project-owned files and collapses generated, cache, and vendor
 |   `-- test_tracing.py              # OpenTelemetry span shape and parent-child tracing tests.
 |-- thinharness/
 |   |-- __init__.py                  # Public API exports.
-|   |-- core.py                      # HarnessConfig, HarnessResult, Harness, and the agent run loop.
+|   |-- core.py                      # HarnessConfig, HarnessResult, Harness, and high-level run orchestration.
 |   |-- defaults.py                  # Default system prompt.
 |   |-- hooks.py                     # Hook registration, event context dataclasses, and dispatch.
 |   |-- output.py                    # Structured-output schema building, validation, and serialization.
 |   |-- providers.py                 # Provider transports, model sessions, and provider-format adapters.
 |   |-- py.typed                     # PEP 561 marker for typed package consumers.
+|   |-- runtime.py                   # Per-run state, limits, tracing ceremony, and model advancement.
 |   |-- subagents.py                 # SubAgentConfig and the built-in subagent tool.
+|   |-- tool_execution.py            # Tool batch policy and single-call lifecycle.
 |   |-- tracing.py                   # OpenTelemetry-compatible tracing helpers.
 |   `-- tools/
 |       |-- __init__.py              # Tool package exports.
@@ -93,11 +95,13 @@ Generated or local-only directories such as `.venv/`, `.pytest_cache/`, `.ruff_c
 
 The runtime has five main layers:
 
-1. `Harness` in `core.py` owns one run loop.
-2. `ModelSession` implementations in `providers.py` turn provider APIs into normalized `ModelTurn` objects.
-3. `ToolSpec` handlers in `tools/` define everything the model can call.
-4. `HookRegistry` in `hooks.py` lets callers observe or mutate selected lifecycle events.
-5. `RunTracer` in `tracing.py` wraps agent, model, and tool work in optional OpenTelemetry spans.
+1. `Harness` in `core.py` owns high-level run orchestration and provider session choice.
+2. `RunContext` in `runtime.py` owns per-run mutable state, limits, terminal bookkeeping, and model advancement ceremony.
+3. `ToolBatchExecutor` and `ToolCallExecutor` in `tool_execution.py` own same-turn tool execution policy and one-call hook/tracing lifecycle.
+4. `ModelSession` implementations in `providers.py` turn provider APIs into normalized `ModelTurn` objects.
+5. `ToolSpec` handlers in `tools/` define everything the model can call.
+6. `HookRegistry` in `hooks.py` lets callers observe or mutate selected lifecycle events.
+7. `RunTracer` in `tracing.py` wraps agent, model, and tool work in optional OpenTelemetry spans.
 
 The key boundary is `ModelTurn`: providers can have very different APIs, but the harness only needs `text`, `tool_calls`, and `raw` provider JSON. Once a provider returns a `ModelTurn`, `core.py` can apply the same tool execution, structured output, hook, retry, tracing, and limit logic for OpenAI, Anthropic, OpenRouter, or a custom model object that implements the protocol.
 
@@ -107,7 +111,7 @@ A normal `Harness.run(prompt)` follows this path:
 
 1. Reject closed or re-entrant use.
 2. Create or resume a provider `ModelSession`.
-3. Initialize per-run state: raw responses, tool call records, `RunUsage`, limit-warning dedupe state, tracing, and run metadata.
+3. Create `RunContext` for per-run state: raw responses, tool call records, `RunUsage`, limit-warning dedupe state, tracing, and run metadata.
 4. Fire `run_start`.
 5. Connect MCP servers if configured.
 6. Fire `user_prompt_submit`, allowing hooks to cancel or append prompt context.
@@ -119,12 +123,12 @@ A normal `Harness.run(prompt)` follows this path:
     - If structured output is configured, check whether the turn finalizes output.
     - If the model returned no tool calls, return final text or validated structured output.
     - Enforce `max_tool_calls`.
-    - Execute the tool-call batch, either serially or concurrently.
+    - Execute the tool-call batch through `ToolBatchExecutor`, either serially or concurrently.
     - Track retryable tool failures and enforce retry budgets.
     - Continue the provider session with normalized tool outputs.
 11. Attach `resume_state` only for clean resumable exits.
 12. Fire `run_end` exactly once.
-13. Clear per-run state and allow another run.
+13. Clear the harness running flag and allow another run.
 
 The run loop is async-native. `run_sync()` is a wrapper for callers outside an event loop; it runs `run()` with `asyncio.run()` and then closes owned async resources.
 
@@ -191,7 +195,11 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 - Stores MCP servers without connecting them yet.
 - Validates tool uniqueness, skill selection, `final_result` collisions, and hook filters.
 
-`Harness.run()` owns the agent loop. A few inner helpers matter:
+`Harness.run()` is now mostly orchestration. It rejects invalid lifecycle states, creates or resumes the provider session, builds a `RunContext`, fires prompt hooks, chooses the provider session method for each turn, delegates model-request ceremony to `RunContext.advance_model()`, delegates tool batches to `ToolBatchExecutor`, and maps terminal exceptions to stop reasons.
+
+Provider-specific payload choices stay in `providers.py`: `Harness.run()` passes callables such as `active_session.start(...)`, `continue_with_tools(...)`, and `continue_with_user_prompt(...)` into `RunContext.advance_model()`. `runtime.py` does not know provider payload shapes.
+
+`RunContext` owns per-run state and lifecycle ceremony:
 
 - `fire_run_end_once()` guarantees a single `run_end` event across success, errors, cancellation, and limit exits.
 - `check_model_limit()` prevents provider requests beyond `max_model_requests`.
@@ -199,12 +207,41 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 - `advance_model()` wraps one provider request with limit checks, model-facing limit notices, usage accounting, tracing, and structured-output finalization annotations.
 - `retry_or_fail()` enforces structured-output retry budgets.
 - `check_tool_retry_limits()` enforces retryable tool-error budgets per tool name.
+- `finalize()` builds `HarnessResult`, annotates the agent span, attaches resume state, and fires `run_end`.
 
-Tool execution flows through `_execute_tool_batch()`. In `tool_execution="auto"`, a batch is concurrent unless any called `ToolSpec` is sequential. Concurrent execution still preserves model call order in `tool_call_records` and provider continuation outputs.
+Tool execution flows through `ToolBatchExecutor.execute_batch()`. In `tool_execution="auto"`, a batch is concurrent unless any called `ToolSpec` is sequential. Concurrent execution still preserves model call order in `tool_call_records` and provider continuation outputs.
 
 `parallel_llm` internal provider attempts are tool-specific work. The tool invocation consumes one `tool_calls` slot, but its internal attempts are reported as `model_requests` in the tool payload and metadata rather than in `RunUsage.model_requests`; `max_model_requests` remains the budget for agent-loop turns.
 
 MCP connection is lazy. `_ensure_mcp_connected()` enters each server context, lists tools, checks collisions, and appends discovered `ToolSpec`s exactly once. It also reserves `final_result` when tool-mode structured output is active, so an MCP tool cannot collide with the synthetic output tool.
+
+### `thinharness/runtime.py`
+
+`runtime.py` contains `RunContext`, an internal dataclass for one `Harness.run()` invocation. It keeps mutable run state out of the long-lived `Harness` instance: responses, tool call records, `RunUsage`, emitted limit-warning keys, terminal result/error, stop reason, output-tool finalization state, and the active tracer/span handles.
+
+The model advancement boundary is `RunContext.advance_model(request, trace_snapshot, output_retry=False)`. The caller supplies a provider-session callable; `RunContext` adds limit notices, increments usage, opens and annotates the model span, resolves structured output while the span is still open, and records finalization attributes. This keeps the repeated model-request ceremony in one place without moving provider request shapes out of `providers.py`.
+
+### `thinharness/tool_execution.py`
+
+`tool_execution.py` contains the internal execution path for model-requested tools.
+
+`ToolBatchExecutor` owns batch-level policy:
+
+- Choosing sequential execution when configured or when any requested tool has `sequential=True`.
+- Running parallel-safe batches concurrently under the worker limit.
+- Cancelling sibling tasks when a strict hook or unexpected exception escapes.
+- Preserving model call order for `tool_call_records` and provider `ToolOutput` values.
+
+`ToolCallExecutor` owns one-call lifecycle:
+
+- Setting the public current tool-call context and the internal runtime metadata context.
+- Firing `before_tool_call` and honoring hook cancellation.
+- Invoking the selected `ToolSpec`.
+- Capturing retry control flow before `after_tool_call` hooks can mutate output.
+- Firing `after_tool_call` and refreshing parsed output after mutation.
+- Annotating subagent and MCP spans.
+
+The public `current_tool_call_context()` shape remains `{"call_id": ..., "name": ...}`. Framework internals that need run metadata, such as subagent hook and child metadata construction, read the separate internal runtime context instead of a mutable field on `Harness`.
 
 ### `thinharness/defaults.py`
 
@@ -234,7 +271,7 @@ Each event has a typed dataclass context. Some contexts are mutable by design:
 
 `HookRegistry.fire()` dispatches matching hooks in registration order. Tool filters only apply to tool events, and agent filters only apply to subagent events. Unknown tool filter names are allowed because tools can be added later and MCP tools are discovered lazily. Subagent filters are validated against known subagent names.
 
-The module also owns `_CURRENT_TOOL_CALL`, a context variable used so nested handlers, especially subagent handlers, can discover the parent tool call id.
+The module also owns two tool-call context variables. `_CURRENT_TOOL_CALL` backs the public `current_tool_call_context()` helper for nested handlers that need the parent call id and tool name. `_CURRENT_TOOL_RUNTIME` is internal and carries richer per-call runtime data such as copied run metadata for framework tools.
 
 ### `thinharness/output.py`
 
