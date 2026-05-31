@@ -29,6 +29,7 @@ from thinharness import (
     call_tool,
     create_subagent_tool,
 )
+from thinharness.hooks import current_tool_call_context, current_tool_runtime_context
 from thinharness.providers import ModelToolCall, ModelTurn
 
 
@@ -112,6 +113,53 @@ def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(
         "tools": ["echo"],
         "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"},
     }
+
+def test_subagent_metadata_uses_runtime_context_without_leaking_hook_mutation(tmp_path: Path) -> None:
+    parent_call = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
+        raw={"id": "parent-start"},
+    )
+    child_start_metadata = {}
+    hook_metadata = []
+    tool_contexts = []
+
+    def on_child_start(prompt, _instructions, _tools, metadata, _previous_response_id):
+        child_start_metadata.update({"prompt": prompt, "metadata": metadata})
+
+    def before_subagent(ctx):
+        assert isinstance(ctx, BeforeSubagentRunContext)
+        hook_metadata.append(("before", dict(ctx.metadata)))
+        tool_contexts.append((current_tool_call_context(), current_tool_runtime_context()))
+        ctx.metadata["conversation_id"] = "mutated"
+        ctx.metadata["new"] = "ignored"
+
+    def after_subagent(ctx):
+        assert isinstance(ctx, AfterSubagentRunContext)
+        hook_metadata.append(("after", dict(ctx.metadata)))
+
+    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}), on_start=on_child_start)
+    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([parent, child]),
+        tools=[echo_tool()],
+        hooks=[Hook("before_subagent_run", before_subagent), Hook("after_subagent_run", after_subagent)],
+    )
+    harness.add_tool(create_subagent_tool(harness, []))
+
+    assert harness.run_sync("delegate", metadata={"conversation_id": "conv-1", "extra": "hook-only"}).text == "parent done"
+
+    assert hook_metadata == [
+        ("before", {"conversation_id": "conv-1", "extra": "hook-only"}),
+        ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
+    ]
+    assert child_start_metadata == {"prompt": "help", "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"}}
+    assert tool_contexts == [
+        (
+            {"call_id": "call_1", "name": "subagent"},
+            {"run_metadata": {"conversation_id": "conv-1", "extra": "hook-only"}},
+        )
+    ]
 
 def test_subagent_receives_fresh_child_budget_notices(tmp_path: Path) -> None:
     parent_call = ModelTurn(

@@ -31,8 +31,12 @@ from thinharness import (
     UserPromptSubmitContext,
     create_subagent_tool,
 )
+from thinharness.hooks import current_tool_runtime_context
 from thinharness.providers import ModelToolCall, ModelTurn
 
+
+def test_current_tool_runtime_context_is_unset_outside_tool_call() -> None:
+    assert current_tool_runtime_context() is None
 
 def test_hook_registry_rejects_invalid_filters() -> None:
     with pytest.raises(ValueError, match="tools filter"):
@@ -239,6 +243,34 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
     assert result.usage.cancelled_tool_calls == 1
     assert len(result.tool_call_records) == 2
 
+def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: Path) -> None:
+    client = MultiCallClient([("ok", "{}")])
+    seen = []
+
+    def before(ctx):
+        assert isinstance(ctx, BeforeToolCallContext)
+        seen.append(("before", dict(ctx.metadata)))
+        ctx.metadata["conversation_id"] = "mutated"
+        ctx.metadata["new"] = "ignored"
+
+    def after(ctx):
+        assert isinstance(ctx, AfterToolCallContext)
+        seen.append(("after", dict(ctx.metadata)))
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        model=_fake_openai(client),
+        tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
+        hooks=[Hook("before_tool_call", before), Hook("after_tool_call", after)],
+    )
+
+    harness.run_sync("go", metadata={"conversation_id": "conv-1", "extra": "hook-only"})
+
+    assert seen == [
+        ("before", {"conversation_id": "conv-1", "extra": "hook-only"}),
+        ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
+    ]
+
 def test_after_tool_hooks_see_refreshed_parsed_output(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
     seen = []
@@ -312,6 +344,31 @@ def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="strict hook failed"):
         harness.run_sync("go")
+
+def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_path: Path) -> None:
+    client = MultiCallClient([("a", "{}"), ("b", "{}")])
+    run_end_usage = []
+
+    def fail_for_a(ctx):
+        if ctx.tool_name == "a":
+            raise RuntimeError("strict hook failed")
+
+    def on_run_end(ctx):
+        assert isinstance(ctx, RunEndContext)
+        assert ctx.usage is not None
+        run_end_usage.append((ctx.stop_reason, ctx.usage.tool_calls, ctx.usage.cancelled_tool_calls))
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        model=_fake_openai(client),
+        tools=[slow_tool("a", 0.01), slow_tool("b", 0.01)],
+        hooks=[Hook("before_tool_call", fail_for_a), Hook("run_end", on_run_end)],
+    )
+
+    with pytest.raises(RuntimeError, match="strict hook failed"):
+        harness.run_sync("go")
+
+    assert run_end_usage == [("error", 2, 0)]
 
 async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path: Path) -> None:
     client = MultiCallClient([("fail", "{}"), ("wait", "{}")])

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,13 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .hooks import (
-    _CURRENT_TOOL_CALL,
-    AfterToolCallContext,
-    BeforeToolCallContext,
     Hook,
     HookRegistry,
-    LimitReachedContext,
-    RunEndContext,
     RunStartContext,
     UserPromptSubmitContext,
     apply_prompt_context,
@@ -31,9 +25,7 @@ from .output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
-    OutputTurnDecision,
     resolve_output_schema_for_model,
-    resolve_turn_output,
     structured_instructions,
 )
 from .providers import (
@@ -41,8 +33,6 @@ from .providers import (
     ModelCapabilities,
     ModelNotice,
     ModelSession,
-    ModelToolCall,
-    ModelTurn,
     ProviderError,
     ResumableModel,
     StructuredOutputRequest,
@@ -50,7 +40,7 @@ from .providers import (
     infer_model,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import Json, ToolSpec, _invoke_tool
+from .tools.base import Json, ToolSpec
 from .tools.filesystem import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
@@ -62,15 +52,10 @@ from .tracing import (
     RunTracer,
     TracingOptions,
     _trace_output_mode,
-    annotate_agent_result,
     annotate_agent_start,
-    annotate_model_request,
-    annotate_model_span,
     create_local_tracing,
-    serialize_attribute_value,
 )
 
-MAX_PARALLEL_TOOL_WORKERS = 16
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
 StopReason = Literal[
     "end_turn",
@@ -258,15 +243,6 @@ class RunUsage:
     tool_retries: dict[str, int] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class ToolCallExecution:
-    """Internal per-call execution data with control-flow signals."""
-
-    output: str
-    cancelled: bool
-    retry_kind: str | None = None
-
-
 class HarnessError(RuntimeError):
     """Raised when the harness cannot complete a run."""
 
@@ -362,13 +338,15 @@ class Harness:
         else:
             self.tracing = external_tracing
         self._is_child_run = _is_child_run
-        self._current_run_metadata: Json | None = None
         self._running = False
         self._closed = False
         self._validate_hook_filters()
 
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
+        from .runtime import RunContext
+        from .tool_execution import ToolBatchExecutor
+
         if self._closed:
             raise HarnessError("harness is closed")
         if self._running:
@@ -385,188 +363,29 @@ class Harness:
             session = cast(ResumableModel, self.model).resume_session(resume_from)
             first_turn_kind = "resume"
 
-        responses: list[Json] = []
-        tool_call_records: list[Json] = []
-        usage = RunUsage()
-        emitted_limit_warnings: set[LimitNoticeKey] = set()
-        result: HarnessResult | None = None
-        terminal_error: BaseException | None = None
-        stop_reason: StopReason = "end_turn"
-        finalized_via_output_tool = False
-        run_end_fired = False
         run_tracer = RunTracer(self.tracing)
         run_metadata = dict(metadata or {})
-        self._current_run_metadata = run_metadata
+        run_ctx = RunContext(
+            harness=self,
+            prompt=prompt,
+            metadata=run_metadata,
+            usage=RunUsage(),
+            tracer=run_tracer,
+        )
         self._running = True
-
-        def fire_run_end_once() -> None:
-            """Emit run_end exactly once for this run."""
-            nonlocal run_end_fired
-            if run_end_fired:
-                return
-            run_end_fired = True
-            self.hooks.fire(RunEndContext(
-                harness=self,
-                metadata=dict(run_metadata),
-                result=result,
-                error=terminal_error,
-                stop_reason=stop_reason,
-                usage=usage,
-            ))
-
-        def check_model_limit() -> None:
-            """Raise if another provider request would exceed the configured limit."""
-            nonlocal terminal_error, stop_reason
-            if usage.model_requests < self.config.max_model_requests:
-                return
-            self.hooks.fire(LimitReachedContext(
-                harness=self,
-                metadata=dict(run_metadata),
-                limit_kind="model_requests",
-                limit_value=self.config.max_model_requests,
-                current_count=usage.model_requests,
-            ))
-            stop_reason = "limit_reached"
-            terminal_error = HarnessError(f"model did not finish within max_model_requests={self.config.max_model_requests}")
-            raise terminal_error
-
-        def check_tool_limit(batch_size: int) -> None:
-            """Raise if a requested tool batch would exceed the configured limit."""
-            nonlocal terminal_error, stop_reason
-            if self.config.max_tool_calls is None or usage.tool_calls + batch_size <= self.config.max_tool_calls:
-                return
-            self.hooks.fire(LimitReachedContext(
-                harness=self,
-                metadata=dict(run_metadata),
-                limit_kind="tool_calls",
-                limit_value=self.config.max_tool_calls,
-                current_count=usage.tool_calls + batch_size,
-            ))
-            stop_reason = "limit_reached"
-            terminal_error = HarnessError(f"tool calls would exceed max_tool_calls={self.config.max_tool_calls}")
-            raise terminal_error
-
-        async def advance_model(request, *, trace_snapshot: ModelTraceSnapshot, output_retry: bool = False) -> tuple[ModelTurn, OutputTurnDecision]:
-            """Run one provider request with limit, usage, and tracing ceremony."""
-            check_model_limit()
-            notices = _compute_limit_notices(
-                self.config,
-                usage,
-                emitted_limit_warnings,
-                final_result_tool_available=self.output_schema is not None and self.output_schema.mode == "tool",
-            )
-            if output_retry:
-                usage.output_retries += 1
-            with run_tracer.model(self.model) as model_span:
-                snapshot = trace_snapshot.with_notices(notices)
-                model_span.for_each(
-                    lambda span, option: annotate_model_request(
-                        span,
-                        snapshot,
-                        capture_messages=option.capture_messages,
-                    )
-                )
-                try:
-                    advanced_turn = await request(notices)
-                    usage.model_requests += 1
-                except Exception as exc:
-                    model_span.record_exception(exc)
-                    model_span.set_error(str(exc), type(exc).__name__)
-                    raise
-                model_span.for_each(
-                    lambda span, option: annotate_model_span(
-                        span,
-                        advanced_turn,
-                        capture_messages=option.capture_messages,
-                    )
-                )
-                decision = resolve_turn_output(advanced_turn, self.output_schema)
-                if finalized_mode := decision.finalized_mode:
-                    advanced_turn.finalized_output_mode = finalized_mode
-                    model_span.set_attributes({
-                        "thinharness.output.mode": finalized_mode,
-                        "gen_ai.output.finalized": True,
-                    })
-                return advanced_turn, decision
-
-        def build_terminal_result(text: str, output: Any | None = None) -> HarnessResult:
-            """Create the terminal HarnessResult for this run."""
-            return HarnessResult(
-                text=text,
-                output=output,
-                responses=responses,
-                tool_call_records=tool_call_records,
-                usage=usage,
-                stop_reason=stop_reason,
-            )
-
-        def attach_resume_state(session_to_dump: ModelSession) -> None:
-            """Attach final resume state before run_end hooks observe the result."""
-            if result is not None:
-                result.resume_state = _build_resume_state(
-                    session_to_dump,
-                    stop_reason,
-                    finalized_via_output_tool,
-                    model_supports_resume,
-                )
-
-        def finalize(
-            text: str,
-            active_session: ModelSession,
-            *,
-            output: Any | None = None,
-            finalized_via_output_tool_value: bool = False,
-        ) -> HarnessResult:
-            """Run terminal bookkeeping for one successful run."""
-            nonlocal result, finalized_via_output_tool
-            if finalized_via_output_tool_value:
-                finalized_via_output_tool = True
-            result = build_terminal_result(text, output)
-            agent_span.for_each(
-                lambda span, option: annotate_agent_result(
-                    span,
-                    result=result,
-                    output_schema=self.output_schema,
-                    capture_messages=option.capture_messages,
-                    top_level=not self._is_child_run,
-                )
-            )
-            attach_resume_state(active_session)
-            fire_run_end_once()
-            return result
-
-        def retry_or_fail() -> None:
-            """Track one structured-output validation retry or fail the run."""
-            nonlocal terminal_error, stop_reason
-            if usage.output_retries >= self.config.output_retries:
-                stop_reason = "output_validation_failed"
-                terminal_error = HarnessError("output validation exceeded output_retries")
-                raise terminal_error
-
-        def check_tool_retry_limits(calls: list[ModelToolCall], executions: list[ToolCallExecution]) -> None:
-            """Track retryable tool failures and raise if any tool exceeds its budget."""
-            nonlocal terminal_error, stop_reason
-            for call, execution in zip(calls, executions, strict=True):
-                if execution.retry_kind is None or execution.cancelled:
-                    continue
-                usage.tool_retries[call.name] = usage.tool_retries.get(call.name, 0) + 1
-                max_retries = self._tool_max_retries(call.name)
-                if usage.tool_retries[call.name] > max_retries:
-                    self.hooks.fire(LimitReachedContext(
-                        harness=self,
-                        metadata=dict(run_metadata),
-                        limit_kind="tool_retries",
-                        limit_value=max_retries,
-                        current_count=usage.tool_retries[call.name],
-                    ))
-                    stop_reason = "tool_retries_exceeded"
-                    terminal_error = HarnessError(f"tool {call.name!r} exceeded max_retries={max_retries}")
-                    raise terminal_error
 
         try:
             try:
                 conversation_id = str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
+                    run_ctx.agent_span = agent_span
+                    tool_executor = ToolBatchExecutor(
+                        harness=self,
+                        run_context=run_ctx,
+                        tool_map=self._tool_map,
+                        run_tracer=run_tracer,
+                        tool_execution=self.config.tool_execution,
+                    )
                     try:
                         self.hooks.fire(RunStartContext(
                             harness=self,
@@ -581,9 +400,9 @@ class Harness:
                         self.hooks.fire(prompt_ctx)
                         if prompt_ctx.cancelled:
                             reason = prompt_ctx.cancel_reason or "unspecified"
-                            stop_reason = "cancelled_by_hook"
-                            terminal_error = HarnessError(f"run blocked by hook: {reason}")
-                            raise terminal_error
+                            run_ctx.stop_reason = "cancelled_by_hook"
+                            run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
+                            raise run_ctx.terminal_error
                         effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
                         instructions = structured_instructions(self.system_instructions(), self.output_schema)
                         agent_span.for_each(
@@ -601,12 +420,12 @@ class Harness:
                             try:
                                 active_session = self.model.new_session()
                             except Exception as exc:
-                                stop_reason = "error"
-                                terminal_error = exc
+                                run_ctx.stop_reason = "error"
+                                run_ctx.terminal_error = exc
                                 agent_span.record_exception(exc)
                                 agent_span.set_error(str(exc), type(exc).__name__)
                                 raise
-                            turn, decision = await advance_model(lambda notices: active_session.start(
+                            turn, decision = await run_ctx.advance_model(lambda notices: active_session.start(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -617,7 +436,7 @@ class Harness:
                         else:
                             assert session is not None
                             active_session = session
-                            turn, decision = await advance_model(lambda notices: active_session.continue_with_user_prompt(
+                            turn, decision = await run_ctx.advance_model(lambda notices: active_session.continue_with_user_prompt(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -626,20 +445,21 @@ class Harness:
                                 notices=notices,
                             ), trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=effective_prompt, structured_output=output_mode))
                         while True:
-                            responses.append(turn.raw)
+                            run_ctx.responses.append(turn.raw)
                             if decision.kind == "final":
-                                return finalize(
+                                return run_ctx.finalize(
                                     decision.text,
                                     active_session,
                                     output=decision.output,
                                     finalized_via_output_tool_value=decision.finalized_via_output_tool,
+                                    require_dump_state=model_supports_resume,
                                 )
                             if decision.kind == "retry_tool_output":
-                                retry_or_fail()
+                                run_ctx.retry_or_fail()
                                 final_id = decision.retry_call_id
                                 assert final_id, "tool-mode final_result retry requires a tool call id"
                                 retry_message = decision.retry_message
-                                turn, decision = await advance_model(
+                                turn, decision = await run_ctx.advance_model(
                                     lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
                                         [ToolOutput(final_id, retry_message)],
                                         instructions=instructions,
@@ -657,31 +477,35 @@ class Harness:
                                 )
                                 continue
                             if decision.kind == "retry_user_message":
-                                retry_or_fail()
+                                run_ctx.retry_or_fail()
                                 retry_message = decision.retry_message
-                                turn, decision = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
-                                    retry_message,
-                                    instructions=instructions,
-                                    tools=self.tool_schemas(),
-                                    metadata=metadata,
-                                    structured_output=structured_output,
-                                    notices=notices,
-                                ), trace_snapshot=ModelTraceSnapshot(
-                                    kind="correction",
-                                    prompt=retry_message,
-                                    structured_output=output_mode,
-                                ), output_retry=True)
+                                turn, decision = await run_ctx.advance_model(
+                                    lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
+                                        retry_message,
+                                        instructions=instructions,
+                                        tools=self.tool_schemas(),
+                                        metadata=metadata,
+                                        structured_output=structured_output,
+                                        notices=notices,
+                                    ),
+                                    trace_snapshot=ModelTraceSnapshot(
+                                        kind="correction",
+                                        prompt=retry_message,
+                                        structured_output=output_mode,
+                                    ),
+                                    output_retry=True,
+                                )
                                 continue
                             if decision.kind == "unexpected":
                                 raise UnexpectedModelBehavior(decision.unexpected_message)
-                            check_tool_limit(len(turn.tool_calls))
-                            usage.tool_calls += len(turn.tool_calls)
-                            recorded, outputs, executions = await self._execute_tool_batch(run_tracer, turn.tool_calls)
-                            usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
-                            tool_call_records.extend(recorded)
-                            check_tool_retry_limits(turn.tool_calls, executions)
+                            run_ctx.check_tool_limit(len(turn.tool_calls))
+                            run_ctx.usage.tool_calls += len(turn.tool_calls)
+                            recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
+                            run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
+                            run_ctx.record_tool_batch(recorded)
+                            run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
                             tool_outputs = outputs
-                            turn, decision = await advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
+                            turn, decision = await run_ctx.advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
                                 tool_outputs,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -694,40 +518,39 @@ class Harness:
                                 structured_output=output_mode,
                             ))
                     except asyncio.CancelledError as exc:
-                        stop_reason = "cancelled"
-                        terminal_error = exc
+                        run_ctx.stop_reason = "cancelled"
+                        run_ctx.terminal_error = exc
                         agent_span.record_exception(exc)
                         agent_span.set_error("run cancelled", "CancelledError")
                         raise
                     except ProviderError as exc:
-                        stop_reason = "provider_error"
-                        terminal_error = HarnessError(str(exc))
+                        run_ctx.stop_reason = "provider_error"
+                        run_ctx.terminal_error = HarnessError(str(exc))
                         agent_span.record_exception(exc)
                         agent_span.set_error(str(exc), type(exc).__name__)
-                        raise terminal_error from exc
+                        raise run_ctx.terminal_error from exc
                     except UnexpectedModelBehavior as exc:
-                        stop_reason = "unexpected_model_behavior"
-                        terminal_error = terminal_error or exc
+                        run_ctx.stop_reason = "unexpected_model_behavior"
+                        run_ctx.terminal_error = run_ctx.terminal_error or exc
                         agent_span.record_exception(exc)
                         agent_span.set_error(str(exc), type(exc).__name__)
                         raise
                     except HarnessError as exc:
-                        terminal_error = terminal_error or exc
-                        if stop_reason == "end_turn":
-                            stop_reason = "error"
+                        run_ctx.terminal_error = run_ctx.terminal_error or exc
+                        if run_ctx.stop_reason == "end_turn":
+                            run_ctx.stop_reason = "error"
                         agent_span.record_exception(exc)
                         agent_span.set_error(str(exc), type(exc).__name__)
                         raise
                     except Exception as exc:
-                        stop_reason = "error"
-                        terminal_error = exc
+                        run_ctx.stop_reason = "error"
+                        run_ctx.terminal_error = exc
                         agent_span.record_exception(exc)
                         agent_span.set_error(str(exc), type(exc).__name__)
                         raise
             finally:
-                fire_run_end_once()
+                run_ctx.fire_run_end_once()
         finally:
-            self._current_run_metadata = None
             self._running = False
 
     def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
@@ -805,139 +628,6 @@ class Harness:
         """Return the full instruction text sent to the model."""
         skill_summary = self.skills.prompt_summary() if self._skills_enabled else "No skills are configured."
         return f"{self.config.system_prompt}\n\nWorkspace root: {self.root}\n\n{skill_summary}"
-
-    async def _call_output(self, name: str, arguments: str) -> str:
-        """Execute one model tool call and format its output."""
-        spec = self._tool_map.get(str(name))
-        if not spec:
-            return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
-        return await _invoke_tool(spec, arguments or {})
-
-    async def _traced_call_output(self, run_tracer: RunTracer, call_id: str, name: str, arguments: str, tool_index: int) -> ToolCallExecution:
-        """Execute one model tool call with tracing."""
-        with run_tracer.tool(tool_name=name, call_id=call_id, arguments=arguments) as span:
-            token = _CURRENT_TOOL_CALL.set({"call_id": call_id, "name": name})
-            cancelled = False
-            start = time.perf_counter()
-            try:
-                before = BeforeToolCallContext(
-                    harness=self,
-                    metadata=dict(self._current_run_metadata or {}),
-                    call_id=call_id,
-                    tool_name=name,
-                    arguments=arguments,
-                    tool_spec=self._tool_map.get(str(name)),
-                    tool_index=tool_index,
-                )
-                self.hooks.fire(before)
-                if before.cancelled:
-                    cancelled = True
-                    reason = before.cancel_reason or "unspecified"
-                    output = json.dumps({
-                        "ok": False,
-                        "content": f"Tool execution blocked by hook: {reason}",
-                        "metadata": {"error_type": "ToolCallCancelled"},
-                    }, ensure_ascii=False)
-                else:
-                    output = await self._call_output(name, arguments)
-                parsed = _parse_tool_output(output)
-                retry_kind = None if cancelled else _tool_retry_kind(parsed)
-                after = AfterToolCallContext(
-                    harness=self,
-                    metadata=dict(self._current_run_metadata or {}),
-                    call_id=call_id,
-                    tool_name=name,
-                    arguments=arguments,
-                    original_output=output,
-                    output=output,
-                    parsed_output=parsed,
-                    duration_ms=(time.perf_counter() - start) * 1000,
-                )
-                self.hooks.fire_after_tool_call(after)
-                output = after.output
-                parsed = _parse_tool_output(output)
-                metadata_value = parsed.get("metadata")
-                parsed_metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-                if name == "subagent":
-                    span.set_attributes({
-                        "subagent.name": parsed_metadata.get("agent"),
-                        "subagent.tool_mode": parsed_metadata.get("tool_mode"),
-                        "subagent.tools": parsed_metadata.get("tools"),
-                    })
-                spec = self._tool_map.get(str(name))
-                spec_metadata = spec.metadata if spec is not None else {}
-                if spec_metadata.get("source") == "mcp":
-                    span.set_attributes({
-                        "mcp.server.id": spec_metadata.get("mcp_server_id"),
-                        "mcp.tool.name": spec_metadata.get("mcp_tool_name"),
-                    })
-                span.set_attribute_where(
-                    lambda option: option.capture_tool_results,
-                    "gen_ai.tool.call.result",
-                    serialize_attribute_value(output),
-                )
-                if retry_kind is not None:
-                    span.set_error(f'Tool "{name}" failed', retry_kind)
-                elif parsed.get("ok") is False:
-                    span.set_error(f'Tool "{name}" failed', "ToolExecutionError")
-                return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind)
-            finally:
-                _CURRENT_TOOL_CALL.reset(token)
-
-    async def _execute_tool_batch(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> tuple[list[Json], list[ToolOutput], list[ToolCallExecution]]:
-        """Run one batch of model tool calls; preserve model order in returned outputs."""
-        if self._should_run_sequentially(calls):
-            results = [
-                await self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
-                for index, call in enumerate(calls)
-            ]
-        else:
-            results = await self._run_calls_concurrently(run_tracer, calls)
-        recorded = []
-        for call, execution in zip(calls, results, strict=True):
-            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": execution.output}
-            if execution.cancelled:
-                record["cancelled"] = True
-            recorded.append(record)
-        outputs = [ToolOutput(call.id, execution.output) for call, execution in zip(calls, results, strict=True)]
-        return recorded, outputs, results
-
-    def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
-        """Decide whether the batch must execute serially."""
-        if self.config.tool_execution == "sequential" or len(calls) <= 1:
-            return True
-        return any((spec := self._tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
-
-    async def _run_calls_concurrently(self, run_tracer: RunTracer, calls: list[ModelToolCall]) -> list[ToolCallExecution]:
-        """Execute calls concurrently while preserving model request order."""
-        sem = asyncio.Semaphore(MAX_PARALLEL_TOOL_WORKERS)
-
-        async def invoke(index: int, call: ModelToolCall) -> ToolCallExecution:
-            """Invoke one traced tool call under the shared concurrency limit."""
-            async with sem:
-                return await self._traced_call_output(run_tracer, call.id, call.name, call.arguments, index)
-
-        tasks = [asyncio.create_task(invoke(index, call)) for index, call in enumerate(calls)]
-        task_index = {task: index for index, task in enumerate(tasks)}
-        results: list[ToolCallExecution | None] = [None] * len(tasks)
-        pending = set(tasks)
-        try:
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
-                for task in done:
-                    exc = task.exception()
-                    if exc is not None:
-                        for sibling in pending:
-                            sibling.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
-                        raise exc
-                    results[task_index[task]] = task.result()
-        except BaseException:
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            raise
-        return [result for result in results if result is not None]
 
     def _tool_max_retries(self, name: str) -> int:
         """Return the retry budget for one tool name."""
@@ -1047,23 +737,3 @@ class Harness:
             selected.append(by_name[name])
             seen.add(name)
         return selected
-
-
-def _parse_tool_output(output: str) -> Json:
-    """Parse a normalized tool output envelope."""
-    try:
-        parsed = json.loads(output)
-    except json.JSONDecodeError:
-        return {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
-    return parsed if isinstance(parsed, dict) else {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
-
-
-def _tool_retry_kind(parsed: Json) -> str | None:
-    """Return the retry error type from a parsed tool output envelope."""
-    metadata_value = parsed.get("metadata")
-    metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-    error_type = metadata.get("error_type")
-    if metadata.get("retry") is True and isinstance(error_type, str):
-        return error_type
-    return None
-
