@@ -4,7 +4,7 @@
 
 Add a built-in `parallel_llm` tool that lets the agent fan out a list of one-shot LLM completions in parallel through the harness's existing provider layer. Each call is stateless (no tools, no loop, no harness overhead) — strictly cheaper than spawning N subagents when the agent just needs N independent completions (e.g. classify 30 snippets, summarize 20 chunks, translate a batch).
 
-Related plans: `.plans/hooks-and-limits.md` (run limits, `RunUsage`), `.plans/subagents.md` (the heavier alternative this tool exists to undercut).
+Related plans: `.plans/04-hooks-and-limits.md` (run limits, `RunUsage`), `.plans/03-subagents.md` (the heavier alternative this tool exists to undercut).
 
 > **Note:** The original v1 of this plan also bundled a `thinharness/tools/` package reorganization. That work is already complete (`tools/` now contains `base.py`, `filesystem.py`, `jsonl.py`, `mcp.py`, `skills.py`, `__init__.py`), so this revision drops it.
 

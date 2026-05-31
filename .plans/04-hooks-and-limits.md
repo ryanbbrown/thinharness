@@ -3,7 +3,7 @@
 ## Overview
 Add a small lifecycle hook system plus explicit model-request and tool-call limits to the harness. The implementation should keep `core.py` focused on orchestration, put hook types and dispatch in `thinharness/hooks.py`, and treat subagent runs as normal nested harness runs with extra semantic hook events at the delegation boundary. Near-limit model guidance is intentionally split into follow-up work because it changes provider message construction.
 
-Existing related plans: `.plans/subagents.md` and `.plans/subagents-fork-mode.md`.
+Existing related plans: `.plans/03-subagents.md` and `.plans/subagents-fork-mode.md`.
 
 Implementation order should follow the natural fault lines, with tests run after each phase before continuing:
 1. Hooks core: `hooks.py`, runtime registration, `run_start`, `user_prompt_submit`, `before_tool_call`, and `after_tool_call`.
@@ -489,7 +489,7 @@ Update README:
 - Document that hooks are runtime constructor arguments, not `HarnessConfig` / `SubAgentConfig` fields.
 - Document that hook handlers are synchronous in v1.
 
-Update `.plans/subagents.md` references only if needed to avoid stale `max_turns` snippets. Do not rewrite the old plan wholesale; it is historical context.
+Update `.plans/03-subagents.md` references only if needed to avoid stale `max_turns` snippets. Do not rewrite the old plan wholesale; it is historical context.
 
 **Verify:** README examples import exported hook classes successfully; no docs mention `max_turns` as the active config field except historical plans; `HarnessResult.tool_call_records` contains the same records previously exposed as `tool_calls`; `result.usage` reports model requests, tool calls, and cancelled tool calls; `result.stop_reason` reports the run outcome.
 

@@ -3,7 +3,7 @@
 ## Overview
 Build subagents as an in-process delegation tool around the existing `Harness`, `ToolSpec`, `ModelSession`, and tracing abstractions. The parent harness can expose a `subagent` tool either as a configured built-in tool or as a manually passed custom tool, and each invocation runs a child harness with configurable tools, system prompt, and nested trace spans.
 
-This plan covers fresh-context subagents only. Forked-conversation mode (where the child reuses the parent's running session state) is a separate feature with provider-specific plumbing; see `plan-subagents-fork-mode.md`.
+This plan covers fresh-context subagents only. Forked-conversation mode (where the child reuses the parent's running session state) is a separate feature with provider-specific plumbing; see `.plans/subagents-fork-mode.md`.
 
 Prerequisite before adding subagents: tighten the first-party tool-output contract so built-ins, custom tools, and the subagent tool all normalize to the same provider-facing result shape:
 

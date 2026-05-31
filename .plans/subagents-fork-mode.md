@@ -1,7 +1,7 @@
 # Plan: Subagents Fork-Conversation Mode
 
 ## Overview
-Fork-conversation mode lets a subagent start its child run with the parent's running conversation state instead of a fresh context. This is useful for "reviewer"-style helpers that need the full task context the parent has already accumulated. It is provider-sensitive plumbing and is deliberately split out from the base subagent plan (`plan-subagents.md`) so that fresh-context subagents can ship cleanly first.
+Fork-conversation mode lets a subagent start its child run with the parent's running conversation state instead of a fresh context. This is useful for "reviewer"-style helpers that need the full task context the parent has already accumulated. It is provider-sensitive plumbing and is deliberately split out from the base subagent plan (`.plans/03-subagents.md`) so that fresh-context subagents can ship cleanly first.
 
 This plan assumes the base subagent plan is already implemented.
 

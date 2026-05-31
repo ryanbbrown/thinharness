@@ -3,7 +3,7 @@
 ## Overview
 Deepen structured-output handling so `core.py` and `parallel_llm.py` ask `output.py` one question: given this `ModelTurn` and schema, what does this turn mean? The end state is a single structured-turn decision module that owns finalization, validation failure classification, retry intent, and trace facts for `Harness.run()` and `ParallelLlmTool`. Callers still own retry-budget exhaustion and transport.
 
-This plan supersedes the older extraction idea in `.plans/parallel-llm-structured-output.md`: instead of sharing only helper functions such as `validate_turn_output(...)`, share the actual turn-resolution decision shape.
+This plan supersedes the older extraction idea in `.plans/12-parallel-llm-structured-output.md`: instead of sharing only helper functions such as `validate_turn_output(...)`, share the actual turn-resolution decision shape.
 
 ## Decisions
 - Put the new structured-turn decision types and functions in `thinharness/output.py`.
