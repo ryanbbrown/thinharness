@@ -17,11 +17,11 @@ from ..output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
-    OutputValidationError,
+    OutputTurnDecision,
     resolve_output_schema_for_model,
+    resolve_turn_output,
     structured_instructions,
     structured_retry_prompt,
-    validate_turn_output,
 )
 from .base import Json, PathPolicy, PathValidationError, StrictArgs, ToolResult, ToolSpec, coerce_args
 
@@ -190,14 +190,18 @@ class ParallelLlmTool:
                             turn = await request_turn(request_prompt)
                         except ProviderError as exc:
                             return {"index": index, "ok": False, "error": str(exc)}
-                        try:
-                            value = validate_turn_output(turn, output_schema)
-                        except OutputValidationError as exc:
+                        decision = resolve_turn_output(turn, output_schema)
+                        if decision.kind == "final":
+                            return _success_entry(index, decision.text, decision.output, output_schema)
+                        if decision.kind in {"retry_user_message", "retry_tool_output"}:
                             if output_attempt == self.output_retries:
-                                return {"index": index, "ok": False, "error": f"output validation failed: {exc}"}
-                            request_prompt = structured_retry_prompt(prompt, exc)
+                                return _failure_entry(index, decision)
+                            assert decision.error is not None, "structured-output retry requires validation error text"
+                            request_prompt = structured_retry_prompt(prompt, decision.error)
                             continue
-                        return _success_entry(index, turn.text, value, output_schema)
+                        if decision.kind == "continue":
+                            return {"index": index, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
+                        return {"index": index, "ok": False, "error": decision.unexpected_message}
                 except Exception as exc:
                     return {"index": index, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
                 raise AssertionError("unreachable parallel_llm output retry loop exit")
@@ -316,6 +320,12 @@ def _success_entry(index: int, text: str, value: Any, output_schema: OutputSchem
     if output_schema is None or output_schema.mode == "text":
         return {"index": index, "ok": True, "result": text}
     return {"index": index, "ok": True, "result": output_schema.adapter.dump_python(value, mode="json")}
+
+
+def _failure_entry(index: int, decision: OutputTurnDecision) -> Json:
+    """Build one structured-output validation failure entry."""
+    assert decision.error is not None, "structured-output validation failure requires error text"
+    return {"index": index, "ok": False, "error": f"output validation failed: {decision.error}"}
 
 
 def _is_retryable(exc: ProviderError) -> bool:

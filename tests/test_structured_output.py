@@ -29,6 +29,7 @@ from thinharness import (
     create_subagent_tool,
 )
 from thinharness.core import _compute_limit_notices
+from thinharness.output import OutputSchema, resolve_turn_output
 from thinharness.providers import ProviderError
 from thinharness.subagents import SubAgentArgs, run_subagent_tool
 
@@ -57,6 +58,92 @@ class Item(TypedDict):
 class City:
     name: str
     country: str
+
+
+def test_resolve_turn_output_classifies_unstructured_turns() -> None:
+    final = resolve_turn_output(ModelTurn(text="done"), None)
+    follow_up = resolve_turn_output(ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="lookup", arguments="{}")]), None)
+
+    assert final.kind == "final"
+    assert final.text == "done"
+    assert final.finalized_mode is None
+    assert follow_up.kind == "continue"
+
+
+def test_resolve_turn_output_classifies_tool_mode_final_retry_continue_and_unexpected() -> None:
+    schema = OutputSchema.build(Person, "tool")
+
+    final = resolve_turn_output(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}')]),
+        schema,
+    )
+    invalid = resolve_turn_output(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')]),
+        schema,
+    )
+    normal_tool = resolve_turn_output(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")]),
+        schema,
+    )
+    mixed = resolve_turn_output(
+        ModelTurn(tool_calls=[
+            ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}'),
+            ModelToolCall(id="call_lookup", name="lookup", arguments="{}"),
+        ]),
+        schema,
+    )
+    text_only = resolve_turn_output(ModelTurn(text='{"name":"Ada","age":37}'), schema)
+
+    assert final.kind == "final"
+    assert final.finalized_mode == "tool"
+    assert final.finalized_via_output_tool is True
+    assert final.output == Person(name="Ada", age=37)
+    assert invalid.kind == "retry_tool_output"
+    assert invalid.retry_call_id == "call_final"
+    assert "Call final_result again" in invalid.retry_message
+    assert normal_tool.kind == "continue"
+    assert mixed.kind == "unexpected"
+    assert text_only.kind == "retry_user_message"
+    assert "Call final_result" in text_only.retry_message
+
+
+def test_resolve_turn_output_classifies_prompted_mode_final_retry_and_continue() -> None:
+    schema = OutputSchema.build(Person, "prompted")
+
+    final = resolve_turn_output(ModelTurn(text='{"name":"Ada","age":37}'), schema)
+    invalid = resolve_turn_output(ModelTurn(text="not json"), schema)
+    normal_tool = resolve_turn_output(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")]),
+        schema,
+    )
+
+    assert final.kind == "final"
+    assert final.finalized_mode == "prompted"
+    assert final.output == Person(name="Ada", age=37)
+    assert invalid.kind == "retry_user_message"
+    assert "Return only valid JSON" in invalid.retry_message
+    assert normal_tool.kind == "continue"
+
+
+def test_resolve_turn_output_classifies_native_mode_retry() -> None:
+    schema = OutputSchema.build(Person, "native")
+
+    decision = resolve_turn_output(ModelTurn(text="not json"), schema)
+
+    assert decision.kind == "retry_user_message"
+    assert decision.error is not None
+    assert "Return only valid JSON" in decision.retry_message
+
+
+def test_resolve_turn_output_text_mode_tool_calls_continue() -> None:
+    schema = OutputSchema.build(str, "text")
+
+    decision = resolve_turn_output(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")]),
+        schema,
+    )
+
+    assert decision.kind == "continue"
 
 
 def test_base_model_output_via_tool_mode(tmp_path) -> None:
@@ -156,6 +243,7 @@ def test_validation_failure_retries_and_succeeds(tmp_path) -> None:
     assert result.output == Person(name="Ada", age=37)
     assert result.usage.model_requests == 2
     assert result.usage.output_retries == 1
+    assert result.responses == [{"id": "bad"}, {"id": "good"}]
     assert "failed structured output validation" in seen_outputs[0].output
 
 
@@ -349,6 +437,33 @@ def test_final_result_mixed_with_tool_calls_is_unexpected_and_dispatches_no_tool
     assert called == []
 
 
+def test_ordinary_tool_executes_before_tool_mode_final_result(tmp_path) -> None:
+    called = []
+    session = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments='{"query":"Ada"}')],
+            raw={"id": "tool"},
+        ),
+        continue_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada","age":37}')],
+            raw={"id": "final"},
+        ),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        model=ScriptedModel([session]),
+        tools=[ToolSpec("lookup", "lookup", {"type": "object", "properties": {"query": {"type": "string"}}}, lambda args: called.append(args) or "found")],
+    )
+
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
+    assert called == [{"query": "Ada"}]
+    assert result.usage.tool_calls == 1
+    assert [record["call"]["name"] for record in result.tool_call_records] == ["lookup"]
+    assert result.responses == [{"id": "tool"}, {"id": "final"}]
+
+
 def test_repeated_final_result_calls_are_unexpected(tmp_path) -> None:
     session = ScriptedSession(
         start_turn=ModelTurn(tool_calls=[
@@ -493,6 +608,25 @@ def test_structured_finalization_marks_model_span(tmp_path, mode: str, turn: Mod
     assert model_spans[-1].attributes["gen_ai.output.finalized"] is True
     agent_spans = [span for span in tracer.spans if span.name.startswith("invoke_agent")]
     assert "thinharness.output.mode" not in agent_spans[-1].attributes
+
+
+def test_structured_retry_span_is_not_marked_finalized(tmp_path) -> None:
+    tracer = FakeTracer()
+    session = ScriptedSession(
+        start_turn=ModelTurn(text="not json", raw={"id": "bad"}),
+        continue_turn=ModelTurn(text='{"name":"Ada","age":37}', raw={"id": "good"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="prompted", tracing=[TracingOptions(tracer=tracer)]),
+        model=ScriptedModel([session]),
+    )
+
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
+    model_spans = [span for span in tracer.spans if span.name.startswith("chat ")]
+    assert "gen_ai.output.finalized" not in model_spans[0].attributes
+    assert model_spans[1].attributes["gen_ai.output.finalized"] is True
 
 
 async def test_named_subagent_structured_output_is_serialized_for_parent(tmp_path) -> None:

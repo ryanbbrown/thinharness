@@ -54,6 +54,21 @@ class OutputValidationError(ValueError):
 
 
 @dataclass(frozen=True)
+class OutputTurnDecision:
+    """Resolved meaning of one model turn against an optional output schema."""
+
+    kind: Literal["continue", "final", "retry_user_message", "retry_tool_output", "unexpected"]
+    finalized_mode: ResolvedOutputMode | None = None
+    finalized_via_output_tool: bool = False
+    text: str = ""
+    output: Any | None = None
+    retry_message: str = ""
+    retry_call_id: str | None = None
+    error: OutputValidationError | None = None
+    unexpected_message: str = ""
+
+
+@dataclass(frozen=True)
 class OutputSchema:
     """Validate, serialize, and describe one structured output request."""
 
@@ -206,21 +221,63 @@ def structured_instructions(instructions: str, output_schema: OutputSchema | Non
     return f"{instructions}\n\n{schema_instructions}"
 
 
-def validate_turn_output(turn: ModelTurn, output_schema: OutputSchema | None) -> Any:
-    """Validate a model turn against a structured-output schema."""
+def resolve_turn_output(turn: ModelTurn, output_schema: OutputSchema | None) -> OutputTurnDecision:
+    """Resolve the control-flow meaning of a model turn."""
     if output_schema is None:
-        return turn.text
+        if turn.tool_calls:
+            return OutputTurnDecision(kind="continue")
+        return OutputTurnDecision(kind="final", text=turn.text)
     if output_schema.mode == "text":
         if turn.tool_calls:
-            raise OutputValidationError("model returned tool calls instead of text")
-        return output_schema.validate_text(turn.text)
+            return OutputTurnDecision(kind="continue")
+        value = output_schema.validate_text(turn.text)
+        return OutputTurnDecision(kind="final", finalized_mode="text", text=turn.text, output=value)
     if output_schema.mode == "tool":
-        if len(turn.tool_calls) != 1 or turn.tool_calls[0].name != FINAL_RESULT_TOOL_NAME:
-            raise OutputValidationError("model must call final_result as the only tool call")
-        return output_schema.validate_tool_arguments(turn.tool_calls[0].arguments)
+        finals = [call for call in turn.tool_calls if call.name == FINAL_RESULT_TOOL_NAME]
+        if finals:
+            if len(finals) > 1 or len(turn.tool_calls) > 1:
+                return OutputTurnDecision(kind="unexpected", unexpected_message="final_result must be the only tool call in its turn")
+            final = finals[0]
+            try:
+                value = output_schema.validate_tool_arguments(final.arguments)
+            except OutputValidationError as exc:
+                return OutputTurnDecision(
+                    kind="retry_tool_output",
+                    retry_message=_structured_retry_message(str(exc), "Call final_result again with valid arguments."),
+                    retry_call_id=final.id,
+                    error=exc,
+                )
+            return OutputTurnDecision(
+                kind="final",
+                finalized_mode="tool",
+                finalized_via_output_tool=True,
+                text=turn.text,
+                output=value,
+            )
+        if turn.tool_calls:
+            return OutputTurnDecision(kind="continue")
+        error = OutputValidationError("model returned text instead of final_result")
+        return OutputTurnDecision(
+            kind="retry_user_message",
+            retry_message=_structured_retry_message(str(error), "Call final_result with the final answer."),
+            error=error,
+        )
     if turn.tool_calls:
-        raise OutputValidationError("model returned tool calls instead of structured text")
-    return output_schema.validate_text(turn.text)
+        return OutputTurnDecision(kind="continue")
+    try:
+        value = output_schema.validate_text(turn.text)
+    except OutputValidationError as exc:
+        return OutputTurnDecision(
+            kind="retry_user_message",
+            retry_message=_structured_retry_message(str(exc), "Return only valid JSON for the requested schema."),
+            error=exc,
+        )
+    return OutputTurnDecision(kind="final", finalized_mode=output_schema.mode, text=turn.text, output=value)
+
+
+def _structured_retry_message(error: str, instruction: str) -> str:
+    """Build a corrective structured-output retry prompt."""
+    return f"The previous response failed structured output validation.\n\n{error}\n\n{instruction}"
 
 
 def structured_retry_prompt(prompt: str, error: OutputValidationError) -> str:

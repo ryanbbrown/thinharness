@@ -31,8 +31,9 @@ from .output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
-    OutputValidationError,
+    OutputTurnDecision,
     resolve_output_schema_for_model,
+    resolve_turn_output,
     structured_instructions,
 )
 from .providers import (
@@ -445,7 +446,7 @@ class Harness:
             terminal_error = HarnessError(f"tool calls would exceed max_tool_calls={self.config.max_tool_calls}")
             raise terminal_error
 
-        async def advance_model(request, *, trace_snapshot: ModelTraceSnapshot, output_retry: bool = False) -> ModelTurn:
+        async def advance_model(request, *, trace_snapshot: ModelTraceSnapshot, output_retry: bool = False) -> tuple[ModelTurn, OutputTurnDecision]:
             """Run one provider request with limit, usage, and tracing ceremony."""
             check_model_limit()
             notices = _compute_limit_notices(
@@ -479,13 +480,14 @@ class Harness:
                         capture_messages=option.capture_messages,
                     )
                 )
-                if finalized_mode := self._finalized_output_mode_for_turn(advanced_turn):
+                decision = resolve_turn_output(advanced_turn, self.output_schema)
+                if finalized_mode := decision.finalized_mode:
                     advanced_turn.finalized_output_mode = finalized_mode
                     model_span.set_attributes({
                         "thinharness.output.mode": finalized_mode,
                         "gen_ai.output.finalized": True,
                     })
-                return advanced_turn
+                return advanced_turn, decision
 
         def build_terminal_result(text: str, output: Any | None = None) -> HarnessResult:
             """Create the terminal HarnessResult for this run."""
@@ -604,7 +606,7 @@ class Harness:
                                 agent_span.record_exception(exc)
                                 agent_span.set_error(str(exc), type(exc).__name__)
                                 raise
-                            turn = await advance_model(lambda notices: active_session.start(
+                            turn, decision = await advance_model(lambda notices: active_session.start(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -615,7 +617,7 @@ class Harness:
                         else:
                             assert session is not None
                             active_session = session
-                            turn = await advance_model(lambda notices: active_session.continue_with_user_prompt(
+                            turn, decision = await advance_model(lambda notices: active_session.continue_with_user_prompt(
                                 prompt=effective_prompt,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -625,90 +627,53 @@ class Harness:
                             ), trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=effective_prompt, structured_output=output_mode))
                         while True:
                             responses.append(turn.raw)
-                            if self.output_schema is not None:
-                                if self.output_schema.mode == "text":
-                                    if not turn.tool_calls:
-                                        turn.finalized_output_mode = self.output_schema.mode
-                                        return finalize(turn.text, active_session, output=self.output_schema.validate_text(turn.text))
-                                elif self.output_schema.mode == "tool":
-                                    finals = [call for call in turn.tool_calls if call.name == FINAL_RESULT_TOOL_NAME]
-                                    if finals:
-                                        if len(finals) > 1 or len(turn.tool_calls) > 1:
-                                            raise UnexpectedModelBehavior("final_result must be the only tool call in its turn")
-                                        final = finals[0]
-                                        try:
-                                            value = self.output_schema.validate_tool_arguments(final.arguments)
-                                        except OutputValidationError as exc:
-                                            retry_or_fail()
-                                            retry_message = _structured_retry_message(str(exc), "Call final_result again with valid arguments.")
-                                            final_id = final.id
-                                            assert final_id, "tool-mode final_result retry requires a tool call id"
-                                            turn = await advance_model(
-                                                lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
-                                                    [ToolOutput(final_id, retry_message)],
-                                                    instructions=instructions,
-                                                    tools=self.tool_schemas(),
-                                                    metadata=metadata,
-                                                    structured_output=structured_output,
-                                                    notices=notices,
-                                                ),
-                                                trace_snapshot=ModelTraceSnapshot(
-                                                    kind="output_retry_tool",
-                                                    tool_outputs=[{"call_id": final_id, "output": retry_message}],
-                                                    structured_output=output_mode,
-                                                ),
-                                                output_retry=True,
-                                            )
-                                            continue
-                                        turn.finalized_output_mode = self.output_schema.mode
-                                        return finalize(turn.text, active_session, output=value, finalized_via_output_tool_value=True)
-                                    if not turn.tool_calls:
-                                        retry_or_fail()
-                                        retry_message = _structured_retry_message(
-                                            "model returned text instead of final_result",
-                                            "Call final_result with the final answer.",
-                                        )
-                                        # There is no final_result call id to answer here, so this correction must be a user message.
-                                        turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
-                                            retry_message,
-                                            instructions=instructions,
-                                            tools=self.tool_schemas(),
-                                            metadata=metadata,
-                                            structured_output=structured_output,
-                                            notices=notices,
-                                        ), trace_snapshot=ModelTraceSnapshot(
-                                            kind="correction",
-                                            prompt=retry_message,
-                                            structured_output=output_mode,
-                                        ), output_retry=True)
-                                        continue
-                                elif not turn.tool_calls:
-                                    try:
-                                        value = self.output_schema.validate_text(turn.text)
-                                    except OutputValidationError as exc:
-                                        error_message = str(exc)
-                                        retry_or_fail()
-                                        retry_message = _structured_retry_message(
-                                            error_message,
-                                            "Return only valid JSON for the requested schema.",
-                                        )
-                                        turn = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
-                                            retry_message,
-                                            instructions=instructions,
-                                            tools=self.tool_schemas(),
-                                            metadata=metadata,
-                                            structured_output=structured_output,
-                                            notices=notices,
-                                        ), trace_snapshot=ModelTraceSnapshot(
-                                            kind="correction",
-                                            prompt=retry_message,
-                                            structured_output=output_mode,
-                                        ), output_retry=True)
-                                        continue
-                                    turn.finalized_output_mode = self.output_schema.mode
-                                    return finalize(turn.text, active_session, output=value)
-                            if not turn.tool_calls:
-                                return finalize(turn.text, active_session)
+                            if decision.kind == "final":
+                                return finalize(
+                                    decision.text,
+                                    active_session,
+                                    output=decision.output,
+                                    finalized_via_output_tool_value=decision.finalized_via_output_tool,
+                                )
+                            if decision.kind == "retry_tool_output":
+                                retry_or_fail()
+                                final_id = decision.retry_call_id
+                                assert final_id, "tool-mode final_result retry requires a tool call id"
+                                retry_message = decision.retry_message
+                                turn, decision = await advance_model(
+                                    lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
+                                        [ToolOutput(final_id, retry_message)],
+                                        instructions=instructions,
+                                        tools=self.tool_schemas(),
+                                        metadata=metadata,
+                                        structured_output=structured_output,
+                                        notices=notices,
+                                    ),
+                                    trace_snapshot=ModelTraceSnapshot(
+                                        kind="output_retry_tool",
+                                        tool_outputs=[{"call_id": final_id, "output": retry_message}],
+                                        structured_output=output_mode,
+                                    ),
+                                    output_retry=True,
+                                )
+                                continue
+                            if decision.kind == "retry_user_message":
+                                retry_or_fail()
+                                retry_message = decision.retry_message
+                                turn, decision = await advance_model(lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
+                                    retry_message,
+                                    instructions=instructions,
+                                    tools=self.tool_schemas(),
+                                    metadata=metadata,
+                                    structured_output=structured_output,
+                                    notices=notices,
+                                ), trace_snapshot=ModelTraceSnapshot(
+                                    kind="correction",
+                                    prompt=retry_message,
+                                    structured_output=output_mode,
+                                ), output_retry=True)
+                                continue
+                            if decision.kind == "unexpected":
+                                raise UnexpectedModelBehavior(decision.unexpected_message)
                             check_tool_limit(len(turn.tool_calls))
                             usage.tool_calls += len(turn.tool_calls)
                             recorded, outputs, executions = await self._execute_tool_batch(run_tracer, turn.tool_calls)
@@ -716,7 +681,7 @@ class Harness:
                             tool_call_records.extend(recorded)
                             check_tool_retry_limits(turn.tool_calls, executions)
                             tool_outputs = outputs
-                            turn = await advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
+                            turn, decision = await advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
                                 tool_outputs,
                                 instructions=instructions,
                                 tools=self.tool_schemas(),
@@ -1065,29 +1030,6 @@ class Harness:
             return None
         return self.output_schema.structured_output_request()
 
-    def _finalized_output_mode_for_turn(self, turn: ModelTurn) -> str | None:
-        """Return the structured-output mode if a turn successfully finalizes."""
-        if self.output_schema is None:
-            return None
-        if self.output_schema.mode == "text":
-            return "text" if not turn.tool_calls else None
-        if self.output_schema.mode == "tool":
-            finals = [call for call in turn.tool_calls if call.name == FINAL_RESULT_TOOL_NAME]
-            if len(finals) != 1 or len(turn.tool_calls) != 1:
-                return None
-            try:
-                self.output_schema.validate_tool_arguments(finals[0].arguments)
-            except OutputValidationError:
-                return None
-            return "tool"
-        if turn.tool_calls:
-            return None
-        try:
-            self.output_schema.validate_text(turn.text)
-        except OutputValidationError:
-            return None
-        return self.output_schema.mode
-
     @staticmethod
     def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
         """Return all or the explicitly selected built-in tools."""
@@ -1125,7 +1067,3 @@ def _tool_retry_kind(parsed: Json) -> str | None:
         return error_type
     return None
 
-
-def _structured_retry_message(error: str, instruction: str) -> str:
-    """Build a corrective structured-output retry prompt."""
-    return f"The previous response failed structured output validation.\n\n{error}\n\n{instruction}"

@@ -335,6 +335,20 @@ async def test_parallel_llm_does_not_inherit_parent_system_prompt(tmp_path: Path
     assert model.calls[0]["instructions"] == ""
 
 
+async def test_parallel_llm_text_only_stray_tool_call_is_sparse_failure(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[
+        ModelTurn(text="ignored", tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")])
+    ])
+    parent = _parent(tmp_path, model)
+
+    result = await _call_parallel(parent, {"prompts": ["x"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [
+        {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
+    ]
+    assert result["payload"]["model_requests"] == 1
+
+
 async def test_custom_parallel_llm_prompted_output_parses_json_results(tmp_path: Path) -> None:
     model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
     tool = ParallelLlmTool(
@@ -416,6 +430,69 @@ async def test_custom_parallel_llm_tool_mode_rejects_text_without_tool_call(tmp_
 
     assert result["payload"]["results"][0]["ok"] is False
     assert "final_result" in result["payload"]["results"][0]["error"]
+
+
+async def test_custom_parallel_llm_structured_continue_is_sparse_failure(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[
+        ModelTurn(tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")])
+    ])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="prompted",
+        output_retries=1,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [
+        {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
+    ]
+    assert result["payload"]["model_requests"] == 1
+
+
+async def test_custom_parallel_llm_tool_mode_stray_tool_call_is_sparse_failure(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[
+        ModelTurn(tool_calls=[ModelToolCall(id="call_lookup", name="lookup", arguments="{}")])
+    ])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="tool",
+        output_retries=1,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [
+        {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
+    ]
+    assert result["payload"]["model_requests"] == 1
+
+
+async def test_custom_parallel_llm_unexpected_final_result_pattern_is_sparse_failure(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[
+        ModelTurn(tool_calls=[
+            ModelToolCall(id="call_final_1", name="final_result", arguments='{"name":"Ada","age":37}'),
+            ModelToolCall(id="call_final_2", name="final_result", arguments='{"name":"Grace","age":85}'),
+        ])
+    ])
+    tool = ParallelLlmTool(
+        model=model,
+        root=tmp_path,
+        output_type=ExtractedPerson,
+        output_mode="tool",
+        output_retries=1,
+    )
+
+    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+
+    assert result["payload"]["results"] == [
+        {"index": 0, "ok": False, "error": "final_result must be the only tool call in its turn"}
+    ]
+    assert result["payload"]["model_requests"] == 1
 
 
 async def test_custom_parallel_llm_native_mode_sends_structured_output(tmp_path: Path) -> None:
