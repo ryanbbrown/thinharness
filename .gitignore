@@ -6,6 +6,7 @@ htmlcov/
 .venv/
 .harness/
 .fsharness/
+.thinharness/
 *.egg-info/
 .env
 experiments/

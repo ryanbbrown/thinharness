@@ -362,6 +362,37 @@ def _rg_error_message(returncode: int, output: str | None) -> str:
     return f"ripgrep failed (rc={returncode}){suffix}"
 
 
+def _rg_partial_warning_metadata(returncode: int, output: str | None, *, include_match_events: bool = True) -> Json:
+    """Return metadata for recoverable ripgrep partial output."""
+    metadata: Json = {
+        "returncode": returncode,
+        "warning": f"ripgrep returned {returncode}; showing parsed partial matches",
+    }
+    excerpt = _compact_rg_excerpt(output, include_match_events=include_match_events)
+    if excerpt:
+        metadata["warning_excerpt"] = excerpt
+    return metadata
+
+
+def _compact_rg_excerpt(output: str | None, *, include_match_events: bool, limit: int = 400) -> str:
+    """Return a compact excerpt from ripgrep output."""
+    parts: list[str] = []
+    for line in (output or "").splitlines():
+        if not include_match_events and _is_rg_json_match_or_context(line):
+            continue
+        parts.append(line)
+    return " ".join("\n".join(parts).strip().split())[:limit]
+
+
+def _is_rg_json_match_or_context(line: str) -> bool:
+    """Return whether an rg --json line carries matched or contextual text."""
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(item, dict) and item.get("type") in {"match", "context"}
+
+
 def _timeout_error_message(command_name: str, timeout: int) -> str:
     """Return a compact timeout failure message."""
     return f"{command_name} timed out after {timeout}s"

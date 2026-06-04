@@ -25,27 +25,13 @@ from .base import (
     _is_relative_to,
     _path_error,
     _rg_error_message,
+    _rg_partial_warning_metadata,
     _timeout_error_message,
     coerce_args,
     contained_path,
     validate_glob_selector,
 )
 
-DEFAULT_SEARCH_LOW_PRIORITY_DIRS = [
-    "example",
-    "examples",
-    "sample",
-    "samples",
-    "fixture",
-    "fixtures",
-    "mock",
-    "mocks",
-    "testdata",
-    "vendor",
-    "node_modules",
-    "third_party",
-]
-DEFAULT_SEARCH_TEST_DIRS = ["test", "tests", "testing", "spec", "specs"]
 
 @dataclass
 class SearchMatch:
@@ -53,7 +39,6 @@ class SearchMatch:
 
     line_number: int
     line_text: str
-    is_definition: bool
 
 
 @dataclass
@@ -96,8 +81,8 @@ class SearchArgs(StrictArgs):
     query: str = Field(description="Regex or literal search string.")
     path_glob: str = Field(default="", description="Optional glob filter such as **/*.py.")
     file_type: str = Field(default="", description="Optional ripgrep type such as py, rust, or js.")
-    max_files: int = Field(default=10, ge=1)
-    max_matches_per_file: int = Field(default=3, ge=1)
+    max_files: int = Field(default=50, ge=1)
+    max_matches_per_file: int = Field(default=10, ge=1)
     max_line_chars: int | None = Field(default=None, ge=1, description="Search-only matched line preview cap. JSONL field output is controlled by fields.")
     timeout: int | None = Field(default=None, ge=1)
     max_chars: int | None = Field(default=None, ge=1)
@@ -134,8 +119,6 @@ class FileTools:
         max_search_line_chars: int = 180,
         rg_timeout: int = 30,
         search_exclude_globs: list[str] | None = None,
-        search_low_priority_dirs: list[str] | None = None,
-        search_test_dirs: list[str] | None = None,
         read_paths: Sequence[str | Path] | None = None,
         write_paths: Sequence[str | Path] | None = None,
     ) -> None:
@@ -143,7 +126,8 @@ class FileTools:
 
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.output_dir = contained_path(self.root, output_dir or ".fsharness/outputs")
+        self.output_dir = contained_path(self.root, output_dir or ".thinharness/outputs")
+        self._spill_artifacts: set[Path] = set()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
         self.max_read_chars = max_read_chars
@@ -154,8 +138,6 @@ class FileTools:
         self.search_exclude_globs = list(search_exclude_globs or [])
         for exclude_glob in self.search_exclude_globs:
             validate_glob_selector(exclude_glob, field="search_exclude_globs", allow_negation=True)
-        self.search_low_priority_dirs = {part.lower() for part in (search_low_priority_dirs or DEFAULT_SEARCH_LOW_PRIORITY_DIRS)}
-        self.search_test_dirs = {part.lower() for part in (search_test_dirs or DEFAULT_SEARCH_TEST_DIRS)}
         self.jsonl = JsonlSearch(
             self.root,
             max_tool_chars=self.max_tool_chars,
@@ -176,7 +158,7 @@ class FileTools:
             ToolSpec("read", "Read a UTF-8 text file with line numbers, offset, and limit.", ReadArgs, self.read),
             ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", WriteArgs, self.write, sequential=True),
             ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", EditArgs, self.edit, sequential=True),
-            ToolSpec("search", "Search code with ripgrep, then rank and format matches for agent follow-up reads.", SearchArgs, self.search),
+            ToolSpec("search", "Search readable workspace files with ripgrep and return compact grouped path/line matches.", SearchArgs, self.search),
             ToolSpec("list", "List a directory or glob files under the workspace root.", ListArgs, self.list_files),
             ToolSpec("glob", "Find files by glob pattern under the workspace root.", GlobArgs, self.glob),
             self.jsonl.spec(),
@@ -190,7 +172,7 @@ class FileTools:
         """Read a contained text file with line numbers."""
         args = coerce_args(args, ReadArgs)
         try:
-            path = self.read_policy.resolve(args.path)
+            path = self._resolve_read_path(args.path)
         except PathValidationError as exc:
             return _path_error(exc)
         if not path.exists():
@@ -276,7 +258,7 @@ class FileTools:
     # -------------------------------------------------------------------------
 
     def search(self, args: SearchArgs | Json) -> ToolResult:
-        """Search code with pgr-style grouping, ranking, and output shaping."""
+        """Search readable files and return compact grouped matches."""
         args = coerce_args(args, SearchArgs)
         query = args.query
         if not query:
@@ -316,17 +298,34 @@ class FileTools:
             )
         except subprocess.TimeoutExpired:
             return ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command})
-        if proc.returncode not in (0, 1):
-            return ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
         files = self._parse_contained_rg_json(proc.stdout or "")
+        warning_metadata: Json = {}
+        if proc.returncode not in (0, 1):
+            if not files:
+                return ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
+            warning_metadata = _rg_partial_warning_metadata(proc.returncode, proc.stdout)
         if not files:
             return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": proc.returncode, "cmd": command, "matches": 0})
-        files.sort(key=self._search_file_sort_key)
+        files.sort(key=lambda file: file.path)
+        for file in files:
+            file.matches.sort(key=lambda match: match.line_number)
         total_files = len(files)
+        total_matches = sum(len(file.matches) for file in files)
         shown_files = files[:max_files]
-        content = self._format_search_output(query, path_glob, file_type, shown_files, total_files, max_files, max_matches_per_file, max_line_chars)
+        content = self._format_search_output(
+            query,
+            path_glob,
+            file_type,
+            shown_files,
+            total_files,
+            total_matches,
+            max_files,
+            max_matches_per_file,
+            max_line_chars,
+        )
         result = self._truncate(content, prefix="search", max_chars=args.max_chars or self.max_tool_chars)
         result.metadata.update({"returncode": proc.returncode, "cmd": command, "cwd": str(self.root)})
+        result.metadata.update(warning_metadata)
         return result
 
     def list_files(self, args: ListArgs | Json) -> ToolResult:
@@ -385,7 +384,7 @@ class FileTools:
             "No matches found.\n"
             f"  query: {query}\n"
             f"  scope: {scope}\n"
-            "  hint: broaden the query, remove path_glob/file_type filters, or try a simpler symbol name."
+            "  hint: broaden the query, remove path_glob/file_type filters, or try simpler terms."
         )
 
     @staticmethod
@@ -409,7 +408,7 @@ class FileTools:
             path = raw_path.removeprefix("./")
             if path not in file_map:
                 file_order.append(path)
-            file_map.setdefault(path, []).append(SearchMatch(line_number, line_text, _is_definition(line_text)))
+            file_map.setdefault(path, []).append(SearchMatch(line_number, line_text))
         return [SearchFile(path, file_map[path]) for path in file_order]
 
     def _parse_contained_rg_json(self, stdout: str) -> list[SearchFile]:
@@ -424,11 +423,6 @@ class FileTools:
             return False
         return self.read_policy.allows(resolved)
 
-    def _search_file_sort_key(self, file: SearchFile) -> tuple[int, int, str]:
-        """Sort definition matches first, then source before tests and low-priority paths."""
-        has_definition = any(match.is_definition for match in file.matches)
-        return (0 if has_definition else 1, self._file_priority(file.path), file.path)
-
     def _format_search_output(
         self,
         query: str,
@@ -436,58 +430,53 @@ class FileTools:
         file_type: str,
         files: list[SearchFile],
         total_files: int,
+        total_matches: int,
         max_files: int,
         max_matches_per_file: int,
         max_line_chars: int,
     ) -> str:
-        """Format grouped and ranked search results for an agent."""
-        source_count = sum(1 for file in files if self._file_priority(file.path) == 0)
-        test_count = sum(1 for file in files if self._file_priority(file.path) == 1)
-        low_priority_count = sum(1 for file in files if self._file_priority(file.path) > 1)
-        definition_count = sum(1 for file in files if any(match.is_definition for match in file.matches))
+        """Format grouped search results for document-friendly reading."""
+        shown_matches = sum(min(len(file.matches), max_matches_per_file) for file in files)
+        omitted_matches = total_matches - shown_matches
         parts = [
-            "  summary:\n"
-            f"    query: {query}\n"
-            f"    scope: {_describe_search_scope(path_glob, file_type, self.search_exclude_globs)}\n"
-            f"    files: {total_files} total, {len(files)} shown\n"
-            f"    buckets: {source_count} source, {test_count} test, {low_priority_count} low-priority\n"
-            f"    definition_candidates: {definition_count}\n"
+            "summary:\n"
+            f"  query: {query}\n"
+            f"  scope: {_describe_search_scope(path_glob, file_type, self.search_exclude_globs)}\n"
+            f"  files: {total_files} total, {len(files)} shown\n"
+            f"  matches: {shown_matches} shown, {omitted_matches} omitted\n"
         ]
-        if files and files[0].matches:
-            parts[0] += f"    best_next_step: read {files[0].path} around line {files[0].matches[0].line_number}\n"
         for file in files:
-            file.matches.sort(key=lambda match: (not match.is_definition, match.line_number))
-            block = [file.path, f"  why: {self._file_reason(file)}"]
+            block = [file.path]
             for match in file.matches[:max_matches_per_file]:
                 line = _truncate_line(match.line_text, max_line_chars)
-                block.append(f"  {match.line_number}-{match.line_number}:")
-                block.append(f"    {match.line_number}| {line}")
+                block.append(f"  {match.line_number}: {line}")
+            omitted = len(file.matches) - min(len(file.matches), max_matches_per_file)
+            if omitted:
+                block.append(f"  ... {omitted} more match(es)")
             parts.append("\n".join(block) + "\n")
         if total_files > max_files:
-            parts.append(f"  note: truncated to top {max_files} files; refine the query or filters to narrow further.")
+            parts.append(f"note: {total_files - max_files} more file(s) omitted")
         return "\n".join(parts)
-
-    def _file_reason(self, file: SearchFile) -> str:
-        """Return why a file was ranked where it was."""
-        kind = "definition" if any(match.is_definition for match in file.matches) else "reference"
-        bucket = {0: "source", 1: "test"}.get(self._file_priority(file.path), "low-priority")
-        return f"{kind}, {bucket}"
-
-    def _file_priority(self, path: str) -> int:
-        """Classify a path as source, test, or low-priority."""
-        parts = path.replace("\\", "/").split("/")
-        filename = parts[-1].lower() if parts else ""
-        if any(part.lower() in self.search_low_priority_dirs for part in parts):
-            return 2
-        if any(part.lower() in self.search_test_dirs for part in parts[:-1]):
-            return 1
-        if "_test." in filename or filename.startswith("test_") or ".test." in filename or ".spec." in filename:
-            return 1
-        return 0
 
     # -------------------------------------------------------------------------
     # Shared file/output helpers
     # -------------------------------------------------------------------------
+
+    def _resolve_read_path(self, raw: str | Path) -> Path:
+        """Resolve a readable path, including generated spill artifacts."""
+        try:
+            return self.read_policy.resolve(raw)
+        except PathValidationError as policy_error:
+            resolved = contained_path(self.root, raw)
+            if self._is_readable_spill_artifact(resolved):
+                return resolved
+            raise policy_error
+
+    def _is_readable_spill_artifact(self, path: Path) -> bool:
+        """Return whether path is an exact generated spill artifact."""
+        resolved = path.resolve()
+        output_dir = self.output_dir.resolve()
+        return resolved in self._spill_artifacts and (resolved == output_dir or output_dir in resolved.parents)
 
     @staticmethod
     def _read_large_range(path: Path, offset: int, limit: int) -> tuple[list[str], int | None]:
@@ -547,13 +536,21 @@ class FileTools:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         artifact = self.output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
         artifact.write_text(text, encoding="utf-8")
+        resolved_artifact = artifact.resolve()
+        self._spill_artifacts.add(resolved_artifact)
+        saved_to_display = self._display(resolved_artifact)
         head = limit // 2
         tail = limit - head
         content = (
-            f"[truncated {len(text)} chars to {limit}; full output saved to {self._display(artifact)}]\n"
+            f"[truncated {len(text)} chars to {limit}; full output saved to {saved_to_display}]\n"
+            f"Read the saved output with read(path=\"{saved_to_display}\", offset=1, limit=400), then continue with later offsets as needed.\n"
             f"{text[:head]}\n...\n{text[-tail:]}"
         )
-        return ToolResult(True, content, {"truncated": True, "saved_to": str(artifact), "chars": len(text)})
+        return ToolResult(
+            True,
+            content,
+            {"truncated": True, "saved_to": str(resolved_artifact), "saved_to_display": saved_to_display, "chars": len(text)},
+        )
 
 
 # =============================================================================
@@ -579,54 +576,9 @@ def _describe_search_scope(path_glob: str, file_type: str, exclude_globs: list[s
         parts.append(f"type={file_type}")
     for exclude_glob in exclude_globs or []:
         parts.append(f"exclude={exclude_glob}")
-    return ", ".join(parts) if parts else "all files"
+    return ", ".join(parts) if parts else "all readable files"
 
 
 def _truncate_line(line: str, max_chars: int) -> str:
     """Truncate a matched line for compact search output."""
     return line if len(line) <= max_chars else f"{line[:max_chars]}..."
-
-
-def _is_definition(content: str) -> bool:
-    """Return whether a matched line looks like a code definition."""
-    for line in content.splitlines():
-        trimmed = line.strip()
-        if not trimmed or trimmed.startswith(("//", "#", "/*", "*")):
-            continue
-        if _matches_definition_prefix(trimmed):
-            return True
-    return False
-
-
-def _matches_definition_prefix(trimmed: str) -> bool:
-    """Return whether a line starts with a known definition-like prefix."""
-    prefixes = (
-        "fn ",
-        "pub fn ",
-        "pub(crate) fn ",
-        "struct ",
-        "pub struct ",
-        "enum ",
-        "pub enum ",
-        "trait ",
-        "pub trait ",
-        "impl ",
-        "impl<",
-        "type ",
-        "pub type ",
-        "mod ",
-        "pub mod ",
-        "func ",
-        "class ",
-        "def ",
-        "function ",
-        "export ",
-        "const ",
-        "let ",
-        "var ",
-        "interface ",
-        "module.exports",
-        "union ",
-        "typedef ",
-    )
-    return trimmed.startswith(prefixes)

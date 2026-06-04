@@ -221,7 +221,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
 
-**Search is a top priority.** The `search` tool is a Python port of [pgr](https://github.com/entireio/pgr)'s ranking; pgr [built benchmarks for agentic search](https://entire.io/blog/improving-agentic-search-in-coding-agents) and came up with a great way of exposing ripgrep to agents without raw bash. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
+**Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
 
 **Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs reliability beyond a single agent loop — majority vote, ensembled extraction. Set `builtin_parallel_llm_model` to enable the default `parallel_llm` tool for plain-text batches; for validated structured output per call, instantiate `ParallelLlmTool` yourself with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
@@ -281,4 +281,4 @@ Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real 
 
 ## License
 
-MIT. Search ranking adapted from [pgr](https://github.com/entireio/pgr); see [docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
+MIT. See [docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).

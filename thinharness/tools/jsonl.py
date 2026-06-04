@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -19,6 +20,7 @@ from .base import (
     ToolSpec,
     _path_error,
     _rg_error_message,
+    _rg_partial_warning_metadata,
     _timeout_error_message,
     coerce_args,
     validate_glob_selector,
@@ -44,10 +46,19 @@ class JsonlSearchArgs(StrictArgs):
         description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
     )
     where: list[JsonlWhereFilter] = Field(default_factory=list, description="Filters AND-ed together.")
-    max_files: int = Field(default=10, ge=1)
-    max_matches_per_file: int = Field(default=3, ge=1)
+    max_files: int = Field(default=100, ge=1)
+    max_matches_per_file: int = Field(default=25, ge=1)
     timeout: int | None = Field(default=None, ge=1)
     max_chars: int | None = Field(default=None, ge=1)
+
+
+@dataclass
+class _CandidateScan:
+    """JSONL candidate rows plus scan metadata or a hard scan error."""
+
+    candidates: Iterator[tuple[str, int, str]]
+    metadata: Json
+    error: ToolResult | None = None
 
 
 class JsonlSearch:
@@ -97,16 +108,16 @@ class JsonlSearch:
         timeout = args.timeout or self.rg_timeout
         limit_chars = args.max_chars or self.max_tool_chars
 
-        candidates, scan_error = self._candidates(query, path_glob, timeout)
-        if scan_error is not None:
-            return scan_error
+        scan = self._candidates(query, path_glob, timeout)
+        if scan.error is not None:
+            return scan.error
 
         shown: dict[str, list[tuple[int, Any]]] = {}
         row_counts: dict[str, int] = {}
         json_errors = 0
         total_files = 0
         total_rows = 0
-        for path, line_number, line_text in candidates:
+        for path, line_number, line_text in scan.candidates:
             if not line_text.strip():
                 continue
             try:
@@ -129,45 +140,48 @@ class JsonlSearch:
                 if len(shown[path]) < max_matches_per_file:
                     shown[path].append((line_number, row))
 
-        shown_files = list(shown.items())
+        shown_files = sorted(shown.items())
 
         header = [
-            "  summary:",
-            f"    query: {query or '(none)'}",
-            f"    scope: glob={path_glob}",
+            "summary:",
+            f"  query: {query or '(none)'}",
+            f"  scope: glob={path_glob}",
         ]
         if where:
-            header.append(f"    where: {_describe_where(where)}")
+            header.append(f"  where: {_describe_where(where)}")
         if fields:
-            header.append(f"    fields: {', '.join(fields)}")
-        header.append(f"    files: {total_files} total, {len(shown_files)} shown")
-        header.append(f"    rows_matched: {total_rows}")
+            header.append(f"  fields: {', '.join(fields)}")
+        header.append(f"  files: {total_files} total, {len(shown_files)} shown")
+        header.append(f"  rows_matched: {total_rows}")
         if json_errors:
-            header.append(f"    json_parse_errors: {json_errors}")
+            header.append(f"  json_parse_errors: {json_errors}")
         body = [""]
         for path, rows in shown_files:
             rows.sort(key=lambda lr: lr[0])
+            body.append(path)
             for line_number, row in rows:
                 try:
                     projected = _project_fields(row, fields) if fields else row
                 except ValueError as exc:
                     return ToolResult(False, f"invalid field path: {exc}")
-                body.append(f"{path}:{line_number}: {json.dumps(projected, ensure_ascii=False, default=str)}")
+                body.append(f"  {line_number}: {json.dumps(projected, ensure_ascii=False, default=str)}")
             omitted_rows = row_counts[path] - len(rows)
             if omitted_rows:
-                body.append(f"  ... {omitted_rows} more row(s) in {path}")
+                body.append(f"  ... {omitted_rows} more row(s)")
         if total_files > max_files:
-            body.append(f"  note: {total_files - max_files} more file(s) omitted")
+            body.append(f"note: {total_files - max_files} more file(s) omitted")
 
-        return self._truncate("\n".join(header + body), prefix="jsonl_search", max_chars=limit_chars)
+        result = self._truncate("\n".join(header + body), prefix="jsonl_search", max_chars=limit_chars)
+        result.metadata.update(scan.metadata)
+        return result
 
-    def _candidates(self, query: str, path_glob: str, timeout: int) -> tuple[Iterator[tuple[str, int, str]], ToolResult | None]:
+    def _candidates(self, query: str, path_glob: str, timeout: int) -> _CandidateScan:
         """Collect (path, line_number, line_text) tuples for jsonl_search."""
         if query:
             search_roots = self._search_roots()
             command = ["rg", "--json", "--glob", path_glob, "--", query, *search_roots]
             if not search_roots:
-                return iter(()), None
+                return _CandidateScan(iter(()), {"returncode": 1, "cmd": command})
             try:
                 proc = subprocess.run(
                     command,
@@ -179,16 +193,27 @@ class JsonlSearch:
                     check=False,
                 )
             except subprocess.TimeoutExpired:
-                return iter(()), ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command})
-            if proc.returncode not in (0, 1):
-                return iter(()), ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
+                return _CandidateScan(iter(()), {}, ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command}))
             files = self._parse_rg_json(proc.stdout or "")
-            return ((file.path, match.line_number, match.line_text) for file in files for match in file.matches), None
-        return self._iter_jsonl_files(path_glob), None
+            if proc.returncode not in (0, 1) and not files:
+                return _CandidateScan(
+                    iter(()),
+                    {},
+                    ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command}),
+                )
+            metadata: Json = {"returncode": proc.returncode, "cmd": command}
+            if proc.returncode not in (0, 1):
+                metadata.update(_rg_partial_warning_metadata(proc.returncode, proc.stdout, include_match_events=False))
+            rows = sorted(
+                ((file.path, match.line_number, match.line_text) for file in files for match in file.matches),
+                key=lambda item: (item[0], item[1]),
+            )
+            return _CandidateScan(iter(rows), metadata)
+        return _CandidateScan(self._iter_jsonl_files(path_glob), {})
 
     def _iter_jsonl_files(self, path_glob: str) -> Iterator[tuple[str, int, str]]:
         """Yield JSONL candidate rows without accumulating them."""
-        for path in self.root.glob(path_glob):
+        for path in sorted(self.root.glob(path_glob), key=lambda item: str(item)):
             resolved = path.resolve()
             if not self._path_allowed(resolved) or not path.is_file():
                 continue

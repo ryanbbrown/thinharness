@@ -4,7 +4,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from thinharness.tools.filesystem import FileTools
+import pytest
+
+from thinharness.tools.filesystem import FileTools, PathValidationError, SearchArgs
+from thinharness.tools.jsonl import JsonlSearchArgs
 
 
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
@@ -79,19 +82,32 @@ def test_file_tools_validate_glob_selectors(tmp_path: Path) -> None:
         assert not result.ok
         assert result.metadata["error_type"] == "PathValidationError"
 
-def test_search_ranks_and_formats_agent_results(tmp_path: Path) -> None:
-    (tmp_path / "src").mkdir()
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "src" / "app.py").write_text("def HandleRequest():\n    return 'ok'\n", encoding="utf-8")
-    (tmp_path / "tests" / "test_app.py").write_text("from src.app import HandleRequest\n", encoding="utf-8")
+def test_search_groups_document_results_by_path_and_line(tmp_path: Path) -> None:
+    (tmp_path / "claims").mkdir()
+    (tmp_path / "policies").mkdir()
+    (tmp_path / "policies" / "refunds.md").write_text(
+        "Refunds are available within 30 days.\nNo receipt required.\nRefund exceptions require manager approval.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "claims" / "customer_1024.txt").write_text(
+        "Customer requests a refund for a damaged item.\nPrevious refund was denied due to missing receipt.\n",
+        encoding="utf-8",
+    )
     tools = FileTools(tmp_path)
-    result = tools.search({"query": "HandleRequest", "max_files": 5})
+    result = tools.search({"query": "Refund|refund", "max_files": 5})
     assert result.ok
     assert "summary:" in result.content
-    assert "best_next_step: read src/app.py around line 1" in result.content
-    assert result.content.index("src/app.py") < result.content.index("tests/test_app.py")
-    assert "why: definition, source" in result.content
-    assert result.metadata["cmd"] == ["rg", "--json", "--", "HandleRequest", "."]
+    assert "scope: all readable files" in result.content
+    assert "files: 2 total, 2 shown" in result.content
+    assert "matches: 4 shown, 0 omitted" in result.content
+    assert result.content.index("claims/customer_1024.txt") < result.content.index("policies/refunds.md")
+    assert "  1: Customer requests a refund for a damaged item." in result.content
+    assert "  3: Refund exceptions require manager approval." in result.content
+    assert "why:" not in result.content
+    assert "buckets:" not in result.content
+    assert "definition_candidates:" not in result.content
+    assert "best_next_step:" not in result.content
+    assert result.metadata["cmd"] == ["rg", "--json", "--", "Refund|refund", "."]
 
 def test_search_no_matches_has_refinement_hint(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
@@ -112,23 +128,27 @@ def test_search_line_preview_limit_is_search_only(tmp_path: Path) -> None:
     assert result.ok
     assert "target = 'xx..." in result.content
 
-def test_search_excludes_and_priority_are_configurable(tmp_path: Path) -> None:
+def test_search_excludes_are_configurable(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "vendor").mkdir()
-    (tmp_path / "custom_low").mkdir()
     (tmp_path / "src" / "app.py").write_text("def Target():\n    pass\n", encoding="utf-8")
     (tmp_path / "vendor" / "lib.py").write_text("def Target():\n    pass\n", encoding="utf-8")
-    (tmp_path / "custom_low" / "lib.py").write_text("def Target():\n    pass\n", encoding="utf-8")
 
     excluded = FileTools(tmp_path, search_exclude_globs=["vendor/**"]).search({"query": "Target"})
     assert excluded.ok
     assert "vendor/lib.py" not in excluded.content
     assert excluded.metadata["cmd"][:4] == ["rg", "--json", "--glob", "!vendor/**"]
 
-    ranked = FileTools(tmp_path, search_low_priority_dirs=["custom_low"]).search({"query": "Target"})
-    assert ranked.ok
-    assert "custom_low/lib.py\n  why: definition, low-priority" in ranked.content
-    assert "vendor/lib.py\n  why: definition, source" in ranked.content
+def test_search_reports_omitted_matches_and_files(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("hit one\nhit two\nhit three\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("hit four\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).search({"query": "hit", "max_files": 1, "max_matches_per_file": 2})
+
+    assert result.ok
+    assert "matches: 2 shown, 2 omitted" in result.content
+    assert "a.txt\n  1: hit one\n  2: hit two\n  ... 1 more match(es)" in result.content
+    assert "note: 1 more file(s) omitted" in result.content
 
 def test_search_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
     def timeout(*args, **kwargs):
@@ -140,6 +160,52 @@ def test_search_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -
     assert not result.ok
     assert result.content == "ripgrep timed out after 1s"
     assert result.metadata["timeout"] == 1
+
+def test_search_treats_ripgrep_rc2_as_partial_success_with_matches(tmp_path: Path, monkeypatch) -> None:
+    def partial(*args, **kwargs):
+        stdout = "\n".join([
+            _rg_match("docs/refunds.md", 4, "Refund request is pending."),
+            "rg: ./restricted: Permission denied",
+        ])
+        return subprocess.CompletedProcess(args[0], 2, stdout=stdout)
+
+    monkeypatch.setattr("subprocess.run", partial)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "refunds.md").write_text("Refund request is pending.\n", encoding="utf-8")
+    result = FileTools(tmp_path).search({"query": "Refund"})
+
+    assert result.ok
+    assert "docs/refunds.md" in result.content
+    assert result.metadata["returncode"] == 2
+    assert result.metadata["warning"] == "ripgrep returned 2; showing parsed partial matches"
+    assert "Permission denied" in result.metadata["warning_excerpt"]
+
+def test_search_sorts_ripgrep_matches_by_line_number(tmp_path: Path, monkeypatch) -> None:
+    def out_of_order(*args, **kwargs):
+        stdout = "\n".join([
+            _rg_match("notes.txt", 5, "hit five"),
+            _rg_match("notes.txt", 2, "hit two"),
+            _rg_match("notes.txt", 8, "hit eight"),
+        ])
+        return subprocess.CompletedProcess(args[0], 0, stdout=stdout)
+
+    monkeypatch.setattr("subprocess.run", out_of_order)
+    (tmp_path / "notes.txt").write_text("hit\n", encoding="utf-8")
+    result = FileTools(tmp_path).search({"query": "hit"})
+
+    assert result.ok
+    assert result.content.index("  2: hit two") < result.content.index("  5: hit five")
+    assert result.content.index("  5: hit five") < result.content.index("  8: hit eight")
+
+def test_search_keeps_ripgrep_rc2_fatal_without_matches(tmp_path: Path, monkeypatch) -> None:
+    def failed(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 2, stdout="rg: regex parse error")
+
+    monkeypatch.setattr("subprocess.run", failed)
+    result = FileTools(tmp_path).search({"query": "["})
+
+    assert not result.ok
+    assert "ripgrep failed (rc=2)" in result.content
 
 def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
     rows = [
@@ -160,8 +226,9 @@ def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
     })
     assert result.ok, result.content
     assert "rows_matched: 2" in result.content
-    assert 'events.jsonl:1: {"user.name": "alice", "msg": "logi…"}' in result.content
-    assert 'events.jsonl:3: {"user.name": "carol", "msg": "logi…"}' in result.content
+    assert "events.jsonl" in result.content
+    assert '  1: {"user.name": "alice", "msg": "logi…"}' in result.content
+    assert '  3: {"user.name": "carol", "msg": "logi…"}' in result.content
     assert "bob" not in result.content
 
 def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
@@ -178,7 +245,7 @@ def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
     })
     assert result.ok
     assert "rows_matched: 1" in result.content
-    assert 'events.jsonl:3: {"id": 3}' in result.content
+    assert '  3: {"id": 3}' in result.content
 
 def test_jsonl_search_reports_ripgrep_errors(tmp_path: Path) -> None:
     result = FileTools(tmp_path).jsonl_search({"query": "[", "path_glob": "*.jsonl"})
@@ -196,10 +263,10 @@ def test_jsonl_search_limits_display_without_losing_counts(tmp_path: Path) -> No
 
     assert result.ok
     assert "rows_matched: 4" in result.content
-    assert 'events.jsonl:1: {"id": 1, "msg": "hit"}' in result.content
-    assert 'events.jsonl:2: {"id": 2, "msg": "hit"}' in result.content
-    assert "events.jsonl:3" not in result.content
-    assert "... 2 more row(s) in events.jsonl" in result.content
+    assert '  1: {"id": 1, "msg": "hit"}' in result.content
+    assert '  2: {"id": 2, "msg": "hit"}' in result.content
+    assert "  3:" not in result.content
+    assert "... 2 more row(s)" in result.content
 
 def test_jsonl_search_timeout_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
     def timeout(*args, **kwargs):
@@ -211,3 +278,142 @@ def test_jsonl_search_timeout_returns_structured_result(tmp_path: Path, monkeypa
     assert not result.ok
     assert result.content == "ripgrep timed out after 1s"
     assert result.metadata["timeout"] == 1
+
+def test_jsonl_search_preserves_partial_ripgrep_warning_metadata(tmp_path: Path, monkeypatch) -> None:
+    def partial(*args, **kwargs):
+        stdout = "\n".join([
+            _rg_match("events.jsonl", 1, '{"id":1,"msg":"login ok","secret":"hidden"}'),
+            "rg: ./restricted: Permission denied",
+        ])
+        return subprocess.CompletedProcess(args[0], 2, stdout=stdout)
+
+    monkeypatch.setattr("subprocess.run", partial)
+    (tmp_path / "events.jsonl").write_text('{"id":1,"msg":"login ok","secret":"hidden"}\n', encoding="utf-8")
+    result = FileTools(tmp_path).jsonl_search({"query": "login", "path_glob": "*.jsonl", "fields": {"id": 0}})
+
+    assert result.ok
+    assert '  1: {"id": 1}' in result.content
+    assert "secret" not in result.content
+    assert result.metadata["returncode"] == 2
+    assert result.metadata["warning"] == "ripgrep returned 2; showing parsed partial matches"
+    assert "secret" not in json.dumps(result.metadata)
+
+def test_spill_output_uses_thinharness_directory_and_read_guidance(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("\n".join(f"hit {i}" for i in range(100)), encoding="utf-8")
+    tools = FileTools(tmp_path, max_tool_chars=120)
+
+    result = tools.search({"query": "hit"})
+
+    assert result.ok
+    assert result.metadata["truncated"] is True
+    assert result.metadata["saved_to_display"].startswith(".thinharness/outputs/search-")
+    assert Path(result.metadata["saved_to"]).exists()
+    assert "Read the saved output with read(path=\".thinharness/outputs/search-" in result.content
+    assert "offset=1, limit=400" in result.content
+
+def test_spilled_output_can_be_read_with_restricted_read_paths(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.txt").write_text("\n".join(f"hit {i}" for i in range(100)), encoding="utf-8")
+    tools = FileTools(tmp_path, read_paths=["docs"], max_tool_chars=120)
+
+    result = tools.search({"query": "hit"})
+    read = tools.read({"path": result.metadata["saved_to_display"], "offset": 1, "limit": 8})
+
+    assert read.ok
+    assert "notes.txt" in read.content
+
+def test_spilled_output_can_be_read_from_custom_output_dir_with_restricted_read_paths(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.txt").write_text("\n".join(f"hit {i}" for i in range(100)), encoding="utf-8")
+    tools = FileTools(tmp_path, output_dir="artifacts/tool-output", read_paths=["docs"], max_tool_chars=120)
+
+    result = tools.search({"query": "hit"})
+    read = tools.read({"path": result.metadata["saved_to_display"], "offset": 1, "limit": 8})
+
+    assert result.metadata["saved_to_display"].startswith("artifacts/tool-output/search-")
+    assert read.ok
+    assert "notes.txt" in read.content
+
+def test_output_dir_must_stay_under_workspace_root(tmp_path: Path) -> None:
+    with pytest.raises(PathValidationError):
+        FileTools(tmp_path, output_dir="../outside")
+
+def test_restricted_read_paths_do_not_allow_arbitrary_output_dir_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / ".thinharness" / "outputs"
+    output_dir.mkdir(parents=True)
+    (output_dir / "manual.txt").write_text("not generated\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    tools = FileTools(tmp_path, read_paths=["docs"])
+
+    result = tools.read({"path": ".thinharness/outputs/manual.txt"})
+
+    assert not result.ok
+    assert result.metadata["error_type"] == "PathValidationError"
+
+def test_spill_read_access_rejects_root_and_symlink_escapes(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    try:
+        output_dir = tmp_path / ".thinharness" / "outputs"
+        output_dir.mkdir(parents=True)
+        (output_dir / "escape.txt").symlink_to(outside)
+        tools = FileTools(tmp_path, read_paths=["docs"])
+
+        root_escape = tools.read({"path": "../outside.txt"})
+        symlink_escape = tools.read({"path": ".thinharness/outputs/escape.txt"})
+
+        assert not root_escape.ok
+        assert root_escape.metadata["error_type"] == "PathValidationError"
+        assert not symlink_escape.ok
+        assert symlink_escape.metadata["error_type"] == "PathValidationError"
+    finally:
+        outside.unlink(missing_ok=True)
+
+def test_missing_search_roots_return_successful_no_match_metadata(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path, read_paths=["missing"])
+
+    search = tools.search({"query": "hit"})
+    jsonl = tools.jsonl_search({"query": "hit"})
+
+    assert search.ok
+    assert search.metadata["returncode"] == 1
+    assert jsonl.ok
+    assert jsonl.metadata["returncode"] == 1
+
+def test_raised_search_display_defaults() -> None:
+    assert SearchArgs(query="hit").max_files == 50
+    assert SearchArgs(query="hit").max_matches_per_file == 10
+    assert JsonlSearchArgs().max_files == 100
+    assert JsonlSearchArgs().max_matches_per_file == 25
+
+def test_raised_search_display_defaults_show_more_than_old_limits(tmp_path: Path) -> None:
+    for index in range(11):
+        (tmp_path / f"doc_{index:02}.txt").write_text("hit\n", encoding="utf-8")
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join(json.dumps({"id": index, "msg": "hit"}) for index in range(4)) + "\n",
+        encoding="utf-8",
+    )
+    tools = FileTools(tmp_path)
+
+    search = tools.search({"query": "hit", "path_glob": "*.txt"})
+    jsonl = tools.jsonl_search({"path_glob": "*.jsonl"})
+
+    assert "files: 11 total, 11 shown" in search.content
+    assert "matches: 11 shown, 0 omitted" in search.content
+    assert "rows_matched: 4" in jsonl.content
+    assert '  4: {"id": 3, "msg": "hit"}' in jsonl.content
+
+def test_gitignore_ignores_thinharness_outputs() -> None:
+    ignore = Path(".gitignore").read_text(encoding="utf-8")
+
+    assert ".thinharness/" in ignore
+
+def _rg_match(path: str, line_number: int, line_text: str) -> str:
+    return json.dumps({
+        "type": "match",
+        "data": {
+            "path": {"text": path},
+            "line_number": line_number,
+            "lines": {"text": f"{line_text}\n"},
+        },
+    })

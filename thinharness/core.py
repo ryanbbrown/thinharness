@@ -41,7 +41,6 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools.base import Json, ToolSpec
-from .tools.filesystem import DEFAULT_SEARCH_LOW_PRIORITY_DIRS, DEFAULT_SEARCH_TEST_DIRS
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
@@ -190,8 +189,6 @@ class HarnessConfig(BaseModel):
     max_search_line_chars: int = 180
     rg_timeout: int = 30
     search_exclude_globs: list[str] = Field(default_factory=list)
-    search_low_priority_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_LOW_PRIORITY_DIRS))
-    search_test_dirs: list[str] = Field(default_factory=lambda: list(DEFAULT_SEARCH_TEST_DIRS))
     read_paths: list[str | Path] | None = None
     write_paths: list[str | Path] | None = None
     temperature: float | None = None
@@ -293,8 +290,6 @@ class Harness:
             max_search_line_chars=self.config.max_search_line_chars,
             rg_timeout=self.config.rg_timeout,
             search_exclude_globs=self.config.search_exclude_globs,
-            search_low_priority_dirs=self.config.search_low_priority_dirs,
-            search_test_dirs=self.config.search_test_dirs,
             read_paths=self.config.read_paths,
             write_paths=self.config.write_paths,
         )

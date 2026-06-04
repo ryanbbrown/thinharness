@@ -2,11 +2,9 @@
 
 ThinHarness is a small, provider-agnostic agent loop for SDK use. The core idea is intentionally narrow: normalize provider turns, expose a small set of explicit tools, run model-requested tools, feed tool outputs back to the provider, and stop when the model produces a final answer or a configured limit is reached.
 
-The repository contains large vendored reference trees under `vendor/`. Those are useful for comparison, LOC measurement, and borrowed ideas such as the pgr-style search ranking, but the ThinHarness runtime is the `thinharness/` package.
-
 ## Repository Tree
 
-This tree expands project-owned files and collapses generated, cache, and vendored content.
+This tree expands project-owned files and collapses generated and cache content.
 
 ```text
 .
@@ -69,19 +67,6 @@ This tree expands project-owned files and collapses generated, cache, and vendor
 |       |-- mcp.py                   # Optional MCP server connection and tool conversion support.
 |       |-- parallel_llm.py          # Opt-in parallel one-shot model completion tool.
 |       `-- skills.py                # Explicit skill discovery plus skill_read and skill_run.
-|-- vendor/
-|   |-- pgr/                         # Search-ranking reference implementation.
-|   |-- claude-agent-sdk/            # Comparison/reference submodule.
-|   |-- deepagents/                  # Comparison/reference submodule.
-|   |-- openai-agents/               # Comparison/reference submodule.
-|   |-- pydantic-ai/                 # Comparison/reference submodule.
-|   |-- smolagents/                  # Comparison/reference submodule.
-|   |-- adk-python/                  # Comparison/reference submodule.
-|   |-- agno/                        # Comparison/reference submodule.
-|   |-- strands/                     # Comparison/reference submodule.
-|   |-- agent-framework/             # Comparison/reference submodule.
-|   `-- other small harness references
-|-- .gitmodules                      # Vendor submodule definitions.
 |-- .gitignore                       # Ignore rules for local generated artifacts.
 |-- LICENSE                          # MIT license.
 |-- pyproject.toml                   # Package metadata, dependencies, pytest, coverage, ruff, and pyright config.
@@ -170,7 +155,7 @@ Because ThinHarness is a small SDK, this explicit `__all__` list doubles as an A
 
 `core.py` is the center of the package.
 
-`HarnessConfig` is a Pydantic model for serializable setup knobs: provider reference, root path, tool selection, filesystem limits, search ranking options, model request settings, tracing config, subagent definitions, structured-output settings, retry budgets, parallel LLM batch limits, and MCP servers.
+`HarnessConfig` is a Pydantic model for serializable setup knobs: provider reference, root path, tool selection, filesystem limits, search filters and limits, model request settings, tracing config, subagent definitions, structured-output settings, retry budgets, parallel LLM batch limits, and MCP servers.
 
 `HarnessResult` is the final return object. It carries:
 
@@ -460,7 +445,6 @@ Schema helpers turn Pydantic models into provider-ready JSON schemas by inlining
 - `output_dir` for large truncated outputs
 - read and write `PathPolicy` instances
 - read, search, and tool-output size limits
-- search ranking bucket configuration
 - an embedded `JsonlSearch` instance
 
 The tool specs are:
@@ -468,14 +452,14 @@ The tool specs are:
 - `read`: reads a UTF-8 file with line numbers, offset, limit, and max char caps.
 - `write`: creates, overwrites, or appends a UTF-8 file. Sequential.
 - `edit`: exact string replacement with uniqueness and expected-replacement checks. Sequential.
-- `search`: runs `rg --json`, groups matches by file, ranks likely definitions and source files first, and formats next-step-oriented output.
+- `search`: runs `rg --json`, groups readable matches by file, and formats compact path/line output.
 - `list`: lists files or directories under a readable path.
 - `glob`: returns newest matching files or directories under a readable path.
 - `jsonl_search`: delegates to `tools/jsonl.py`.
 
-The search behavior is a core product choice. It does not dump raw ripgrep output. It ranks and explains matches so a model can decide what to read next. Definition-looking lines rank before references; source paths rank before tests; configured low-priority directories such as `vendor` and `node_modules` rank lower.
+The search behavior is a core product choice. It does not dump raw ripgrep output. It returns deterministic grouped results sorted by path and line number so a model can inspect document-like corpora without code-ranking noise.
 
-Large output truncation writes the full text to `.fsharness/outputs/` and returns a head/tail preview with metadata pointing to the saved artifact.
+Large output truncation writes the full text to `.thinharness/outputs/` and returns a head/tail preview with metadata and read guidance pointing to the saved artifact.
 
 ### `thinharness/tools/jsonl.py`
 
@@ -608,8 +592,6 @@ It also installs `ripgrep`, which is required by `search` and query-prefiltered 
 `docs/decisions.md` is the highest-signal design record. When behavior in code looks stricter or simpler than a larger framework would choose, this file usually explains why.
 
 `.context/*.md` files are implementation planning and feedback notes. They are useful historical context, but not runtime source.
-
-`vendor/*` submodules are reference material and comparison inputs. They should not be read as code that ThinHarness imports at runtime.
 
 ## Reading Path
 
