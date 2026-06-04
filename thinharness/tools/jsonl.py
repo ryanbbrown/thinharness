@@ -14,15 +14,20 @@ from pydantic import Field
 
 from .base import (
     Json,
+    PathPolicy,
     PathValidationError,
     StrictArgs,
     ToolResult,
     ToolSpec,
     _path_error,
-    _rg_error_message,
-    _rg_partial_warning_metadata,
     _timeout_error_message,
     coerce_args,
+)
+from .search_support import (
+    _rg_error_message,
+    _rg_partial_warning_metadata,
+    parse_contained_rg_json,
+    search_root_display_paths,
     validate_glob_selector,
 )
 
@@ -67,21 +72,17 @@ class JsonlSearch:
     def __init__(
         self,
         root: Path,
+        read_policy: PathPolicy,
         *,
         max_tool_chars: int,
         rg_timeout: int,
         truncate: Callable[..., ToolResult],
-        parse_rg_json: Callable[[str], list[Any]],
-        path_allowed: Callable[[Path], bool],
-        search_roots: Callable[[], list[str]],
     ) -> None:
         self.root = root
+        self.read_policy = read_policy
         self.max_tool_chars = max_tool_chars
         self.rg_timeout = rg_timeout
         self._truncate = truncate
-        self._parse_rg_json = parse_rg_json
-        self._path_allowed = path_allowed
-        self._search_roots = search_roots
 
     def spec(self) -> ToolSpec:
         """Return the jsonl_search tool spec."""
@@ -178,7 +179,7 @@ class JsonlSearch:
     def _candidates(self, query: str, path_glob: str, timeout: int) -> _CandidateScan:
         """Collect (path, line_number, line_text) tuples for jsonl_search."""
         if query:
-            search_roots = self._search_roots()
+            search_roots = search_root_display_paths(self.root, self.read_policy)
             command = ["rg", "--json", "--glob", path_glob, "--", query, *search_roots]
             if not search_roots:
                 return _CandidateScan(iter(()), {"returncode": 1, "cmd": command})
@@ -194,7 +195,7 @@ class JsonlSearch:
                 )
             except subprocess.TimeoutExpired:
                 return _CandidateScan(iter(()), {}, ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command}))
-            files = self._parse_rg_json(proc.stdout or "")
+            files = parse_contained_rg_json(proc.stdout or "", self.root, self.read_policy)
             if proc.returncode not in (0, 1) and not files:
                 return _CandidateScan(
                     iter(()),
@@ -215,7 +216,7 @@ class JsonlSearch:
         """Yield JSONL candidate rows without accumulating them."""
         for path in sorted(self.root.glob(path_glob), key=lambda item: str(item)):
             resolved = path.resolve()
-            if not self._path_allowed(resolved) or not path.is_file():
+            if not self.read_policy.allows(resolved) or not path.is_file():
                 continue
             rel = str(resolved.relative_to(self.root))
             with resolved.open("r", encoding="utf-8", errors="replace") as handle:

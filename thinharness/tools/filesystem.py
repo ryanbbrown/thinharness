@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import heapq
 import itertools
-import json
 import subprocess
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,29 +22,19 @@ from .base import (
     ToolSpec,
     _is_relative_to,
     _path_error,
-    _rg_error_message,
-    _rg_partial_warning_metadata,
     _timeout_error_message,
     coerce_args,
     contained_path,
+)
+from .search_support import (
+    SearchFile,
+    _rg_error_message,
+    _rg_partial_warning_metadata,
+    parse_contained_rg_json,
+    search_root_display_paths,
     validate_glob_selector,
 )
 
-
-@dataclass
-class SearchMatch:
-    """A single match extracted from rg --json output."""
-
-    line_number: int
-    line_text: str
-
-
-@dataclass
-class SearchFile:
-    """Aggregated search matches for one file."""
-
-    path: str
-    matches: list[SearchMatch]
 
 class ReadArgs(StrictArgs):
     """Arguments for read."""
@@ -140,12 +128,10 @@ class FileTools:
             validate_glob_selector(exclude_glob, field="search_exclude_globs", allow_negation=True)
         self.jsonl = JsonlSearch(
             self.root,
+            self.read_policy,
             max_tool_chars=self.max_tool_chars,
             rg_timeout=self.rg_timeout,
             truncate=self._truncate,
-            parse_rg_json=self._parse_contained_rg_json,
-            path_allowed=self.read_policy.allows,
-            search_roots=lambda: [self._display(path) for path in self.read_policy.existing_search_roots()],
         )
 
     # -------------------------------------------------------------------------
@@ -284,7 +270,7 @@ class FileTools:
             command.extend(["--", query])
             return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": 1, "cmd": command, "matches": 0})
         command.extend(["--", query])
-        command.extend(self._display(path) for path in search_roots)
+        command.extend(search_root_display_paths(self.root, self.read_policy))
         timeout = args.timeout or self.rg_timeout
         try:
             proc = subprocess.run(
@@ -298,7 +284,7 @@ class FileTools:
             )
         except subprocess.TimeoutExpired:
             return ToolResult(False, _timeout_error_message("ripgrep", timeout), {"timeout": timeout, "cmd": command})
-        files = self._parse_contained_rg_json(proc.stdout or "")
+        files = parse_contained_rg_json(proc.stdout or "", self.root, self.read_policy)
         warning_metadata: Json = {}
         if proc.returncode not in (0, 1):
             if not files:
@@ -386,42 +372,6 @@ class FileTools:
             f"  scope: {scope}\n"
             "  hint: broaden the query, remove path_glob/file_type filters, or try simpler terms."
         )
-
-    @staticmethod
-    def _parse_rg_json(stdout: str) -> list[SearchFile]:
-        """Parse rg --json match output into files with matches."""
-        file_map: dict[str, list[SearchMatch]] = {}
-        file_order: list[str] = []
-        for line in stdout.splitlines():
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if item.get("type") != "match":
-                continue
-            data = item.get("data") or {}
-            raw_path = ((data.get("path") or {}).get("text") or "").strip()
-            line_number = data.get("line_number")
-            line_text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
-            if not raw_path or not isinstance(line_number, int) or not line_text:
-                continue
-            path = raw_path.removeprefix("./")
-            if path not in file_map:
-                file_order.append(path)
-            file_map.setdefault(path, []).append(SearchMatch(line_number, line_text))
-        return [SearchFile(path, file_map[path]) for path in file_order]
-
-    def _parse_contained_rg_json(self, stdout: str) -> list[SearchFile]:
-        """Parse rg output and drop matches outside the readable policy."""
-        return [file for file in self._parse_rg_json(stdout) if self._search_file_allowed(file.path)]
-
-    def _search_file_allowed(self, path: str) -> bool:
-        """Return whether a search result path is readable."""
-        try:
-            resolved = contained_path(self.root, path)
-        except PathValidationError:
-            return False
-        return self.read_policy.allows(resolved)
 
     def _format_search_output(
         self,
