@@ -13,7 +13,7 @@ the command beside each row. To reproduce locally, clone each upstream repo at
 the pinned commit and run the command shown below.
 
 Measured 2026-05-16 for upstream libraries. ThinHarness was remeasured from the
-current working tree on 2026-05-18.
+current working tree on 2026-06-07.
 
 ## LOC Commands
 

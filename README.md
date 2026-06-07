@@ -22,7 +22,7 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **5,382 lines of Python** across 15 files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **5,528 LOC** across 18 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -51,10 +51,10 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-05-20 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-07 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>5,382</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>5,528</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -253,7 +253,7 @@ async def main():
 asyncio.run(main())
 ```
 
-There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 15 files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
+There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 18 Python files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
 
 ## Features
 
