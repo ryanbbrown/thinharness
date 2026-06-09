@@ -57,7 +57,7 @@ async def _run_provider(provider: str, model: str) -> None:
         ).spec()
 
         output = await _invoke_tool(spec, {
-            "prompts_file": "prompts.json",
+            "source": {"kind": "file", "path": "prompts.json"},
             "system": "Follow each prompt exactly. Do not add punctuation or explanation.",
             "output_file": "outputs/results.json",
             "max_concurrency": 2,

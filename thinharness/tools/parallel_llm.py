@@ -8,10 +8,11 @@ import os
 import random
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
+from ..defaults import DEFAULT_PARALLEL_LLM_DESCRIPTION, DEFAULT_PARALLEL_LLM_INSTRUCTIONS
 from ..output import (
     OUTPUT_MODES,
     OutputMode,
@@ -31,22 +32,30 @@ if TYPE_CHECKING:
 
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
-PROMPTS_FILE_ERROR = "prompts_file must be a non-empty JSON array of strings"
-DEFAULT_PARALLEL_LLM_DESCRIPTION = (
-    "Run N independent prompts as one-shot LLM completions in parallel. Each call is stateless: no tools, no memory, no continuation "
-    "- only the model's text response is returned. Use this when you have a batch of independent prompts (classify, summarize, translate). "
-    "Pass exactly one prompt source: either prompts or prompts_file. Do not include the unused prompt source field. For multi-step work, use the "
-    "subagent tool instead. For large batches, pass output_file and read it back rather than receiving full results inline. If you need the parent "
-    "harness system prompt, include the relevant instructions in system; it is not inherited automatically. The tool's model is host-configured "
-    "and cannot be changed by tool arguments."
-)
+PROMPTS_FILE_ERROR = "source.path must point to a non-empty JSON array of strings"
+
+
+class InlinePromptSource(StrictArgs):
+    """Inline prompts for parallel one-shot LLM completions."""
+
+    kind: Literal["inline"]
+    prompts: list[str] = Field(description="Inline prompt batch.")
+
+
+class FilePromptSource(StrictArgs):
+    """Prompt file source for parallel one-shot LLM completions."""
+
+    kind: Literal["file"]
+    path: str = Field(description="Path to a JSON array of strings.")
+
+
+PromptSource = Annotated[InlinePromptSource | FilePromptSource, Field(discriminator="kind")]
 
 
 class ParallelLlmArgs(StrictArgs):
     """Arguments for parallel one-shot LLM completions."""
 
-    prompts: list[str] | None = Field(default=None, description="Inline prompt batch. Use this or prompts_file, never both.")
-    prompts_file: str | None = Field(default=None, description="Path to a JSON array of strings. Use this or prompts, never both.")
+    source: PromptSource = Field(description="Prompt source. Use kind='inline' for inline prompts or kind='file' for a prompt file.")
     system: str | None = Field(default=None, description="Shared instructions for every prompt. The parent harness system prompt is not inherited.")
     output_file: str | None = Field(default=None, description="Optional workspace path for full JSON results. Inline content returns only a summary.")
     max_concurrency: int = Field(default=8, ge=1, le=32, description="Maximum in-flight prompt completions.")
@@ -58,17 +67,10 @@ class ParallelLlmArgs(StrictArgs):
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        for field in ("prompts_file", "system", "output_file"):
+        for field in ("system", "output_file"):
             if normalized.get(field) == "":
                 normalized[field] = None
         return normalized
-
-    @model_validator(mode="after")
-    def validate_prompt_source(self) -> ParallelLlmArgs:
-        """Require exactly one prompt source."""
-        if (self.prompts is None) == (self.prompts_file is None):
-            raise ValueError("exactly one of prompts or prompts_file must be set")
-        return self
 
 
 class ParallelLlmTool:
@@ -82,6 +84,7 @@ class ParallelLlmTool:
         root: str | Path = ".",
         name: str = "parallel_llm",
         description: str = DEFAULT_PARALLEL_LLM_DESCRIPTION,
+        instructions: str | None = None,
         read_paths: list[str | Path] | None = None,
         write_paths: list[str | Path] | None = None,
         max_prompts: int = 100,
@@ -97,6 +100,7 @@ class ParallelLlmTool:
     ) -> None:
         self.name = name
         self.description = description
+        self.instructions = instructions
         self.root = Path(root).expanduser().resolve()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
@@ -139,6 +143,7 @@ class ParallelLlmTool:
             ParallelLlmArgs,
             handler,
             metadata={"framework_tool": "parallel_llm"},
+            instructions=self.instructions,
         )
 
     async def run(self, args: ParallelLlmArgs) -> ToolResult:
@@ -276,6 +281,7 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         write_paths=parent.config.write_paths,
         max_prompts=parent.config.parallel_llm_max_prompts,
         max_attempts=parent.config.parallel_llm_max_attempts,
+        instructions=DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
         api_key=api_key,
         base_url=base_url,
         request_timeout=parent.config.request_timeout,
@@ -287,11 +293,10 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
 
 
 def _load_prompts(args: ParallelLlmArgs, read_policy: PathPolicy) -> list[str]:
-    """Load inline prompts or parse a prompts_file under the read policy."""
-    if args.prompts is not None:
-        return args.prompts
-    assert args.prompts_file is not None
-    path = read_policy.resolve(args.prompts_file)
+    """Load inline prompts or parse a prompt file under the read policy."""
+    if args.source.kind == "inline":
+        return args.source.prompts
+    path = read_policy.resolve(args.source.path)
     try:
         raw = path.read_text(encoding="utf-8")
         parsed = json.loads(raw)

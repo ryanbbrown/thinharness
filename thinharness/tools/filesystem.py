@@ -13,6 +13,14 @@ from typing import Any
 
 from pydantic import Field
 
+from ..defaults import (
+    DEFAULT_EDIT_DESCRIPTION,
+    DEFAULT_GLOB_DESCRIPTION,
+    DEFAULT_LIST_DESCRIPTION,
+    DEFAULT_READ_DESCRIPTION,
+    DEFAULT_SEARCH_DESCRIPTION,
+    DEFAULT_WRITE_DESCRIPTION,
+)
 from .base import (
     Json,
     PathPolicy,
@@ -141,12 +149,12 @@ class FileTools:
     def specs(self) -> list[ToolSpec]:
         """Return built-in filesystem tool specs."""
         return [
-            ToolSpec("read", "Read a UTF-8 text file with line numbers, offset, and limit.", ReadArgs, self.read),
-            ToolSpec("write", "Create, overwrite, or append to a UTF-8 text file under the workspace root.", WriteArgs, self.write, sequential=True),
-            ToolSpec("edit", "Replace exact text in a UTF-8 file. old_string must be unique unless all=true.", EditArgs, self.edit, sequential=True),
-            ToolSpec("search", "Search readable workspace files with ripgrep and return compact grouped path/line matches.", SearchArgs, self.search),
-            ToolSpec("list", "List a directory or glob files under the workspace root.", ListArgs, self.list_files),
-            ToolSpec("glob", "Find files by glob pattern under the workspace root.", GlobArgs, self.glob),
+            ToolSpec("read", DEFAULT_READ_DESCRIPTION, ReadArgs, self.read),
+            ToolSpec("write", DEFAULT_WRITE_DESCRIPTION, WriteArgs, self.write, sequential=True),
+            ToolSpec("edit", DEFAULT_EDIT_DESCRIPTION, EditArgs, self.edit, sequential=True),
+            ToolSpec("search", DEFAULT_SEARCH_DESCRIPTION, SearchArgs, self.search),
+            ToolSpec("list", DEFAULT_LIST_DESCRIPTION, ListArgs, self.list_files),
+            ToolSpec("glob", DEFAULT_GLOB_DESCRIPTION, GlobArgs, self.glob),
             self.jsonl.spec(),
         ]
 

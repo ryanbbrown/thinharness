@@ -621,8 +621,20 @@ class Harness:
 
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
-        skill_summary = self.skills.prompt_summary() if self._skills_enabled else "No skills are configured."
-        return f"{self.config.system_prompt}\n\nWorkspace root: {self.root}\n\n{skill_summary}"
+        parts = [self.config.system_prompt, f"Workspace root: {self.root}"]
+        if self._skills_enabled:
+            skill_summary = self.skills.prompt_summary()
+            if skill_summary:
+                parts.append(skill_summary)
+        tool_instructions = []
+        for tool in self.tools:
+            if tool.instructions is None:
+                continue
+            instructions = tool.instructions.strip()
+            if instructions:
+                tool_instructions.append(instructions)
+        parts.extend(tool_instructions)
+        return "\n\n".join(parts)
 
     def _tool_max_retries(self, name: str) -> int:
         """Return the retry budget for one tool name."""

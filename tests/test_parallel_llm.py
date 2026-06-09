@@ -12,6 +12,7 @@ from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall
 from thinharness.providers import ModelSettings, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
 from thinharness.tools.parallel_llm import (
+    DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
     PROMPTS_FILE_ERROR,
     ParallelLlmArgs,
     ParallelLlmTool,
@@ -38,6 +39,16 @@ class ExtractedPerson(BaseModel):
 
     name: str
     age: int
+
+
+def _inline(prompts: list[str]) -> dict[str, Any]:
+    """Build inline-source parallel_llm args."""
+    return {"source": {"kind": "inline", "prompts": prompts}}
+
+
+def _file(path: str) -> dict[str, Any]:
+    """Build file-source parallel_llm args."""
+    return {"source": {"kind": "file", "path": path}}
 
 
 class BatchModel:
@@ -123,7 +134,7 @@ class MainSession:
                 ModelToolCall(
                     id="call_1",
                     name="parallel_llm",
-                    arguments=json.dumps({"prompts": ["a", "b"], "max_concurrency": 2}),
+                    arguments=json.dumps({**_inline(["a", "b"]), "max_concurrency": 2}),
                 )
             ],
         )
@@ -175,7 +186,7 @@ async def test_parallel_llm_inline_prompts_return_compact_ordered_payload(tmp_pa
     model = BatchModel(outcomes=["second", "first"], delay=0.01)
     parent = _parent(tmp_path, model)
 
-    result = await _call_parallel(parent, {"prompts": ["p0", "p1"], "system": "shared", "max_concurrency": 2})
+    result = await _call_parallel(parent, {**_inline(["p0", "p1"]), "system": "shared", "max_concurrency": 2})
 
     assert result["ok"] is True
     assert "\n" not in result["content"]
@@ -193,12 +204,12 @@ async def test_parallel_llm_inline_prompts_return_compact_ordered_payload(tmp_pa
     assert [call["instructions"] for call in model.calls] == ["shared", "shared"]
 
 
-async def test_parallel_llm_prompts_file_and_output_file(tmp_path: Path) -> None:
+async def test_parallel_llm_file_source_and_output_file(tmp_path: Path) -> None:
     (tmp_path / "prompts.json").write_text(json.dumps(["a", "b"]), encoding="utf-8")
     model = BatchModel(outcomes=["ok", ProviderError("provider error 401: nope", status_code=401)])
     parent = _parent(tmp_path, model)
 
-    result = await _call_parallel(parent, {"prompts_file": "prompts.json", "output_file": "nested/results.json"})
+    result = await _call_parallel(parent, {**_file("prompts.json"), "output_file": "nested/results.json"})
 
     assert result["payload"] == {
         "total": 2,
@@ -222,14 +233,14 @@ async def test_parallel_llm_prompts_file_and_output_file(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("content", "args"),
     [
-        ("", {"prompts_file": "prompts.json"}),
-        ("   ", {"prompts_file": "prompts.json"}),
-        ('{"prompt":"x"}', {"prompts_file": "prompts.json"}),
-        ('["x", 1]', {"prompts_file": "prompts.json"}),
-        ("[]", {"prompts_file": "prompts.json"}),
+        ("", _file("prompts.json")),
+        ("   ", _file("prompts.json")),
+        ('{"prompt":"x"}', _file("prompts.json")),
+        ('["x", 1]', _file("prompts.json")),
+        ("[]", _file("prompts.json")),
     ],
 )
-async def test_parallel_llm_rejects_bad_prompts_files(tmp_path: Path, content: str, args: dict[str, Any]) -> None:
+async def test_parallel_llm_rejects_bad_prompt_files(tmp_path: Path, content: str, args: dict[str, Any]) -> None:
     (tmp_path / "prompts.json").write_text(content, encoding="utf-8")
     parent = _parent(tmp_path)
 
@@ -240,20 +251,20 @@ async def test_parallel_llm_rejects_bad_prompts_files(tmp_path: Path, content: s
 
 
 @pytest.mark.parametrize("args", [{}, {"prompts": ["x"], "prompts_file": "prompts.json"}])
-def test_parallel_llm_requires_exactly_one_prompt_source(args: dict[str, Any]) -> None:
-    with pytest.raises(ValidationError, match="exactly one"):
+def test_parallel_llm_requires_structured_prompt_source(args: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
         ParallelLlmArgs.model_validate(args)
 
 
-def test_parallel_llm_args_normalize_blank_optional_paths_and_reject_model_override() -> None:
-    args = ParallelLlmArgs.model_validate({"prompts": ["x"], "prompts_file": "", "output_file": "", "system": ""})
+def test_parallel_llm_args_normalize_blank_optional_fields_and_reject_model_override() -> None:
+    args = ParallelLlmArgs.model_validate({**_inline(["x"]), "output_file": "", "system": ""})
 
-    assert args.prompts == ["x"]
-    assert args.prompts_file is None
+    assert args.source.kind == "inline"
+    assert args.source.prompts == ["x"]
     assert args.output_file is None
     assert args.system is None
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        ParallelLlmArgs.model_validate({"prompts": ["x"], "model": "openai:gpt-5-mini"})
+        ParallelLlmArgs.model_validate({**_inline(["x"]), "model": "openai:gpt-5-mini"})
 
 
 async def test_parallel_llm_enforces_path_policies_and_prompt_cap(tmp_path: Path) -> None:
@@ -269,9 +280,9 @@ async def test_parallel_llm_enforces_path_policies_and_prompt_cap(tmp_path: Path
         parallel_llm_max_prompts=1,
     )
 
-    read_result = await _call_parallel(parent, {"prompts_file": "prompts.json"})
-    write_result = await _call_parallel(parent, {"prompts": ["x"], "output_file": "outside.json"})
-    cap_result = await _call_parallel(parent, {"prompts": ["x", "y"]})
+    read_result = await _call_parallel(parent, _file("prompts.json"))
+    write_result = await _call_parallel(parent, {**_inline(["x"]), "output_file": "outside.json"})
+    cap_result = await _call_parallel(parent, _inline(["x", "y"]))
 
     assert read_result["content"] == "path is outside allowed read paths: prompts.json"
     assert write_result["content"] == "path is outside allowed write paths: outside.json"
@@ -294,7 +305,7 @@ async def test_parallel_llm_retries_retryable_errors_and_counts_attempts(monkeyp
     ])
     parent = _parent(tmp_path, model, parallel_llm_max_attempts=3)
 
-    result = await _call_parallel(parent, {"prompts": ["x"]})
+    result = await _call_parallel(parent, _inline(["x"]))
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": "ok"}]
     assert result["payload"]["model_requests"] == 3
@@ -311,7 +322,7 @@ async def test_parallel_llm_fast_fails_non_retryable_errors(monkeypatch: pytest.
     model = BatchModel(outcomes=[ProviderError("provider error 401: auth", status_code=401)])
     parent = _parent(tmp_path, model, parallel_llm_max_attempts=3)
 
-    result = await _call_parallel(parent, {"prompts": ["x"]})
+    result = await _call_parallel(parent, _inline(["x"]))
 
     assert result["payload"]["results"] == [{"index": 0, "ok": False, "error": "provider error 401: auth"}]
     assert model.session_requests == 1
@@ -321,7 +332,7 @@ async def test_parallel_llm_concurrency_cap(tmp_path: Path) -> None:
     model = BatchModel(delay=0.02)
     parent = _parent(tmp_path, model)
 
-    await _call_parallel(parent, {"prompts": ["a", "b", "c", "d"], "max_concurrency": 2})
+    await _call_parallel(parent, {**_inline(["a", "b", "c", "d"]), "max_concurrency": 2})
 
     assert model.max_in_flight <= 2
 
@@ -330,7 +341,7 @@ async def test_parallel_llm_does_not_inherit_parent_system_prompt(tmp_path: Path
     model = BatchModel()
     parent = _parent(tmp_path, model, system_prompt="DISTINCTIVE_PARENT_MARKER")
 
-    await _call_parallel(parent, {"prompts": ["x"]})
+    await _call_parallel(parent, _inline(["x"]))
 
     assert model.calls[0]["instructions"] == ""
 
@@ -341,7 +352,7 @@ async def test_parallel_llm_text_only_stray_tool_call_is_sparse_failure(tmp_path
     ])
     parent = _parent(tmp_path, model)
 
-    result = await _call_parallel(parent, {"prompts": ["x"], "max_concurrency": 1})
+    result = await _call_parallel(parent, {**_inline(["x"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [
         {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
@@ -359,7 +370,7 @@ async def test_custom_parallel_llm_prompted_output_parses_json_results(tmp_path:
         output_mode="prompted",
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "system": "Return JSON.", "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "system": "Return JSON.", "max_concurrency": 1})
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
     assert "Return JSON." in model.calls[0]["instructions"]
@@ -376,7 +387,7 @@ async def test_custom_parallel_llm_invalid_structured_text_returns_failure(tmp_p
         output_retries=0,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["succeeded"] == 0
     assert result["payload"]["failed"] == 1
@@ -395,7 +406,7 @@ async def test_custom_parallel_llm_structured_retry_uses_fresh_session(tmp_path:
         output_retries=1,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract this"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract this"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
     assert result["payload"]["model_requests"] == 2
@@ -410,7 +421,7 @@ async def test_custom_parallel_llm_tool_mode_accepts_final_result(tmp_path: Path
     ])
     tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson, output_mode="tool")
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
     assert [tool_schema["name"] for tool_schema in model.calls[0]["tools"]] == ["final_result"]
@@ -426,7 +437,7 @@ async def test_custom_parallel_llm_tool_mode_rejects_text_without_tool_call(tmp_
         output_retries=0,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"][0]["ok"] is False
     assert "final_result" in result["payload"]["results"][0]["error"]
@@ -444,7 +455,7 @@ async def test_custom_parallel_llm_structured_continue_is_sparse_failure(tmp_pat
         output_retries=1,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [
         {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
@@ -464,7 +475,7 @@ async def test_custom_parallel_llm_tool_mode_stray_tool_call_is_sparse_failure(t
         output_retries=1,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [
         {"index": 0, "ok": False, "error": "parallel_llm does not execute nested tool calls"}
@@ -487,7 +498,7 @@ async def test_custom_parallel_llm_unexpected_final_result_pattern_is_sparse_fai
         output_retries=1,
     )
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [
         {"index": 0, "ok": False, "error": "final_result must be the only tool call in its turn"}
@@ -500,7 +511,7 @@ async def test_custom_parallel_llm_native_mode_sends_structured_output(tmp_path:
     model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson, output_mode="native")
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": {"name": "Ada", "age": 37}}]
     assert model.calls[0]["tools"] == []
@@ -512,7 +523,7 @@ async def test_custom_parallel_llm_auto_resolves_model_capabilities(tmp_path: Pa
     model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     tool = ParallelLlmTool(model=model, root=tmp_path, output_type=ExtractedPerson)
 
-    result = await _call_custom_tool(tool, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_custom_tool(tool, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"][0]["result"] == {"name": "Ada", "age": 37}
     assert model.calls[0]["structured_output"].name == "final_result"
@@ -534,7 +545,7 @@ async def test_custom_parallel_llm_text_mode_rejects_structured_output_type(tmp_
         output_mode="text",
     )
 
-    result = await _invoke_tool(tool.spec(), {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _invoke_tool(tool.spec(), {**_inline(["extract"]), "max_concurrency": 1})
     envelope = json.loads(result)
 
     assert envelope["ok"] is False
@@ -556,7 +567,7 @@ async def test_custom_parallel_llm_closes_owned_model_when_schema_resolution_fai
         output_mode="text",
     )
 
-    result = await _invoke_tool(tool.spec(), {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _invoke_tool(tool.spec(), {**_inline(["extract"]), "max_concurrency": 1})
     envelope = json.loads(result)
 
     assert envelope["ok"] is False
@@ -570,7 +581,7 @@ async def test_builtin_parallel_llm_stays_text_only_with_json_output(tmp_path: P
     parent = _parent(tmp_path, model)
     spec = create_parallel_llm_tool(parent)
 
-    result = await _call_parallel(parent, {"prompts": ["extract"], "max_concurrency": 1})
+    result = await _call_parallel(parent, {**_inline(["extract"]), "max_concurrency": 1})
 
     assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": '{"name":"Ada","age":37}'}]
     assert model.calls[0]["structured_output"] is None
@@ -590,7 +601,7 @@ async def test_parallel_llm_cancellation_propagates(tmp_path: Path) -> None:
             return ModelTurn(text="late")
 
     parent = _parent(tmp_path, BlockingModel())
-    task = asyncio.create_task(_call_parallel(parent, {"prompts": ["x"]}))
+    task = asyncio.create_task(_call_parallel(parent, _inline(["x"])))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -670,7 +681,7 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
         builtin_parallel_llm_temperature=0.2,
     )
 
-    result = await _call_parallel(parent, {"prompts": ["x"]})
+    result = await _call_parallel(parent, _inline(["x"]))
 
     assert result["payload"]["succeeded"] == 1
     assert captured["model_ref"] == "openai:gpt-cheap"
@@ -685,6 +696,7 @@ def test_parallel_llm_builtin_selection(tmp_path: Path) -> None:
 
     assert "parallel_llm" not in {tool.name for tool in default_harness.tools}
     assert "parallel_llm" in {tool.name for tool in selected_harness.tools}
+    assert next(tool for tool in selected_harness.tools if tool.name == "parallel_llm").instructions == DEFAULT_PARALLEL_LLM_INSTRUCTIONS
     with pytest.raises(ValueError, match="parallel_llm"):
         Harness(HarnessConfig(root=tmp_path / "bad", builtin_tools=["not_a_tool"]))
 

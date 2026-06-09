@@ -18,6 +18,7 @@
 - **Requested tool calls count against `max_tool_calls`.** A tool blocked by `before_tool_call` still consumed a model-requested call slot. Cancelled calls are tracked separately in `RunUsage.cancelled_tool_calls`.
 - **Skill scripts use extension-based runners.** `skill_run` keeps the simple `script` plus `args` interface, but treats Python and shell as first-class skill helper languages: `.py` runs through `uv run`, and `.sh`/`.bash` runs through `bash`, so CLI subcommands and flags work without executable bits. JavaScript and Go get basic file-runner support through `node` and `go run`, but richer package-manager flows such as npm scripts, Go module setup, or Python installed console commands are deferred until real skills need them.
 - **Parallel LLM model settings are host-owned.** The model-facing `parallel_llm` arguments cannot override model, temperature, or output schema. The built-in exposes `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` on `HarnessConfig`; custom `ParallelLlmTool` instances take model settings and optional structured-output settings at construction. Provider/model-specific temperature support is not registry-validated by ThinHarness; unsupported settings surface as provider errors.
+- **Parallel LLM prompt source is structurally discriminated.** `parallel_llm` uses one `source` object with `kind="inline"` plus `prompts` or `kind="file"` plus `path`, instead of optional sibling fields. This makes invalid mixed prompt sources structurally harder for models to produce.
 
 ## Parallel Tool Execution
 

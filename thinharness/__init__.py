@@ -41,7 +41,9 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
+    FilePromptSource,
     FileTools,
+    InlinePromptSource,
     MCPDependencyError,
     MCPError,
     MCPServer,
@@ -72,6 +74,8 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "FileTools",
+    "FilePromptSource",
+    "InlinePromptSource",
     "Harness",
     "HarnessConfig",
     "HarnessError",

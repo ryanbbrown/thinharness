@@ -28,6 +28,7 @@ class ToolSpec:
     sequential: bool = False
     metadata: Json = field(default_factory=dict)
     max_retries: int | None = None
+    instructions: str | None = None
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""

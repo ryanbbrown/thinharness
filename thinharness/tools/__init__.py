@@ -13,7 +13,7 @@ from .base import (
 from .filesystem import FileTools, builtin_tools
 from .jsonl import JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
 from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
-from .parallel_llm import ParallelLlmArgs, ParallelLlmTool, create_parallel_llm_tool
+from .parallel_llm import FilePromptSource, InlinePromptSource, ParallelLlmArgs, ParallelLlmTool, create_parallel_llm_tool
 from .skills import Skill, SkillRegistry
 
 __all__ = [
@@ -31,6 +31,8 @@ __all__ = [
     "ModelRetry",
     "PathPolicy",
     "PathValidationError",
+    "FilePromptSource",
+    "InlinePromptSource",
     "ParallelLlmArgs",
     "ParallelLlmTool",
     "Skill",

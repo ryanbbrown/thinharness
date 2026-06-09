@@ -18,13 +18,26 @@ SYSTEM_PROMPT = """You are a parallel LLM tool e2e agent. Use the requested tool
 PROMPT = """
 Complete this journey using tools, not memory:
 1. Call parallel_llm with these exact arguments:
-   {"prompts":["Reply with BUILTIN_ONE only.","Reply with BUILTIN_TWO only."],"system":"Reply with the requested token only.","max_concurrency":2}
+   {
+     "source": {
+       "kind": "inline",
+       "prompts": [
+         "Reply with BUILTIN_ONE only.",
+         "Reply with BUILTIN_TWO only."
+       ]
+     },
+     "system": "Reply with the requested token only.",
+     "max_concurrency": 2
+   }
 2. Call parallel_json with these exact arguments:
    {
-     "prompts": [
-       "Return only this JSON object: {\"name\":\"red\",\"count\":1}",
-       "Return only this JSON object: {\"name\":\"blue\",\"count\":2}"
-     ],
+     "source": {
+       "kind": "inline",
+       "prompts": [
+         "Return only this JSON object: {\"name\":\"red\",\"count\":1}",
+         "Return only this JSON object: {\"name\":\"blue\",\"count\":2}"
+       ]
+     },
      "system": "Return compact JSON only.",
      "max_concurrency": 2
    }

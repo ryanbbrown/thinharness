@@ -36,6 +36,7 @@ from thinharness import (
     call_tool,
     create_subagent_tool,
 )
+from thinharness.defaults import DEFAULT_PARALLEL_LLM_INSTRUCTIONS
 from thinharness.hooks import current_tool_call_context
 from thinharness.providers import ModelToolCall, ModelTurn
 from thinharness.tools.base import _invoke_tool
@@ -230,6 +231,72 @@ def test_specialized_builtin_tools_are_explicit_opt_ins(tmp_path: Path) -> None:
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["jsonl_search", "subagent"]), model=_fake_openai(FakeClient()))
     assert [tool["name"] for tool in harness.tool_schemas()] == ["jsonl_search", "subagent"]
 
+def test_enabled_tool_instructions_are_appended_after_base_instructions(tmp_path: Path) -> None:
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=["parallel_llm"], system_prompt="Caller instructions."),
+        model=ScriptedModel([]),
+    )
+
+    instructions = harness.system_instructions()
+
+    assert instructions.startswith(f"Caller instructions.\n\nWorkspace root: {tmp_path}")
+    assert instructions.endswith(DEFAULT_PARALLEL_LLM_INSTRUCTIONS)
+    assert "It does not inherit the parent system prompt" in instructions
+
+def test_disabled_tool_instructions_are_omitted(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read"]), model=ScriptedModel([]))
+
+    assert "parallel_llm usage:" not in harness.system_instructions()
+
+def test_tool_instructions_follow_skill_summary(tmp_path: Path) -> None:
+    demo = tmp_path / "skills" / "demo"
+    demo.mkdir(parents=True)
+    (demo / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo", encoding="utf-8")
+    harness = Harness(
+        HarnessConfig(
+            root=tmp_path,
+            skills_dir=tmp_path / "skills",
+            builtin_tools=["skill_read", "parallel_llm"],
+        ),
+        model=ScriptedModel([]),
+    )
+
+    instructions = harness.system_instructions()
+
+    assert instructions.index("demo - Demo skill") < instructions.index(DEFAULT_PARALLEL_LLM_INSTRUCTIONS)
+
+def test_blank_tool_instructions_are_omitted(tmp_path: Path) -> None:
+    custom = ToolSpec(
+        "blank",
+        "Blank instructions",
+        {"type": "object", "properties": {}},
+        lambda args: "ok",
+        instructions="   ",
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
+
+    assert harness.system_instructions() == f"{harness.config.system_prompt}\n\nWorkspace root: {tmp_path}"
+
+def test_tool_instructions_do_not_change_tool_schema(tmp_path: Path) -> None:
+    custom = ToolSpec(
+        "echo_json",
+        "Echo input",
+        {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
+        lambda args: {"echo": args["value"]},
+        instructions="Use echo_json only when echoing JSON.",
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
+
+    schema = harness.tool_schemas()[0]
+
+    assert schema == {
+        "type": "function",
+        "name": "echo_json",
+        "description": "Echo input",
+        "parameters": {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
+    }
+    assert "Use echo_json only when echoing JSON." in harness.system_instructions()
+
 def test_skill_dirs_require_selected_skill_tools(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
@@ -251,7 +318,7 @@ def test_skills_are_not_discovered_without_explicit_skills_dir(tmp_path: Path) -
     harness = Harness(HarnessConfig(root=tmp_path), model=_fake_openai(FakeClient()))
 
     assert "skill_read" not in [tool["name"] for tool in harness.tool_schemas()]
-    assert "No skills are configured." in harness.system_instructions()
+    assert "No skills are configured." not in harness.system_instructions()
 
 def test_selected_skills_are_exposed_when_skill_tool_is_selected(tmp_path: Path) -> None:
     demo = tmp_path / "skills" / "demo"

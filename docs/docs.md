@@ -66,6 +66,8 @@ harness = Harness(HarnessConfig(
 
 Each batch call is stateless. The per-prompt model session receives `tools=[]`, no memory, no continuation, and no inherited harness system prompt. Pass `system` when the batch needs shared instructions.
 
+The model-facing prompt source is a single `source` object. For inline prompts, use `{"kind": "inline", "prompts": [...]}`. For a JSON prompt file under the read path policy, use `{"kind": "file", "path": "prompts.json"}`.
+
 Use `output_file` when combined results may be large. Inline output returns compact JSON in the normal `ToolResult.content`; file output writes pretty JSON under the workspace path policy and returns only a summary with failed indices.
 
 `max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields for the built-in. Parallel attempts are reported as `model_requests` in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.

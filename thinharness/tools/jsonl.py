@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from ..defaults import DEFAULT_JSONL_SEARCH_DESCRIPTION
 from .base import (
     Json,
     PathPolicy,
@@ -88,7 +89,7 @@ class JsonlSearch:
         """Return the jsonl_search tool spec."""
         return ToolSpec(
             "jsonl_search",
-            "Search JSONL files: optional ripgrep prefilter plus structured field/where filtering. Default scope is **/*.jsonl.",
+            DEFAULT_JSONL_SEARCH_DESCRIPTION,
             JsonlSearchArgs,
             self.search,
         )

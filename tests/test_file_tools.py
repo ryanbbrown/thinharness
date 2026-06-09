@@ -6,9 +6,31 @@ from pathlib import Path
 
 import pytest
 
+from thinharness.defaults import (
+    DEFAULT_EDIT_DESCRIPTION,
+    DEFAULT_GLOB_DESCRIPTION,
+    DEFAULT_JSONL_SEARCH_DESCRIPTION,
+    DEFAULT_LIST_DESCRIPTION,
+    DEFAULT_READ_DESCRIPTION,
+    DEFAULT_SEARCH_DESCRIPTION,
+    DEFAULT_WRITE_DESCRIPTION,
+)
 from thinharness.tools.filesystem import FileTools, PathValidationError, SearchArgs
 from thinharness.tools.jsonl import JsonlSearchArgs
 
+
+def test_file_tool_descriptions_use_defaults(tmp_path: Path) -> None:
+    descriptions = {tool.name: tool.description for tool in FileTools(tmp_path).specs()}
+
+    assert descriptions == {
+        "read": DEFAULT_READ_DESCRIPTION,
+        "write": DEFAULT_WRITE_DESCRIPTION,
+        "edit": DEFAULT_EDIT_DESCRIPTION,
+        "search": DEFAULT_SEARCH_DESCRIPTION,
+        "list": DEFAULT_LIST_DESCRIPTION,
+        "glob": DEFAULT_GLOB_DESCRIPTION,
+        "jsonl_search": DEFAULT_JSONL_SEARCH_DESCRIPTION,
+    }
 
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
     tools = FileTools(tmp_path)

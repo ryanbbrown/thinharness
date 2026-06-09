@@ -483,7 +483,7 @@ The reason this is separate from generic `search` is that JSONL is naturally chu
 
 `parallel_llm.py` implements `ParallelLlmTool`, a normal configurable `ToolSpec` wrapper for batches of independent one-shot model calls. The built-in `parallel_llm` is created by constructing this class from the parent harness's model, root, path policies, and configured prompt/retry caps.
 
-`ParallelLlmArgs` accepts either inline `prompts` or a `prompts_file` containing a JSON array of strings. `prompts_file` is resolved through the tool's read `PathPolicy`; `output_file` is resolved through the write `PathPolicy` and written atomically as pretty JSON. Inline results are compact JSON inside `ToolResult.content`; file mode returns only a summary and failed indices.
+`ParallelLlmArgs` accepts one structurally discriminated `source`: `{"kind": "inline", "prompts": [...]}` or `{"kind": "file", "path": "prompts.json"}`. File-source paths are resolved through the tool's read `PathPolicy`; `output_file` is resolved through the write `PathPolicy` and written atomically as pretty JSON. Inline results are compact JSON inside `ToolResult.content`; file mode returns only a summary and failed indices.
 
 The tool deliberately does not inherit the parent system prompt. If `system` is omitted, per-prompt calls use `instructions=""`; if shared instructions are needed, the caller must pass them explicitly. Each attempt uses a fresh `model.new_session()`, so there is no memory or continuation state.
 

@@ -70,7 +70,7 @@ class SkillRegistry:
     def prompt_summary(self) -> str:
         """Return a compact skill list for the system prompt."""
         if not self._skills:
-            return "No skills are configured."
+            return ""
         lines = ["Available skills (call skill_read before using details):"]
         for skill in self._skills.values():
             desc = f" - {skill.description}" if skill.description else ""
