@@ -78,7 +78,7 @@ def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     assert "subagent" not in [tool["name"] for tool in disabled.tool_schemas()]
     assert [tool["name"] for tool in only_subagent.tool_schemas()] == ["subagent"]
     schema = only_subagent.tool_schemas()[0]["parameters"]
-    assert set(schema["properties"]) == {"task", "agent"}
+    assert set(schema["properties"]) == {"task", "agent", "_background"}
     assert "tools" not in schema["properties"]
 
 def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(tmp_path: Path) -> None:

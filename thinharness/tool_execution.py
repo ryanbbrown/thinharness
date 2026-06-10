@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from .hooks import _CURRENT_TOOL_CALL, _CURRENT_TOOL_RUNTIME, AfterToolCallContext, BeforeToolCallContext
 from .providers import ModelToolCall, ToolOutput
-from .tools.base import Json, ToolSpec, _invoke_tool
+from .tools.base import Json, ToolResult, ToolSpec, _invoke_tool
 from .tracing import RunTracer, serialize_attribute_value
 
 if TYPE_CHECKING:
@@ -29,6 +29,200 @@ class ToolCallExecution:
     output: str
     cancelled: bool
     retry_kind: str | None = None
+    background_start: BackgroundToolStart | None = None
+
+
+@dataclass(frozen=True)
+class BackgroundToolStart:
+    """Prepared background execution to start after the start-notice span closes."""
+
+    task_id: str
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+    spec: ToolSpec
+    run_metadata: Json
+
+
+@dataclass
+class BackgroundToolTask:
+    """Strong reference and metadata for one pending background tool task."""
+
+    task_id: str
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+    task: asyncio.Task[BackgroundToolCompletion]
+    started_at: float
+
+
+@dataclass(frozen=True)
+class BackgroundToolCompletion:
+    """Result of one background tool task."""
+
+    task_id: str
+    tool_call_id: str
+    tool_name: str
+    output: str
+    elapsed_ms: float
+    failed: bool
+    event: str = "completed"
+
+    def record(self) -> Json:
+        """Return the tool_call_records entry for this completion."""
+        return {
+            "background": {
+                "task_id": self.task_id,
+                "tool_call_id": self.tool_call_id,
+                "tool_name": self.tool_name,
+                "event": self.event,
+                "elapsed_ms": self.elapsed_ms,
+            },
+            "output": self.output,
+        }
+
+
+class BackgroundToolManager:
+    """Own background tool tasks for one Harness.run invocation."""
+
+    def __init__(self, *, run_tracer: RunTracer) -> None:
+        self.run_tracer = run_tracer
+        self._next_id = 1
+        self._pending: dict[asyncio.Task[BackgroundToolCompletion], BackgroundToolTask] = {}
+
+    def allocate_id(self) -> str:
+        """Return the next stable per-run background task id."""
+        task_id = f"bg_{self._next_id}"
+        self._next_id += 1
+        return task_id
+
+    def has_pending(self) -> bool:
+        """Return whether any background tasks are still running."""
+        return bool(self._pending)
+
+    def start_many(self, starts: list[BackgroundToolStart]) -> None:
+        """Start prepared background tasks under the current agent span."""
+        for start in starts:
+            self.start(start)
+
+    def start(self, start: BackgroundToolStart) -> None:
+        """Start one prepared background task."""
+        started_at = time.perf_counter()
+        task = asyncio.create_task(self._run(start, started_at))
+        self._pending[task] = BackgroundToolTask(
+            task_id=start.task_id,
+            tool_call_id=start.tool_call_id,
+            tool_name=start.tool_name,
+            arguments=start.arguments,
+            task=task,
+            started_at=started_at,
+        )
+
+    async def wait_next(self) -> BackgroundToolCompletion:
+        """Wait for and return the next background completion."""
+        if not self._pending:
+            raise RuntimeError("no pending background tasks")
+        done, _pending = await asyncio.wait(set(self._pending), return_when=asyncio.FIRST_COMPLETED)
+        task = next(iter(done))
+        self._pending.pop(task, None)
+        return task.result()
+
+    async def cancel_and_drain(self) -> list[BackgroundToolCompletion]:
+        """Cancel all pending tasks and return any terminal completion records."""
+        tasks = list(self._pending)
+        if not tasks:
+            return []
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        completions: list[BackgroundToolCompletion] = []
+        for task, result in zip(tasks, results, strict=True):
+            meta = self._pending.pop(task, None)
+            if isinstance(result, BackgroundToolCompletion):
+                completions.append(result)
+            elif meta is not None:
+                output = ToolResult(
+                    False,
+                    f"{type(result).__name__}: {result}",
+                    {"error_type": type(result).__name__},
+                ).as_json()
+                completions.append(BackgroundToolCompletion(
+                    task_id=meta.task_id,
+                    tool_call_id=meta.tool_call_id,
+                    tool_name=meta.tool_name,
+                    output=output,
+                    elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
+                    failed=True,
+                    event="failed",
+                ))
+        return completions
+
+    async def _run(self, start: BackgroundToolStart, started_at: float) -> BackgroundToolCompletion:
+        """Invoke one background tool and normalize its completion."""
+        call_token = _CURRENT_TOOL_CALL.set({"call_id": start.tool_call_id, "name": start.tool_name})
+        runtime_token = _CURRENT_TOOL_RUNTIME.set({"run_metadata": dict(start.run_metadata)})
+        try:
+            try:
+                with self.run_tracer.tool(tool_name=start.tool_name, call_id=start.tool_call_id, arguments=start.arguments) as span:
+                    span.set_attributes({
+                        "thinharness.background.task_id": start.task_id,
+                        "thinharness.background.phase": "execution",
+                        "thinharness.background.original_tool_call_id": start.tool_call_id,
+                    })
+                    output = await _invoke_tool(start.spec, start.arguments)
+                    parsed = _parse_tool_output(output)
+                    failed = parsed.get("ok") is False
+                    span.set_attribute_where(
+                        lambda option: option.capture_tool_results,
+                        "gen_ai.tool.call.result",
+                        serialize_attribute_value(output),
+                    )
+                    if failed:
+                        span.set_error(f'Background tool "{start.tool_name}" failed', str(_background_error_type(parsed)))
+                    return BackgroundToolCompletion(
+                        task_id=start.task_id,
+                        tool_call_id=start.tool_call_id,
+                        tool_name=start.tool_name,
+                        output=output,
+                        elapsed_ms=(time.perf_counter() - started_at) * 1000,
+                        failed=failed,
+                    )
+            except asyncio.CancelledError:
+                return BackgroundToolCompletion(
+                    task_id=start.task_id,
+                    tool_call_id=start.tool_call_id,
+                    tool_name=start.tool_name,
+                    output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).as_json(),
+                    elapsed_ms=(time.perf_counter() - started_at) * 1000,
+                    failed=True,
+                    event="cancelled",
+                )
+            except Exception as exc:
+                return BackgroundToolCompletion(
+                    task_id=start.task_id,
+                    tool_call_id=start.tool_call_id,
+                    tool_name=start.tool_name,
+                    output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json(),
+                    elapsed_ms=(time.perf_counter() - started_at) * 1000,
+                    failed=True,
+                    event="failed",
+                )
+        finally:
+            _CURRENT_TOOL_RUNTIME.reset(runtime_token)
+            _CURRENT_TOOL_CALL.reset(call_token)
+
+
+def background_completion_message(completion: BackgroundToolCompletion) -> str:
+    """Return the synthetic model-facing completion message."""
+    status = "failed" if completion.failed else "completed"
+    return (
+        f"Background task {completion.task_id} completed.\n"
+        f"Tool: {completion.tool_name}\n"
+        f"Status: {status}\n"
+        f"Elapsed: {completion.elapsed_ms:.0f} ms\n"
+        "Output:\n"
+        f"{completion.output}"
+    )
 
 
 class ToolBatchExecutor:
@@ -53,6 +247,7 @@ class ToolBatchExecutor:
             run_context=run_context,
             tool_map=tool_map,
             run_tracer=run_tracer,
+            tool_execution=tool_execution,
         )
 
     async def execute_batch(
@@ -61,10 +256,11 @@ class ToolBatchExecutor:
     ) -> tuple[list[Json], list[ToolOutput], list[ToolCallExecution]]:
         """Run one batch of model tool calls; preserve model order in returned outputs."""
         if self._should_run_sequentially(calls):
-            results = [
-                await self.call_executor.execute_one(call, index)
-                for index, call in enumerate(calls)
-            ]
+            results = []
+            for index, call in enumerate(calls):
+                execution = await self.call_executor.execute_one(call, index)
+                self._start_background(execution)
+                results.append(execution)
         else:
             results = await self._run_calls_concurrently(calls)
         records = []
@@ -72,9 +268,21 @@ class ToolBatchExecutor:
             record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": execution.output}
             if execution.cancelled:
                 record["cancelled"] = True
+            if execution.background_start is not None:
+                record["background"] = {
+                    "task_id": execution.background_start.task_id,
+                    "status": "running",
+                }
             records.append(record)
         outputs = [ToolOutput(call.id, execution.output) for call, execution in zip(calls, results, strict=True)]
         return records, outputs, results
+
+    def _start_background(self, execution: ToolCallExecution) -> None:
+        """Start a prepared background task once its start-notice span has closed."""
+        if execution.background_start is None:
+            return
+        assert self.run_context.background is not None
+        self.run_context.background.start(execution.background_start)
 
     def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
         """Decide whether the batch must execute serially."""
@@ -89,7 +297,9 @@ class ToolBatchExecutor:
         async def invoke(index: int, call: ModelToolCall) -> ToolCallExecution:
             """Invoke one traced tool call under the shared concurrency limit."""
             async with sem:
-                return await self.call_executor.execute_one(call, index)
+                execution = await self.call_executor.execute_one(call, index)
+                self._start_background(execution)
+                return execution
 
         tasks = [asyncio.create_task(invoke(index, call)) for index, call in enumerate(calls)]
         task_index = {task: index for index, task in enumerate(tasks)}
@@ -124,11 +334,13 @@ class ToolCallExecutor:
         run_context: RunContext,
         tool_map: dict[str, ToolSpec],
         run_tracer: RunTracer,
+        tool_execution: str,
     ) -> None:
         self.harness = harness
         self.run_context = run_context
         self.tool_map = tool_map
         self.run_tracer = run_tracer
+        self.tool_execution = tool_execution
 
     async def execute_one(self, call: ModelToolCall, index: int) -> ToolCallExecution:
         """Execute one model tool call with tracing."""
@@ -136,15 +348,17 @@ class ToolCallExecutor:
             call_token = _CURRENT_TOOL_CALL.set({"call_id": call.id, "name": call.name})
             runtime_token = _CURRENT_TOOL_RUNTIME.set({"run_metadata": dict(self.run_context.metadata)})
             cancelled = False
+            background_start: BackgroundToolStart | None = None
             start = time.perf_counter()
             try:
+                spec = self.tool_map.get(str(call.name))
                 before = BeforeToolCallContext(
                     harness=self.harness,
                     metadata=dict(self.run_context.metadata),
                     call_id=call.id,
                     tool_name=call.name,
                     arguments=call.arguments,
-                    tool_spec=self.tool_map.get(str(call.name)),
+                    tool_spec=spec,
                     tool_index=index,
                 )
                 self.harness.hooks.fire(before)
@@ -157,7 +371,14 @@ class ToolCallExecutor:
                         "metadata": {"error_type": "ToolCallCancelled"},
                     }, ensure_ascii=False)
                 else:
-                    output = await self._call_output(call.name, call.arguments)
+                    decision = self._background_decision(call, spec)
+                    if decision.error_output is not None:
+                        output = decision.error_output
+                    elif decision.start is not None:
+                        background_start = decision.start
+                        output = _background_start_output(decision.start)
+                    else:
+                        output = await self._call_output(call.name, decision.arguments)
                 parsed = _parse_tool_output(output)
                 retry_kind = None if cancelled else _tool_retry_kind(parsed)
                 after = AfterToolCallContext(
@@ -184,7 +405,7 @@ class ToolCallExecutor:
                     span.set_error(f'Tool "{call.name}" failed', retry_kind)
                 elif parsed.get("ok") is False:
                     span.set_error(f'Tool "{call.name}" failed', "ToolExecutionError")
-                return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind)
+                return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind, background_start=background_start)
             finally:
                 _CURRENT_TOOL_RUNTIME.reset(runtime_token)
                 _CURRENT_TOOL_CALL.reset(call_token)
@@ -195,6 +416,52 @@ class ToolCallExecutor:
         if not spec:
             return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
         return await _invoke_tool(spec, arguments)
+
+    def _background_decision(self, call: ModelToolCall, spec: ToolSpec | None) -> _BackgroundDecision:
+        """Return how to handle the private _background argument for one call."""
+        if spec is None:
+            return _BackgroundDecision(arguments=call.arguments)
+        parsed = _parse_background_args(call.arguments)
+        mode = spec.background
+        if spec.metadata.get("framework_tool") == "subagent" and parsed.args is not None:
+            mode = _subagent_background_mode(spec, parsed.args)
+        if mode == "model":
+            if parsed.error is not None:
+                return _BackgroundDecision(arguments=call.arguments, error_output=_retry_output("InvalidArguments", parsed.error))
+            arguments = parsed.stripped_arguments if parsed.present else call.arguments
+            if parsed.requested and self.tool_execution != "sequential":
+                return _BackgroundDecision(arguments=arguments, start=self._background_start(call, spec, arguments))
+            return _BackgroundDecision(arguments=arguments)
+        if mode == "always":
+            if self.tool_execution == "sequential":
+                return _BackgroundDecision(arguments=call.arguments)
+            arguments = parsed.stripped_arguments if spec.metadata.get("framework_tool") == "subagent" and parsed.present else call.arguments
+            return _BackgroundDecision(arguments=arguments, start=self._background_start(call, spec, arguments))
+        if (
+            spec.metadata.get("framework_tool") == "subagent"
+            and parsed.present
+            and parsed.requested
+            and _subagent_agent_known(spec, parsed.args)
+        ):
+            return _BackgroundDecision(
+                arguments=parsed.stripped_arguments,
+                error_output=_retry_output("InvalidArguments", "selected subagent does not support background execution"),
+            )
+        if spec.metadata.get("framework_tool") == "subagent" and parsed.present:
+            return _BackgroundDecision(arguments=parsed.stripped_arguments)
+        return _BackgroundDecision(arguments=call.arguments)
+
+    def _background_start(self, call: ModelToolCall, spec: ToolSpec, arguments: str) -> BackgroundToolStart:
+        """Build a prepared background execution."""
+        assert self.run_context.background is not None
+        return BackgroundToolStart(
+            task_id=self.run_context.background.allocate_id(),
+            tool_call_id=call.id,
+            tool_name=call.name,
+            arguments=arguments,
+            spec=spec,
+            run_metadata=dict(self.run_context.metadata),
+        )
 
     def _annotate_special_tool(self, span: _TraceSpan, name: str, parsed: Json) -> None:
         """Add tool-family trace attributes for framework and MCP tools."""
@@ -232,3 +499,104 @@ def _tool_retry_kind(parsed: Json) -> str | None:
     if metadata.get("retry") is True and isinstance(error_type, str):
         return error_type
     return None
+
+
+@dataclass(frozen=True)
+class _ParsedBackgroundArgs:
+    """Parsed private _background argument state."""
+
+    present: bool
+    requested: bool
+    stripped_arguments: str
+    args: Json | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class _BackgroundDecision:
+    """Decision for one call's background/private-argument handling."""
+
+    arguments: str
+    start: BackgroundToolStart | None = None
+    error_output: str | None = None
+
+
+def _parse_background_args(arguments: str) -> _ParsedBackgroundArgs:
+    """Parse and strip the private _background argument if present."""
+    try:
+        args = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return _ParsedBackgroundArgs(False, False, arguments, None)
+    if not isinstance(args, dict):
+        return _ParsedBackgroundArgs(False, False, arguments, None)
+    if "_background" not in args:
+        return _ParsedBackgroundArgs(False, False, arguments, args)
+    raw = args["_background"]
+    if not isinstance(raw, bool):
+        stripped = dict(args)
+        stripped.pop("_background", None)
+        return _ParsedBackgroundArgs(
+            True,
+            False,
+            json.dumps(stripped, ensure_ascii=False, separators=(",", ":")),
+            stripped,
+            "_background must be a boolean",
+        )
+    stripped = dict(args)
+    stripped.pop("_background", None)
+    return _ParsedBackgroundArgs(
+        True,
+        raw,
+        json.dumps(stripped, ensure_ascii=False, separators=(",", ":")),
+        stripped,
+    )
+
+
+def _subagent_background_mode(spec: ToolSpec, args: Json) -> str:
+    """Return the effective background policy for a framework subagent call."""
+    agent = args.get("agent")
+    if agent is None:
+        return "model"
+    policies = spec.metadata.get("subagent_background")
+    if isinstance(agent, str) and isinstance(policies, dict):
+        mode = policies.get(agent, "never")
+        if mode in {"never", "always", "model"}:
+            return str(mode)
+    return "never"
+
+
+def _subagent_agent_known(spec: ToolSpec, args: Json | None) -> bool:
+    """Return whether a subagent argument names the default or a configured subagent."""
+    if args is None:
+        return False
+    agent = args.get("agent")
+    if agent is None:
+        return True
+    policies = spec.metadata.get("subagent_background")
+    return isinstance(agent, str) and isinstance(policies, dict) and agent in policies
+
+
+def _background_start_output(start: BackgroundToolStart) -> str:
+    """Return the immediate model-visible start notice."""
+    return ToolResult(
+        True,
+        f"Started background task {start.task_id} for tool {start.tool_name}. Continue other work; the harness will notify you when it finishes.",
+        {
+            "background_task_id": start.task_id,
+            "tool_name": start.tool_name,
+            "status": "running",
+        },
+    ).as_json()
+
+
+def _retry_output(error_type: str, message: str) -> str:
+    """Return a retryable argument error output."""
+    return ToolResult(False, message, {"error_type": error_type, "retry": True}).as_json()
+
+
+def _background_error_type(parsed: Json) -> str:
+    """Return a compact background error type for tracing."""
+    metadata = parsed.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("error_type"), str):
+        return metadata["error_type"]
+    return "ToolExecutionError"

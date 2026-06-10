@@ -19,6 +19,7 @@ from .tracing import (
 
 if TYPE_CHECKING:
     from .core import Harness, HarnessResult, LimitNoticeKey, RunUsage, StopReason
+    from .tool_execution import BackgroundToolCompletion, BackgroundToolManager
     from .tools.base import Json
     from .tracing import _TraceSpan
 
@@ -67,6 +68,7 @@ class RunContext:
     run_end_fired: bool = False
     finalized_via_output_tool: bool = False
     agent_span: _TraceSpan | None = None
+    background: BackgroundToolManager | None = None
 
     def fire_run_end_once(self) -> None:
         """Emit run_end exactly once for this run."""
@@ -254,3 +256,7 @@ class RunContext:
     def record_tool_batch(self, records: list[Json]) -> None:
         """Append provider-facing tool call records to this run."""
         self.tool_call_records.extend(records)
+
+    def record_background_completion(self, completion: BackgroundToolCompletion) -> None:
+        """Append a background completion record to this run."""
+        self.tool_call_records.append(completion.record())

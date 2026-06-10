@@ -40,7 +40,7 @@ from .providers import (
     infer_model,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import Json, ToolSpec
+from .tools.base import Json, ToolResult, ToolSpec
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
@@ -213,6 +213,10 @@ class HarnessConfig(BaseModel):
         """Validate explicit skill discovery settings."""
         if self.selected_skills is not None and self.skills_dir is None:
             raise ValueError("selected_skills requires skills_dir")
+        if self.tool_execution == "sequential":
+            always_background = [config.name for config in self.subagents if config.background == "always"]
+            if always_background:
+                raise ValueError("background='always' subagents cannot be used with tool_execution='sequential'")
         return self
 
 
@@ -302,6 +306,8 @@ class Harness:
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
         self.tools: list[ToolSpec] = builtin
         self._validate_unique_tools(self.tools)
+        for tool in self.tools:
+            self._validate_tool_background_policy(tool)
         self._tool_map = {tool.name: tool for tool in self.tools}
         raw_hooks = hooks
         self.hooks = HookRegistry([], strict_hooks=self.config.strict_hooks)
@@ -340,7 +346,7 @@ class Harness:
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         from .runtime import RunContext
-        from .tool_execution import ToolBatchExecutor
+        from .tool_execution import BackgroundToolManager, ToolBatchExecutor, background_completion_message
 
         if self._closed:
             raise HarnessError("harness is closed")
@@ -367,6 +373,7 @@ class Harness:
             usage=RunUsage(),
             tracer=run_tracer,
         )
+        run_ctx.background = BackgroundToolManager(run_tracer=run_tracer)
         self._running = True
 
         try:
@@ -442,6 +449,50 @@ class Harness:
                         while True:
                             run_ctx.responses.append(turn.raw)
                             if decision.kind == "final":
+                                assert run_ctx.background is not None
+                                if run_ctx.background.has_pending():
+                                    completion = await run_ctx.background.wait_next()
+                                    run_ctx.record_background_completion(completion)
+                                    message = background_completion_message(completion)
+                                    if decision.finalized_via_output_tool:
+                                        final_id = decision.final_tool_call_id
+                                        assert final_id is not None
+                                        tool_outputs = [ToolOutput(
+                                            final_id,
+                                            f"Final answer deferred because background work completed.\n\n{message}\n\nProduce the final answer again now.",
+                                        )]
+                                        turn, decision = await run_ctx.advance_model(
+                                            lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
+                                                tool_outputs,
+                                                instructions=instructions,
+                                                tools=self.tool_schemas(),
+                                                metadata=metadata,
+                                                structured_output=structured_output,
+                                                notices=notices,
+                                            ),
+                                            trace_snapshot=ModelTraceSnapshot(
+                                                kind="background_completion",
+                                                tool_outputs=[{"call_id": final_id, "output": tool_outputs[0].output}],
+                                                structured_output=output_mode,
+                                            ),
+                                        )
+                                    else:
+                                        turn, decision = await run_ctx.advance_model(
+                                            lambda notices, message=message: active_session.continue_with_user_message(
+                                                message,
+                                                instructions=instructions,
+                                                tools=self.tool_schemas(),
+                                                metadata=metadata,
+                                                structured_output=structured_output,
+                                                notices=notices,
+                                            ),
+                                            trace_snapshot=ModelTraceSnapshot(
+                                                kind="background_completion",
+                                                prompt=message,
+                                                structured_output=output_mode,
+                                            ),
+                                        )
+                                    continue
                                 return run_ctx.finalize(
                                     decision.text,
                                     active_session,
@@ -493,6 +544,46 @@ class Harness:
                                 continue
                             if decision.kind == "unexpected":
                                 raise UnexpectedModelBehavior(decision.unexpected_message)
+                            assert run_ctx.background is not None
+                            max_tool_calls = self.config.max_tool_calls
+                            if (
+                                max_tool_calls is not None
+                                and run_ctx.usage.tool_calls + len(turn.tool_calls) > max_tool_calls
+                                and run_ctx.background.has_pending()
+                            ):
+                                completion = await run_ctx.background.wait_next()
+                                run_ctx.record_background_completion(completion)
+                                message = background_completion_message(completion)
+                                tool_outputs = [
+                                    ToolOutput(
+                                        call.id,
+                                        ToolResult(
+                                            False,
+                                            (
+                                                f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted. "
+                                                f"A pending background completion is available instead.\n\n{message}"
+                                            ),
+                                            {"error_type": "ToolCallsExceeded"},
+                                        ).as_json(),
+                                    )
+                                    for call in turn.tool_calls
+                                ]
+                                turn, decision = await run_ctx.advance_model(
+                                    lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
+                                        tool_outputs,
+                                        instructions=instructions,
+                                        tools=self.tool_schemas(),
+                                        metadata=metadata,
+                                        structured_output=structured_output,
+                                        notices=notices,
+                                    ),
+                                    trace_snapshot=ModelTraceSnapshot(
+                                        kind="background_completion",
+                                        tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in tool_outputs],
+                                        structured_output=output_mode,
+                                    ),
+                                )
+                                continue
                             run_ctx.check_tool_limit(len(turn.tool_calls))
                             run_ctx.usage.tool_calls += len(turn.tool_calls)
                             recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
@@ -544,6 +635,9 @@ class Harness:
                         agent_span.set_error(str(exc), type(exc).__name__)
                         raise
             finally:
+                if run_ctx.background is not None and run_ctx.background.has_pending():
+                    for completion in await run_ctx.background.cancel_and_drain():
+                        run_ctx.record_background_completion(completion)
                 run_ctx.fire_run_end_once()
         finally:
             self._running = False
@@ -608,13 +702,18 @@ class Harness:
             raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
+        self._validate_tool_background_policy(spec)
         self.tools.append(spec)
         self._tool_map[spec.name] = spec
         self._validate_hook_filters()
 
     def tool_schemas(self) -> list[Json]:
         """Return normalized Responses-style tool definitions."""
-        tools = [tool.response_tool() for tool in self.tools]
+        expose_background = self.config.tool_execution != "sequential"
+        tools = [
+            tool.response_tool(include_background=expose_background and tool.background == "model")
+            for tool in self.tools
+        ]
         if self.output_schema is not None:
             tools.extend(self.output_schema.synthetic_tools())
         return tools
@@ -622,6 +721,11 @@ class Harness:
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
         parts = [self.config.system_prompt, f"Workspace root: {self.root}"]
+        if self.config.tool_execution != "sequential" and any(tool.background == "model" for tool in self.tools):
+            parts.append(
+                "Some long-running tools support an optional `_background: true` argument. "
+                "Use it only for independent long work; normal short tool calls should stay synchronous."
+            )
         if self._skills_enabled:
             skill_summary = self.skills.prompt_summary()
             if skill_summary:
@@ -651,6 +755,11 @@ class Harness:
             if tool.name in seen:
                 raise ValueError(f"duplicate tool name: {tool.name}")
             seen.add(tool.name)
+
+    def _validate_tool_background_policy(self, tool: ToolSpec) -> None:
+        """Reject background policies incompatible with this harness configuration."""
+        if self.config.tool_execution == "sequential" and tool.background == "always":
+            raise ValueError("background='always' tools cannot be used with tool_execution='sequential'")
 
     def _validate_skill_tool_selection(self) -> None:
         """Require explicit skill tool selection when skills are explicitly configured."""
@@ -700,6 +809,7 @@ class Harness:
                         raise HarnessError(
                             f"MCP tool name collision for {tool.name!r}; use tool_prefix or exclude_tools to disambiguate"
                         )
+                    self._validate_tool_background_policy(tool)
                     seen.add(tool.name)
                     mcp_tools.append(tool)
             self.tools.extend(mcp_tools)

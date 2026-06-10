@@ -91,7 +91,7 @@ def main() -> None:
         assert "parallel_llm" in tool_names, tool_names
         assert "parallel_json" in tool_names, tool_names
         assert "PARALLEL_LLM_AGENT_DONE" in result.text, result.text
-        outputs = {record["call"]["name"]: json.loads(record["output"]) for record in result.tool_call_records}
+        outputs = {record["call"]["name"]: json.loads(record["output"]) for record in result.tool_call_records if "call" in record}
         builtin_payload = json.loads(outputs["parallel_llm"]["content"])
         custom_payload = json.loads(outputs["parallel_json"]["content"])
         assert builtin_payload["total"] == 2, builtin_payload

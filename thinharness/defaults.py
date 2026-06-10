@@ -23,7 +23,7 @@ DEFAULT_PARALLEL_LLM_DESCRIPTION = (
     "Choose one prompt source with source.kind: inline uses source.prompts, file uses source.path. For multi-step work, use the "
     "subagent tool instead. For large batches, pass output_file and read it back rather than receiving full results inline. If you need the parent "
     "harness system prompt, include the relevant instructions in system; it is not inherited automatically. The tool's model is host-configured "
-    "and cannot be changed by tool arguments."
+    "and cannot be changed by tool arguments. For large independent batches, `_background: true` is available when it lets other work continue."
 )
 DEFAULT_PARALLEL_LLM_INSTRUCTIONS = """parallel_llm usage:
 - Use only for independent one-shot prompts, not multi-step work.
@@ -31,4 +31,5 @@ DEFAULT_PARALLEL_LLM_INSTRUCTIONS = """parallel_llm usage:
 - For inline prompts, pass source={"kind":"inline","prompts":[...]}.
 - For a prompt file, pass source={"kind":"file","path":"prompts.json"}.
 - Do not add unused prompt source fields or placeholder values.
-- For large or structured batches, set output_file and read that file afterward."""
+- For large or structured batches, set output_file and read that file afterward.
+- For large independent batches, background mode is available; default to synchronous unless it is clearly useful."""

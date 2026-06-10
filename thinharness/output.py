@@ -64,6 +64,7 @@ class OutputTurnDecision:
     output: Any | None = None
     retry_message: str = ""
     retry_call_id: str | None = None
+    final_tool_call_id: str | None = None
     error: OutputValidationError | None = None
     unexpected_message: str = ""
 
@@ -251,6 +252,7 @@ def resolve_turn_output(turn: ModelTurn, output_schema: OutputSchema | None) -> 
                 kind="final",
                 finalized_mode="tool",
                 finalized_via_output_tool=True,
+                final_tool_call_id=final.id,
                 text=turn.text,
                 output=value,
             )

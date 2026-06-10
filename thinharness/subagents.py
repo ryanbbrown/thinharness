@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .providers import infer_model, parse_model_ref, provider_prefix
-from .tools.base import Json, ToolResult, ToolSpec
+from .tools.base import Json, ToolBackgroundMode, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
 from .tracing import TracingOptions
 
@@ -41,6 +41,7 @@ class SubAgentConfig(BaseModel):
     output_mode: Literal["auto", "native", "tool", "prompted"] = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
+    background: ToolBackgroundMode = "never"
 
     @model_validator(mode="after")
     def validate_subagent(self) -> SubAgentConfig:
@@ -84,10 +85,14 @@ def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> Tool
 
     return ToolSpec(
         "subagent",
-        _subagent_tool_description(configs),
+        _subagent_tool_description(configs, background_available=parent.config.tool_execution != "sequential"),
         SubAgentArgs,
         handler,
-        metadata={"framework_tool": "subagent"},
+        metadata={
+            "framework_tool": "subagent",
+            "subagent_background": {config.name: config.background for config in configs},
+        },
+        background="model",
     )
 
 
@@ -330,7 +335,7 @@ def _same_provider(parent: Harness, child_model_ref: str) -> bool:
     return child_provider == parent_provider
 
 
-def _subagent_tool_description(configs: list[SubAgentConfig]) -> str:
+def _subagent_tool_description(configs: list[SubAgentConfig], *, background_available: bool) -> str:
     """Render the parent-facing subagent tool description."""
     lines = [
         "Delegate one self-contained task to a sub-helper. Each subagent runs in isolated context.",
@@ -341,6 +346,8 @@ def _subagent_tool_description(configs: list[SubAgentConfig]) -> str:
         lines.extend(f"- {config.name}: {config.description}" for config in configs)
         lines.append("")
     lines.append("Omit `agent` to use the framework default subagent.")
+    if background_available:
+        lines.append("For long independent delegation, `_background: true` may be used when the selected subagent supports background execution.")
     return "\n".join(lines)
 
 

@@ -144,6 +144,7 @@ class ParallelLlmTool:
             handler,
             metadata={"framework_tool": "parallel_llm"},
             instructions=self.instructions,
+            background="model",
         )
 
     async def run(self, args: ParallelLlmArgs) -> ToolResult:
@@ -273,15 +274,27 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         if builtin_provider != parent_provider:
             api_key = None
             base_url = None
+    description = DEFAULT_PARALLEL_LLM_DESCRIPTION
+    instructions = DEFAULT_PARALLEL_LLM_INSTRUCTIONS
+    if parent.config.tool_execution == "sequential":
+        description = description.replace(
+            " For large independent batches, `_background: true` is available when it lets other work continue.",
+            "",
+        )
+        instructions = instructions.replace(
+            "\n- For large independent batches, background mode is available; default to synchronous unless it is clearly useful.",
+            "",
+        )
     return ParallelLlmTool(
         model=model,
         model_ref=model_ref,
         root=parent.root,
+        description=description,
         read_paths=parent.config.read_paths,
         write_paths=parent.config.write_paths,
         max_prompts=parent.config.parallel_llm_max_prompts,
         max_attempts=parent.config.parallel_llm_max_attempts,
-        instructions=DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
+        instructions=instructions,
         api_key=api_key,
         base_url=base_url,
         request_timeout=parent.config.request_timeout,

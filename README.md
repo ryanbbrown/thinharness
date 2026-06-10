@@ -22,7 +22,9 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **5,528 LOC** across 18 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **6,079 LOC** across 18 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+
+ThinHarness is for purpose-built agents: compliance review, support triage, web research, workflow automation, and any other agent where the developer defines the task, tools, context, and output contract. The goal is usually bounded flexibility: enough room for the model to plan, search, and adapt, with enough structure to make the agent reliable in production. It is not designed for interactive agents that aim to handle every possible task, like Claude Code or OpenClaw.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -51,10 +53,10 @@ So I built one. The core agent loop isn't that complicated. Provider call, parse
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-07 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-10 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>5,528</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>6,079</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -217,6 +219,8 @@ See [docs/table.md](docs/table.md) for per-cell rationale and how the LOC number
 
 ThinHarness has opinions. They are the reason it stays small.
 
+**Purpose-built agents, not universal agents.** ThinHarness is for bounded agent loops inside software you control, not open-ended interactive assistants. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.
+
 **No bash.** Business agents don't need a shell. Bash is a giant security surface, and agents mess up when writing shell commands more often than you'd initially expect. Cut it and most of those failures stop being possible.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
@@ -246,7 +250,7 @@ import asyncio
 from thinharness import Harness, HarnessConfig
 
 async def main():
-    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.2")) as harness:
+    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.5")) as harness:
         result = await harness.run("Read README.md and summarize it.")
         print(result.text)
 
