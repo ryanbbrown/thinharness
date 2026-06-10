@@ -14,3 +14,5 @@ experiments/
 .reviews/
 vendor/
 .gitmodules
+examples/*/outputs/
+examples/*/outputs_failed_*/
