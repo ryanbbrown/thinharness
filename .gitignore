@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.DS_Store
+build/
+.html/
 .venv/
 .harness/
 .fsharness/
@@ -12,7 +15,9 @@ htmlcov/
 experiments/
 .context/
 .reviews/
+.archive/
 vendor/
 .gitmodules
 examples/*/outputs/
 examples/*/outputs_failed_*/
+.agent/learnings.jsonl

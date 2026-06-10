@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ThinHarness — a minimal, opinionated agent harness</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body class="th page-home">
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="index.html"><img src="assets/ThinHarness.svg" alt="ThinHarness"></a>
+      <nav class="site-nav">
+        <a href="index.html" class="is-active">~/home</a>
+        <a href="about.html">~/about</a>
+        <a href="explainer.html">~/explainer</a>
+        <a href="transcripts.html">~/transcripts</a>
+        <a href="https://github.com/ryanbbrown/thinharness" class="ext">github&nbsp;↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <section class="hero">
+      <div>
+        <div class="badge"><span class="dot"></span>v0.x · pre-1.0 · MIT licensed</div>
+        <h1 class="tagline">A minimal, opinionated <span class="hl">agent harness.</span></h1>
+        <p class="lede">Provider call, parse tool calls, run them, feed results back, repeat. The whole loop — focused scope, readable core, small enough to actually read, audit, and fork.</p>
+        <div class="hero-cta">
+          <a href="about.html">Read the docs <span class="arrow">→</span></a>
+          <a href="explainer.html">Tour the codebase <span class="arrow">→</span></a>
+        </div>
+      </div>
+      <div>
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i><span class="t">install.sh</span></div>
+          <div class="body"><span class="copy" id="copyBtn">copy</span><span class="p">$</span> <span class="w">uv add thinharness</span><br><span class="c"># or: pip install thinharness</span><br><span class="c"># requires python 3.11+</span><br><br><span class="g">✓</span> resolved · 18 files · 6,079 LOC</div>
+        </div>
+        <div class="band">
+          <div class="cell"><div class="k">Lines of code</div><div class="v">6,079</div></div>
+          <div class="cell"><div class="k">Python files</div><div class="v">18</div></div>
+          <div class="cell"><div class="k">Providers</div><div class="v">3<span>×</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="opinions">
+      <div class="sechead"><span class="num">// 01</span><h2>Opinions</h2><div class="rule"></div><span class="meta">the reason it stays small</span></div>
+      <div class="oplist">
+        <div class="op"><div class="tag">no_bash</div><h3>No bash</h3><p>Business agents don't need a shell. Cut a giant security surface and a whole class of failures stops being possible.</p></div>
+        <div class="op"><div class="tag">skills</div><h3>Skills are tools, not auto-discovery</h3><p>Skills live in directories you point at explicitly. The agent calls them like any other tool. No magic scan, no marketplace.</p></div>
+        <div class="op"><div class="tag">search</div><h3>Search is a top priority</h3><p>Ripgrep exposed as compact grouped results, tuned for documents and business workflows — plus a JSONL variant for structured data.</p></div>
+        <div class="op"><div class="tag">parallel_llm</div><h3>Parallel LLM calls, built in</h3><p>Fan out from inside the harness when a workflow needs reliability beyond a single loop — majority vote, ensembled extraction.</p></div>
+        <div class="op"><div class="tag">providers</div><h3>Three providers, no matrix</h3><p>Small classes for OpenAI, Anthropic, and OpenRouter. Swap a base URL and move on, or fork one — they're tiny.</p></div>
+        <div class="op"><div class="tag">no_compaction</div><h3>No compaction</h3><p>The right answer to "context is getting big" is better task decomposition: shorter runs, separate instances, narrower subagents.</p></div>
+      </div>
+    </section>
+
+    <section class="explore">
+      <div class="sechead"><span class="num">// 02</span><h2>Explore</h2><div class="rule"></div></div>
+      <div class="xrow">
+        <a class="x" href="explainer.html"><div class="path">docs/explainer</div><h4>Codebase Explainer</h4><p>A mental model for the whole repository, file by file, with the run loop diagrammed.</p><div class="go">open →</div></a>
+        <a class="x" href="transcripts.html"><div class="path">docs/transcripts</div><h4>Agent Transcripts</h4><p>Real runs — every model turn, tool call, result, and subagent, start to finish.</p><div class="go">open →</div></a>
+        <a class="x" href="about.html"><div class="path">docs/about</div><h4>About</h4><p>Why it exists, the full opinion set, the LOC comparison, features, and install.</p><div class="go">open →</div></a>
+      </div>
+    </section>
+  </div>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <div class="mono-mark"><span class="dot"></span>thinharness · MIT · pre-1.0 · python 3.11+</div>
+      <div class="links">
+        <a href="https://github.com/ryanbbrown/thinharness">github</a>
+        <a href="https://pypi.org/project/thinharness/">pypi</a>
+        <a href="about.html">license</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    (function(){
+      var btn=document.getElementById('copyBtn');
+      if(!btn)return;
+      btn.addEventListener('click',function(){
+        navigator.clipboard&&navigator.clipboard.writeText('uv add thinharness');
+        var t=btn.textContent;btn.textContent='copied';setTimeout(function(){btn.textContent=t;},1200);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -90,3 +90,6 @@ dev = [
     "pytest-cov>=7",
     "ruff>=0.14",
 ]
+docs = [
+    "markdown>=3.6",
+]

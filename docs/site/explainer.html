@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codebase Explainer — ThinHarness</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body class="th page-explainer">
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="index.html"><img src="assets/ThinHarness.svg" alt="ThinHarness"></a>
+      <nav class="site-nav">
+        <a href="index.html">~/home</a>
+        <a href="about.html">~/about</a>
+        <a href="explainer.html" class="is-active">~/explainer</a>
+        <a href="transcripts.html">~/transcripts</a>
+        <a href="https://github.com/ryanbbrown/thinharness" class="ext">github&nbsp;↗</a>
+      </nav>
+    </div>
+  </header>
+  <div class="page">
+    <header>
+      <div class="eyebrow">// codebase guide</div>
+      <h1>A mental model for the whole repository</h1>
+      <p class="lede">
+        ThinHarness is a small SDK-only agent harness. The same loop runs no matter which
+        provider adapter is used: create a model session, ask the model for a turn, convert
+        provider-specific responses into ThinHarness objects, execute local tools, send tool
+        results back, and stop when the final-answer code says the run is complete.
+      </p>
+      <nav aria-label="Table of contents">
+        <a href="#snapshot">Snapshot</a>
+        <a href="#loop">Run Loop</a>
+        <a href="#files">Files</a>
+        <a href="#contracts">Core Objects</a>
+        <a href="#tools">Default Tools</a>
+        <a href="#providers">Providers</a>
+        <a href="#lifecycle-observability">Lifecycle</a>
+        <a href="#extras">Extras</a>
+        <a href="#reading-path">Reading Path</a>
+        <a href="#implementation-deep-dive">Implementation Deep Dive</a>
+      </nav>
+    </header>
+
+    <section id="snapshot">
+      <h2>Snapshot</h2>
+      <div class="grid cols-3">
+        <div class="panel kpi">
+          <strong>18</strong>
+          <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
+        </div>
+        <div class="panel kpi">
+          <strong>5,382</strong>
+          <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
+        </div>
+        <div class="panel kpi">
+          <strong>8</strong>
+          <span>hook events covering run start, prompt submit, tools, subagents, limits, and run end.</span>
+        </div>
+      </div>
+      <div class="callout">
+        <p>
+          ThinHarness separates reusable setup from per-run state. <code>HarnessConfig</code> is Pydantic
+          configuration; <code>Harness</code> owns configured runtime objects; <code>RunContext</code> owns one
+          invocation's mutable state; provider <code>ModelSession</code> objects own provider conversation state;
+          <code>ModelTurn</code> and <code>ToolSpec</code> are small dataclass contracts passed across those boundaries.
+        </p>
+      </div>
+      <div class="plain-panel">
+        <h3>Where this page starts</h3>
+        <p>
+          For positioning, quick-start usage, and feature comparison, read <code>README.md</code>. This page focuses on
+          runtime architecture and code ownership.
+        </p>
+      </div>
+    </section>
+
+    <section id="loop">
+      <h2>Run Loop</h2>
+      <figure class="diagram-frame">
+        <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, retries, and HarnessResult construction.">
+      </figure>
+
+      <div class="grid cols-2 grid-spaced">
+        <div class="plain-panel">
+          <h3>Happy path</h3>
+          <ol>
+            <li><code>Harness.run()</code> checks that the harness can run, creates or resumes a <code>ModelSession</code>, and builds <code>RunContext</code>.</li>
+            <li><code>RunContext.advance_model()</code> makes one provider call with limit checks, notices, usage accounting, and model tracing around it.</li>
+            <li>The provider adapter returns a <code>ModelTurn</code>, ThinHarness's common Python object for model text, tool calls, and raw provider JSON.</li>
+            <li><code>resolve_turn_output()</code> reads that turn against <code>OutputSchema</code> and chooses the next action: final result, run tools, structured-output retry, or failure.</li>
+            <li>If the decision is <code>continue</code>, <code>ToolBatchExecutor</code> runs ordinary tool calls and sends ordered <code>ToolOutput</code> values back through <code>continue_with_tools()</code>.</li>
+            <li>If the decision is <code>final</code>, <code>RunContext.finalize()</code> builds <code>HarnessResult</code>, attaches resume state when valid, annotates tracing, and fires <code>run_end</code>.</li>
+          </ol>
+        </div>
+        <div class="plain-panel">
+          <h3>Failure and limit path</h3>
+          <ul>
+            <li>Provider errors become <code>HarnessError</code> with <code>stop_reason="provider_error"</code>.</li>
+            <li>Structured-output validation can request a corrective model turn until <code>output_retries</code> is exhausted.</li>
+            <li>Retryable tool envelopes increment per-tool retry counters and can stop the run with <code>tool_retries_exceeded</code>.</li>
+            <li>Tool batches that would exceed <code>max_tool_calls</code> are rejected before local execution.</li>
+            <li><code>run_end</code> is guarded so success, errors, hook cancellation, and external cancellation fire it at most once.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="files">
+      <h2>Repository File Map</h2>
+      <pre class="tree-map"><code>.
+|-- thinharness/
+|   |-- __init__.py                  public API exports
+|   |-- core.py                      HarnessConfig, HarnessResult, run-loop coordination
+|   |-- runtime.py                   RunContext per-run state and provider-call wrapper
+|   |-- tool_execution.py            tool batch execution and one-call hook/tracing flow
+|   |-- providers.py                 provider transports, model adapters, session state
+|   |-- output.py                    structured-output schemas and turn decisions
+|   |-- hooks.py                     hook dataclasses, registry, context variables
+|   |-- subagents.py                 subagent tool and child harness construction
+|   |-- tracing.py                   OTel-compatible spans and local JSONL tracing
+|   |-- defaults.py                  default filesystem-agent system prompt
+|   `-- tools/
+|       |-- __init__.py              tool package exports
+|       |-- base.py                  ToolSpec, ToolResult, path policy, invocation
+|       |-- filesystem.py            FileTools: read, write, edit, search, list, glob
+|       |-- jsonl.py                 JsonlSearch and JSONL where/projection helpers
+|       |-- search_support.py        shared ripgrep parsing and glob validation
+|       |-- mcp.py                   optional MCP transports and tool conversion
+|       |-- parallel_llm.py          ParallelLlmTool batch completions
+|       `-- skills.py                SkillRegistry, skill_read, skill_run
+|-- tests/                           pytest coverage for every feature area
+|-- e2e/                             live-provider journeys, intentionally outside CI
+|-- examples/                        shared scenario registry plus thin agent entrypoints
+|-- docs/                            architecture, decisions, user docs, releasing notes
+|-- README.md                        motivation, usage, comparison table
+`-- pyproject.toml                   package metadata, deps, ruff, pyright, pytest</code></pre>
+    </section>
+
+    <section id="contracts">
+      <h2>Core Objects</h2>
+      <div class="grid cols-2">
+        <div class="plain-panel">
+          <h3>Harness-facing objects</h3>
+          <table>
+            <thead><tr><th>Name</th><th>Meaning</th><th>Relationship</th></tr></thead>
+            <tbody>
+              <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, tool selection, limits, output mode, tracing, MCP, subagents, path policies.</td><td>Configures a <code>Harness</code>.</td></tr>
+              <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns tool maps, model object, hooks, skill registry, MCP server list, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
+              <tr><td><code>RunContext</code></td><td>Internal state for one <code>Harness.run(...)</code>: responses, tool records, usage, retry/notice state, terminal error, stop reason, tracing span, and final result.</td><td>References the reusable <code>Harness</code>, but is not stored on it after the run.</td></tr>
+              <tr><td><code>HarnessResult</code></td><td>Final run result: final text, parsed structured output, raw provider responses, tool call records, usage, stop reason, and resume state.</td><td>Receives finalized state from <code>RunContext</code>.</td></tr>
+              <tr><td><code>RunUsage</code></td><td>Counts model requests, tool calls, cancelled tool calls, output retries, and per-tool retry counts.</td><td>Per-run counter owned by <code>RunContext</code> and returned in <code>HarnessResult</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="plain-panel">
+          <h3>Provider-neutral objects</h3>
+          <table>
+            <thead><tr><th>Name</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>Model</code></td><td>Protocol for reusable model configuration. It creates isolated <code>ModelSession</code> objects.</td></tr>
+              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Anthropic and OpenRouter sessions store message lists; OpenAI Responses stores <code>previous_response_id</code>. All expose <code>start</code>, continuation, correction, resume, and <code>dump_state</code> methods.</td></tr>
+              <tr><td><code>ModelTurn</code></td><td>Normalized provider response: assistant text, requested <code>ModelToolCall</code> entries, raw provider JSON.</td></tr>
+              <tr><td><code>ModelToolCall</code></td><td>Normalized tool request with id, name, and raw JSON argument string.</td></tr>
+              <tr><td><code>ToolOutput</code></td><td>Tool result sent back to the provider so the model can continue after a tool call: call id plus model-visible output string.</td></tr>
+              <tr><td><code>ModelNotice</code></td><td>Provider-neutral model input notice for run-budget warnings, including remaining model requests and remaining tool calls.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <details open>
+        <summary><code>RunContext</code> ownership</summary>
+        <div class="inside">
+          <p>
+            <code>Harness</code> is reusable setup. <code>RunContext</code> is the run-local coordinator used by
+            <code>Harness.run(...)</code>; it keeps provider responses, usage, retry state, notices, tracing, and
+            finalization together while <code>Harness</code> remains reusable setup.
+          </p>
+        </div>
+      </details>
+    </section>
+
+    <section id="tools">
+      <h2>Default Tools</h2>
+      <p>
+        Every model-callable tool is represented by <code>ToolSpec</code>, a dataclass that packages
+        the tool definition sent to the model with the Python callable that executes it. A spec includes
+        a name, description, JSON schema or Pydantic argument model, handler callable, sequential flag,
+        metadata, and optional retry budget.
+        The result sent back to the provider is always a JSON envelope with <code>ok</code>, <code>content</code>, and <code>metadata</code>.
+      </p>
+
+      <div class="grid cols-2 grid-spaced">
+        <div class="plain-panel">
+          <h3>What the handler is</h3>
+          <p>
+            <code>ToolSpec.handler</code> is the callable the harness invokes after it parses and validates
+            the model's JSON arguments. It can be a plain function, a bound method, a callable object,
+            or an async callable. The harness calls it as <code>handler(args)</code>, then converts
+            a <code>ToolResult</code>, string, or JSON-serializable value into the output envelope sent back to the provider.
+          </p>
+        </div>
+        <div class="plain-panel">
+          <h3>Class to ToolSpec handoff</h3>
+          <p>
+            Built-in tool modules often use classes to hold shared state, but the class itself is not
+            the model-callable tool. For example, <code>FileTools.specs()</code> creates several
+            <code>ToolSpec</code> objects whose handlers are bound methods such as <code>self.read</code>,
+            <code>self.write</code>, and <code>self.search</code>. Each bound method carries the configured
+            root path, path policies, limits, and spill behavior from that <code>FileTools</code> instance.
+          </p>
+        </div>
+        <div class="plain-panel">
+          <h3>Sequential flag</h3>
+          <p>
+            <code>sequential=True</code> means calls involving that tool force the current model-emitted
+            tool-call batch to run serially instead of concurrently. The flag is used only inside ThinHarness,
+            not sent to the model as part of the tool JSON schema. In <code>tool_execution="auto"</code>,
+            one sequential tool makes the whole batch run in model order; <code>tool_execution="sequential"</code>
+            forces this behavior for every batch.
+          </p>
+        </div>
+        <div class="plain-panel">
+          <h3>Built-in selection</h3>
+          <p>
+            <code>builtin_tools</code> is a list of tool names. When omitted, ThinHarness exposes the default filesystem
+            tools. When provided, it selects from built-in candidates such as filesystem tools, <code>skill_read</code>,
+            <code>skill_run</code>, <code>subagent</code>, and <code>parallel_llm</code>.
+          </p>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Surface</th><th>Class or owner</th><th>How it enters the harness</th><th>Important behavior</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Filesystem</td>
+            <td><code>FileTools</code></td>
+            <td><code>builtin_tools(root, ...)</code> returns <code>FileTools(root).specs()</code>.</td>
+            <td>Default exposed set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>. Mutating tools are marked <code>sequential=True</code>.</td>
+          </tr>
+          <tr>
+            <td>Custom</td>
+            <td>Caller-provided <code>ToolSpec</code></td>
+            <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
+            <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="grid cols-2 grid-spaced">
+        <div class="plain-panel">
+          <h3>Invocation path</h3>
+          <ul>
+            <li><code>ToolCallExecutor.execute_one(call)</code> sets the current tool-call context.</li>
+            <li><code>before_tool_call</code> hooks can cancel before local execution.</li>
+            <li>Arguments are parsed from JSON and validated with Pydantic when the tool has an argument model.</li>
+            <li>The handler runs directly when async, or in a worker thread when sync.</li>
+            <li>The result is normalized into the standard <code>{"ok", "content", "metadata"}</code> envelope.</li>
+            <li><code>after_tool_call</code> hooks can rewrite model-visible output before tracing records the result.</li>
+          </ul>
+        </div>
+        <div class="plain-panel">
+          <h3>Retry semantics</h3>
+          <ul>
+            <li>Malformed JSON args, non-object args, and Pydantic validation errors return retryable envelopes.</li>
+            <li>A handler can raise <code>ModelRetry</code> to ask the model to retry with a hint.</li>
+            <li>Ordinary handler exceptions become failed tool results but are not retryable unless metadata says so.</li>
+            <li>Tool retry budgets are per tool name per run, not per individual call id.</li>
+            <li><code>after_tool_call</code> hooks can rewrite output text, but retry control flow is captured before that mutation.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="providers">
+      <h2>Providers and Sessions</h2>
+      <p>
+        Provider classes own auth, base URL, HTTP client setup/cleanup, and request posting.
+        Model classes own static settings and create session objects. Session classes own mutable conversation state.
+      </p>
+
+      <table>
+        <thead>
+          <tr><th>Provider</th><th>Transport class</th><th>Model class</th><th>Session state</th><th>Structured-output default</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>OpenAI Responses</td>
+            <td><code>OpenAIProvider</code></td>
+            <td><code>OpenAIResponsesModel</code></td>
+            <td><code>OpenAIResponsesSession.previous_response_id</code></td>
+            <td><code>native</code>: ask OpenAI directly for JSON-schema output.</td>
+          </tr>
+          <tr>
+            <td>Anthropic Messages</td>
+            <td><code>AnthropicProvider</code></td>
+            <td><code>AnthropicMessagesModel</code></td>
+            <td><code>system</code> plus full <code>messages</code> transcript</td>
+            <td><code>tool</code>: use the harness-created <code>final_result</code> tool because Anthropic native JSON-schema output is not supported here.</td>
+          </tr>
+          <tr>
+            <td>OpenRouter chat completions</td>
+            <td><code>OpenRouterProvider</code></td>
+            <td><code>OpenRouterModel</code></td>
+            <td>full chat <code>messages</code> transcript</td>
+            <td><code>tool</code> by default; explicit <code>native</code> mode is passed through as OpenRouter <code>response_format</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <p>
+          Resume state is intentionally provider-owned and strictly validated. It checks kind, version, model,
+          known fields, field types, unknown keys, and JSON serializability. It does not verify that tools or system
+          prompts match the original run; callers own that compatibility.
+        </p>
+      </div>
+
+      <details>
+        <summary>Provider payload conversion helpers worth knowing</summary>
+        <div class="inside">
+          <ul>
+            <li><code>infer_model("provider:model")</code> selects the adapter and creates provider/settings objects.</li>
+            <li><code>ModelNotice</code> values are rendered with <code>render_model_notices()</code> and inserted into provider input by each session method; prompt starts/corrections append text, while tool continuations may add notice content after tool outputs.</li>
+            <li><code>_responses_tool_to_anthropic()</code> and <code>_responses_tool_to_chat()</code> convert the common function-tool schema.</li>
+            <li><code>_extract_responses_tool_calls()</code>, <code>_extract_anthropic_tool_calls()</code>, and <code>_extract_chat_tool_calls()</code> convert provider-specific tool calls into <code>ModelToolCall</code> objects.</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <section id="lifecycle-observability">
+      <h2>Lifecycle And Observability</h2>
+      <p>
+        Hooks and tracing are runtime surfaces, not model-callable tools. The harness works with no registered hooks,
+        but the hook points are part of the run lifecycle. Tracing records the lifecycle through spans; it should not
+        change control flow.
+      </p>
+      <div class="grid cols-2">
+        <div class="plain-panel">
+          <h3>Hooks</h3>
+          <p>
+            Hooks are runtime-only callables registered as <code>Hook(event, handler, tools=None, agents=None)</code>.
+            Dispatch is synchronous and ordered, so earlier hooks can deterministically cancel or mutate context before
+            later hooks run. Tool filters only apply to tool events; agent filters only apply to subagent events.
+            Limit and retry logic is not implemented through hooks; hard limit events notify hooks after the runtime
+            detects the limit condition.
+          </p>
+          <table>
+            <thead><tr><th>Event</th><th>Can cancel?</th><th>Can mutate?</th><th>Filter</th></tr></thead>
+            <tbody>
+              <tr><td><code>run_start</code></td><td>No</td><td>No</td><td>None</td></tr>
+              <tr><td><code>user_prompt_submit</code></td><td>Yes</td><td>Add prompt context</td><td>None</td></tr>
+              <tr><td><code>before_tool_call</code></td><td>Yes</td><td>No</td><td>Tool name</td></tr>
+              <tr><td><code>after_tool_call</code></td><td>No</td><td>Rewrite model-visible output</td><td>Tool name</td></tr>
+              <tr><td><code>before_subagent_run</code></td><td>Yes</td><td>No</td><td>Agent name</td></tr>
+              <tr><td><code>after_subagent_run</code></td><td>No</td><td>No</td><td>Agent name</td></tr>
+              <tr><td><code>limit_reached</code></td><td>No</td><td>No</td><td>None</td></tr>
+              <tr><td><code>run_end</code></td><td>No</td><td>No</td><td>None</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="plain-panel">
+          <h3>Tracing</h3>
+          <p>
+            <code>RunTracer</code> opens agent, model, and tool spans across every configured <code>TracingOptions</code> sink.
+            Local tracing is enabled by default for top-level harnesses unless <code>THINHARNESS_DISABLE_LOCAL_TRACING</code> disables it.
+            Trace attributes follow the OpenTelemetry GenAI semantic conventions used by the local tracing implementation.
+          </p>
+          <ul>
+            <li>Local traces are JSONL span records under the configured trace directory.</li>
+            <li>OTLP tracing is optional through the <code>tracing</code> extra.</li>
+            <li>Span creation and content capture are separate: external tracing can record spans without recording prompts, tool args, or tool results unless those capture flags are enabled.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="extras">
+      <h2>Extras</h2>
+      <p>
+        These surfaces are not required for ordinary harness runs. They still use the same <code>Harness</code> and
+        <code>ToolSpec</code> machinery, but applications can ignore them unless they need specialized search,
+        skills, delegation, MCP, or one-shot model fan-out.
+      </p>
+      <table>
+        <thead><tr><th>Extra</th><th>How it enters the run</th><th>Boundary / behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>JSONL search</td>
+            <td><code>FileTools.__init__</code> creates <code>self.jsonl</code>, and <code>FileTools.specs()</code> includes <code>self.jsonl.spec()</code>.</td>
+            <td>Specialized search over large JSONL content stores: ripgrep prefilter, field paths, where filters, projection, row limits, and truncation through FileTools spill behavior.</td>
+          </tr>
+          <tr>
+            <td>Skills</td>
+            <td><code>skills_dir</code> discovers available skills, but the model only gets skill tools when <code>builtin_tools</code> includes <code>skill_read</code> or <code>skill_run</code>.</td>
+            <td>Skills add prompt summaries plus <code>skill_read</code> and <code>skill_run</code>; they do not create one tool per skill.</td>
+          </tr>
+          <tr>
+            <td>Subagents</td>
+            <td>The <code>subagent</code> framework tool builds a child <code>Harness</code> and returns the child result as a tool result.</td>
+            <td>The parent tool call awaits the child run. Child harnesses always receive <code>subagents=[]</code>, structurally disabling recursion.</td>
+          </tr>
+          <tr>
+            <td>MCP</td>
+            <td>Configured server objects connect lazily and discover tools into live <code>ToolSpec</code> objects.</td>
+            <td>Subagents do not inherit parent-discovered MCP tools as ordinary custom <code>ToolSpec</code> objects. A named subagent can opt into MCP with <code>inherit_mcp_servers=True</code> or its own <code>mcp_servers=[...]</code>; then the child harness discovers MCP tools through its own connection lifecycle against those configured server objects.</td>
+          </tr>
+          <tr>
+            <td>Parallel LLM</td>
+            <td>Available built-in tool candidate via <code>create_parallel_llm_tool(parent)</code>, or custom renameable <code>ParallelLlmTool(...).spec()</code>.</td>
+            <td>Runs independent one-shot prompts concurrently. The built-in is configured by application code and text-only; custom <code>ParallelLlmTool</code> can opt into structured output.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="reading-path">
+      <h2>Recommended Reading Path</h2>
+      <ol>
+        <li><code>README.md</code> for motivation and constraints: small, filesystem-focused, provider-agnostic, no shell by default.</li>
+        <li><code>thinharness/tools/base.py</code> to understand <code>ToolSpec</code>, <code>ToolResult</code>, argument validation, retry envelopes, and path policy.</li>
+        <li><code>thinharness/providers.py</code> through the common dataclasses/protocols, then skim each provider session.</li>
+        <li><code>thinharness/output.py</code> so final-answer decisions make sense before reading the loop.</li>
+        <li><code>thinharness/core.py</code> and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>RunContext.advance_model</code>.</li>
+        <li><code>thinharness/tool_execution.py</code> to see how a model-emitted batch becomes ordered provider outputs.</li>
+        <li><code>thinharness/tools/filesystem.py</code> to understand the default workspace tools the model can call.</li>
+        <li><code>thinharness/hooks.py</code> and <code>thinharness/tracing.py</code> to understand lifecycle callbacks and run observability.</li>
+        <li>Pick extras as needed: <code>thinharness/tools/jsonl.py</code>, <code>thinharness/subagents.py</code>, <code>thinharness/tools/mcp.py</code>, <code>thinharness/tools/skills.py</code>, and <code>thinharness/tools/parallel_llm.py</code>.</li>
+        <li>Use tests as executable documentation. Start with <code>tests/test_harness.py</code>, then the feature-specific test file for whatever you are changing.</li>
+      </ol>
+    </section>
+
+    <section id="implementation-deep-dive">
+      <h2>Implementation Deep Dive</h2>
+      <p>
+        This section is for code ownership: the details you need to answer why the code is organized this way,
+        where behavior lives, and which boundaries are deliberate. It focuses on the current implementation:
+        runtime ownership, tool execution, structured turn resolution, provider/session boundaries, tracing,
+        resume, subagents, MCP, search support, and parallel LLM.
+      </p>
+
+      <details open>
+        <summary>1. Code Shape Primer: Pydantic, dataclasses, classes, functions, and protocols</summary>
+        <div class="inside">
+          <p>
+            ThinHarness uses different Python object types for different responsibilities. The short rule is:
+            serializable setup uses Pydantic, runtime records use dataclasses, long-lived state holders use ordinary
+            classes, and callable boundaries use functions or protocols.
+          </p>
+          <table>
+            <thead><tr><th>Shape</th><th>Used for</th><th>Why</th><th>Examples</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Pydantic model</td>
+                <td>Caller-owned configuration and typed argument/output validation.</td>
+                <td>It validates user input, can produce JSON schema, and is reasonable to serialize or inspect.</td>
+                <td><code>HarnessConfig</code>, <code>SubAgentConfig</code>, tool args such as <code>ReadArgs</code>, structured output types.</td>
+              </tr>
+              <tr>
+                <td>Dataclass</td>
+                <td>Runtime objects, provider-independent records, and small objects that carry a decision.</td>
+                <td>These are Python-side values, often carrying callables, raw provider data, or mutable run state.</td>
+                <td><code>ToolSpec</code>, <code>ToolResult</code>, <code>ModelTurn</code>, <code>RunUsage</code>, hook contexts, <code>OutputTurnDecision</code>.</td>
+              </tr>
+              <tr>
+                <td>Ordinary class</td>
+                <td>Objects that own state, configuration, setup/cleanup, or a family of methods.</td>
+                <td>The instance owns durable state; individual methods can still be exposed through small dataclasses such as <code>ToolSpec</code>.</td>
+                <td><code>Harness</code>, <code>FileTools</code>, provider classes, model/session classes, <code>MCPServer</code>, <code>ParallelLlmTool</code>.</td>
+              </tr>
+              <tr>
+                <td>Callable/function</td>
+                <td>Execution hooks and model-callable tool handlers.</td>
+                <td>The harness only needs something it can call after preparing context or arguments.</td>
+                <td><code>ToolSpec.handler</code>, hook handlers, nested handlers inside <code>ParallelLlmTool.spec()</code>.</td>
+              </tr>
+              <tr>
+                <td>Protocol</td>
+                <td>Provider-neutral interfaces.</td>
+                <td>Different providers can implement the same required methods without inheriting from the same base class.</td>
+                <td><code>Model</code>, <code>ModelSession</code>, tracer-like objects accepted by tracing.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Inheritance is intentionally light. Provider session classes implement the same session protocol, but the core
+            loop mostly uses composition: <code>Harness</code> owns a model, tool specs, hooks, tracing options, skill registry,
+            and MCP server list. Built-in tools often use classes as state holders, then hand bound methods to <code>ToolSpec</code>.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>2. Run Loop Ownership: <code>core.py</code>, <code>runtime.py</code>, and <code>tool_execution.py</code></summary>
+        <div class="inside">
+          <p>
+            The run loop is divided by ownership. <code>core.py</code> coordinates the public run,
+            <code>runtime.py</code> owns one run's mutable state and the repeated wrapper around each provider call, and
+            <code>tool_execution.py</code> owns model-requested tool batches and the hook/tracing flow for one tool call.
+          </p>
+          <table>
+            <thead><tr><th>File</th><th>Owns</th><th>Owned elsewhere</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>core.py</code></td>
+                <td>Harness construction, public run API, running/closed checks, provider session selection, and choosing the next action after each model turn: build the final result, run tools, retry structured output, or fail.</td>
+                <td><code>providers.py</code> owns provider API payload details; <code>tool_execution.py</code> owns one tool call's hook/tracing flow; <code>runtime.py</code> owns repeated provider-call wrapper code.</td>
+              </tr>
+              <tr>
+                <td><code>runtime.py</code></td>
+                <td>One run's mutable state: responses, usage, tool records, limit notices, terminal result/error, stop reason, resume attachment, <code>run_end</code> guard.</td>
+                <td><code>providers.py</code> owns provider-specific API request formats; <code>tool_execution.py</code> owns individual tool invocation mechanics.</td>
+              </tr>
+              <tr>
+                <td><code>tool_execution.py</code></td>
+                <td>Batch execution policy, hook/tracing flow for one tool call, current tool-call context, output parsing, retry-kind capture.</td>
+                <td><code>output.py</code> owns structured final-answer validation; <code>core.py</code> chooses whether the next provider call starts, continues with tools, retries output, or stops.</td>
+              </tr>
+              <tr>
+                <td><code>output.py</code></td>
+                <td>Classifies a returned <code>ModelTurn</code> as final, continue with tools, retry via user message, retry via tool output, or unexpected.</td>
+                <td><code>core.py</code> acts on that decision; <code>runtime.py</code> owns retry-budget exhaustion; <code>providers.py</code> owns transport calls.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The important handoff is <code>RunContext.advance_model(request, trace_snapshot, output_retry=False)</code>.
+            <code>core.py</code> supplies a provider-session method call, usually <code>active_session.start(...)</code> for the
+            first model request or <code>active_session.continue_with_tools(...)</code> after ordinary tool calls. The run-loop
+            diagram may label the second case as "continue" for space, but the code path is <code>continue_with_tools(...)</code>.
+            <code>runtime.py</code> wraps that callable with limit checks, usage accounting,
+            model tracing, notice computation, response capture, and output turn resolution.
+          </p>
+          <p>
+            This keeps provider API payload knowledge in <code>providers.py</code> while keeping the repeated provider-call wrapper
+            in one place.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>3. Tool Execution Internals: from model tool call to provider follow-up</summary>
+        <div class="inside">
+          <p>
+            A provider returns one <code>ModelTurn</code>. That object has <code>text</code>, a <code>tool_calls</code> list, and raw
+            provider JSON. The <code>tool_calls</code> field is a <code>list[ModelToolCall]</code>, where each <code>ModelToolCall</code>
+            has the provider call id, tool name, and raw JSON argument string.
+          </p>
+          <p>
+            When <code>resolve_turn_output()</code> decides the turn should continue with ordinary tools, the harness executes
+            the whole model-emitted batch and sends one ordered set of <code>ToolOutput</code> values back through
+            <code>continue_with_tools(...)</code>.
+          </p>
+          <ul>
+            <li><code>ToolBatchExecutor</code> chooses serial execution if any requested tool is marked <code>sequential=True</code>; otherwise it can run calls concurrently.</li>
+            <li><code>ToolCallExecutor</code> sets the current tool-call context, then runs <code>before_tool_call</code> hooks that may cancel the call.</li>
+            <li>The executor parses JSON arguments, validates them with Pydantic when a model exists, and calls the async handler directly or the sync handler in a worker thread.</li>
+            <li>Handler output is normalized into the standard <code>{"ok", "content", "metadata"}</code> tool envelope.</li>
+            <li>Retry metadata is captured before <code>after_tool_call</code> hooks can rewrite the output text the model sees.</li>
+            <li>Tracing records one tool span per call, while <code>tool_call_records</code> and provider-facing <code>ToolOutput</code> values preserve the original model order.</li>
+          </ul>
+          <p>
+            These are the main branches after a model asks for a tool call. They determine whether ThinHarness asks the
+            model to repair its request, reports a normal tool failure, or continues the provider conversation.
+          </p>
+          <table>
+            <thead><tr><th>Case</th><th>What happens</th><th>Why it matters</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Bad JSON or bad Pydantic args</td>
+                <td>Returns a failed tool envelope with <code>metadata.retry=true</code>.</td>
+                <td>The model passed arguments in a fixable bad format, so the harness can ask it to retry.</td>
+              </tr>
+              <tr>
+                <td>Handler raises <code>ModelRetry</code></td>
+                <td>Returns a retryable envelope with the handler's hint.</td>
+                <td>Tool code can classify a domain-level mistake as model-repairable.</td>
+              </tr>
+              <tr>
+                <td>Handler raises an ordinary exception</td>
+                <td>Returns <code>ok=false</code> without <code>metadata.retry=true</code>.</td>
+                <td>The model can still call tools later, but this result does not ask it to repair the same call and does not increment the tool retry budget.</td>
+              </tr>
+              <tr>
+                <td><code>after_tool_call</code> rewrites output</td>
+                <td>The model sees the rewritten text, but retry control flow was captured first.</td>
+                <td>Hooks own presentation; the harness owns retry budget accounting.</td>
+              </tr>
+              <tr>
+                <td>Any called tool has <code>sequential=True</code></td>
+                <td>The whole current batch runs serially in model order.</td>
+                <td>Mutating tools avoid race conditions without partitioning the batch into smaller dependency groups.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details>
+        <summary>4. Provider and Session Handoff: reusable models, fresh sessions, common turns</summary>
+        <div class="inside">
+          <p>
+            Provider adapters are deliberately layered. Provider transport classes own auth, base URL, timeout, and HTTP
+            client setup/cleanup. Model classes own reusable static settings. Session classes own mutable conversation state.
+          </p>
+          <p>
+            In plain terms: a <code>Model</code> is the reusable object you pass into <code>Harness(..., model=...)</code>. It knows
+            which provider/model/settings to use, but it should not hold the live conversation transcript. For each
+            <code>Harness.run(...)</code>, it creates a fresh <code>ModelSession</code>; that session is the object the harness
+            actually talks to during the run.
+          </p>
+          <table>
+            <thead><tr><th>Layer</th><th>Mutable?</th><th>Responsibility</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Provider transport</td>
+                <td>HTTP client setup/cleanup only</td>
+                <td>Post HTTP requests, wrap HTTP/transport errors, close owned clients.</td>
+              </tr>
+              <tr>
+                <td>Model</td>
+                <td>No provider transcript</td>
+                <td>The reusable object passed to <code>Harness</code>. It creates a fresh session with <code>new_session()</code>, or a resumed session with <code>resume_session(...)</code> when resume is supported.</td>
+              </tr>
+              <tr>
+                <td>ModelSession</td>
+                <td>Yes</td>
+                <td>The per-run conversation object. <code>core.py</code> calls its <code>start(...)</code>, <code>continue_with_tools(...)</code>, correction, resume, and state-dump methods.</td>
+              </tr>
+              <tr>
+                <td><code>ModelTurn</code></td>
+                <td>No</td>
+                <td>Common result object: final text extracted from the response, requested tool calls, and raw provider JSON.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The core loop should not know OpenAI Responses, Anthropic Messages, or OpenRouter Chat Completions API formats.
+            It receives a <code>ModelTurn</code> and applies the same output resolution, tool execution, tracing, hook, limit,
+            and retry logic regardless of provider.
+          </p>
+          <p>
+            Provider-specific translation stays in <code>providers.py</code>: common function tools become Anthropic
+            <code>input_schema</code> tools or Chat Completions function tools; native structured output requests become
+            provider-specific API fields; notice text is rendered into each provider's input format.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>5. Structured Output: one resolver, several delivery strategies</summary>
+        <div class="inside">
+          <p>
+            Structured output is not bolted onto every provider separately. The harness builds an <code>OutputSchema</code>
+            from the caller's output spec, then providers translate the provider-native request details when native mode is used.
+            <code>resolve_turn_output()</code> decides what one returned <code>ModelTurn</code> means.
+          </p>
+          <table>
+            <thead><tr><th>Mode</th><th>How the model is guided</th><th>How the final result is recognized</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>text</code></td>
+                <td>No schema payload and no harness-created tool.</td>
+                <td>Final assistant text populates both <code>text</code> and <code>output</code>.</td>
+              </tr>
+              <tr>
+                <td><code>native</code></td>
+                <td>The provider API is asked directly for JSON-schema output.</td>
+                <td>A final native-output turn has no ordinary tool calls. Earlier turns may still request ordinary tools; final assistant text is parsed and validated through Pydantic.</td>
+              </tr>
+              <tr>
+                <td><code>tool</code></td>
+                <td>A harness-created <code>final_result</code> function tool is exposed to the provider.</td>
+                <td>Exactly one <code>final_result</code> call, with no sibling tool calls in that same turn, completes the run and builds the final result.</td>
+              </tr>
+              <tr>
+                <td><code>prompted</code></td>
+                <td>The harness appends JSON-schema instructions to the prompt/instructions instead of using provider-native schema output or <code>final_result</code>.</td>
+                <td>A final prompted-output turn has no ordinary tool calls. Earlier turns may still request ordinary tools; final assistant text is parsed and validated.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <code>final_result</code> is harness-created, not a normal user tool. It is reserved only when structured tool mode is active,
+            is not exposed in <code>self.tools</code>, does not fire tool hooks, does not count as <code>usage.tool_calls</code>,
+            and makes the exit non-resumable because the provider transcript would contain an unanswered synthetic tool call.
+            Native and prompted structured-output exits can still be resumable when the provider session can dump clean resume state.
+          </p>
+          <p>
+            Non-object output schemas such as lists are wrapped under a single <code>value</code> argument for tool mode because
+            function tool arguments must be JSON objects. Validation uses Pydantic's public <code>TypeAdapter</code> API and
+            local schema cleanup. The local implementation is intentionally narrower than Pydantic AI: it does not stream
+            partial structured objects, treat a Python function signature as the output schema, or run custom output validator hooks.
+          </p>
+          <p>
+            Invalid structured output creates corrective model requests until <code>output_retries</code> is exhausted.
+            Retry-budget exhaustion is handled by the caller of the resolver: <code>Harness.run()</code> turns it into a run failure, while
+            <code>ParallelLlmTool</code> turns it into a per-entry failure.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>6. State, limits, retry budgets, and resume</summary>
+        <div class="inside">
+          <p>
+            <code>Harness</code> is reusable setup; <code>RunContext</code> is one invocation's state. That distinction is
+            the main reason repeated runs on the same harness do not leak responses, usage, limit warnings, or resume bookkeeping.
+          </p>
+          <table>
+            <thead><tr><th>Concept</th><th>Where it lives</th><th>Important detail</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Model request limit</td>
+                <td><code>RunContext</code> and <code>RunUsage.model_requests</code></td>
+                <td>Counts provider calls, including corrective structured-output requests after the limit check allows them.</td>
+              </tr>
+              <tr>
+                <td>Tool call limit</td>
+                <td><code>RunContext.check_tool_limit</code> and <code>RunUsage.tool_calls</code></td>
+                <td>Counts model-requested ordinary tool calls before execution, so hook-blocked calls still count.</td>
+              </tr>
+              <tr>
+                <td>Cancelled tool calls</td>
+                <td><code>RunUsage.cancelled_tool_calls</code></td>
+                <td>Tracked separately after <code>before_tool_call</code> hooks cancel calls; cancellation does not erase the requested-call count.</td>
+              </tr>
+              <tr>
+                <td>Tool retry budget</td>
+                <td><code>RunUsage.tool_retries</code>, a dict keyed by tool name and updated by <code>RunContext.check_tool_retry_limits(...)</code></td>
+                <td>Two calls to the same tool share the same retry counter. This is coarse by design.</td>
+              </tr>
+              <tr>
+                <td>Output retry budget</td>
+                <td>Budget: <code>HarnessConfig.output_retries</code>. Current count: <code>RunUsage.output_retries</code>.</td>
+                <td>Counts corrective model requests after invalid structured output, not total validation attempts. <code>RunContext.retry_or_fail()</code> checks the budget before the corrective request is made.</td>
+              </tr>
+              <tr>
+                <td>Near-limit notices</td>
+                <td><code>_compute_limit_notices(...)</code> returns provider-facing <code>ModelNotice</code> values; <code>RunContext.emitted_limit_warnings</code> records which warning thresholds already went out.</td>
+                <td>Computed from the current <code>RunUsage.model_requests</code> and <code>RunUsage.tool_calls</code> before the next provider request. A warning for the same budget threshold is sent once per run, not repeated on every later provider call.</td>
+              </tr>
+              <tr>
+                <td>Resume state</td>
+                <td>Provider-specific resume state copied into <code>HarnessResult.resume_state</code> while building the final result.</td>
+                <td>OpenAI stores a <code>previous_response_id</code>; Anthropic and OpenRouter store their message transcript plus provider metadata. Callers can store and pass it back, but should not edit or construct it.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <code>resume_from</code> starts a new turn from a previous clean result. It is not a failed-request retry,
+            interrupted-tool continuation, or transcript repair mechanism. Errors, cancellation, limit exits, tool retry
+            exhaustion, output validation failure, unexpected model behavior, and tool-mode <code>final_result</code> exits
+            intentionally produce no checkpoint.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>7. Extras Internals: JSONL search, skills, subagents, MCP, and parallel LLM</summary>
+        <div class="inside">
+          <p>
+            Extras are specialized capabilities that an application can ignore unless it uses that feature. They still
+            enter the run through existing <code>ToolSpec</code>, <code>Harness</code>, and provider-session boundaries.
+          </p>
+          <table>
+            <thead><tr><th>Extra</th><th>Where responsibility changes hands</th><th>Boundary / behavior</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>JSONL search</td>
+                <td><code>FileTools</code> owns the <code>JsonlSearch</code> instance and exposes its spec with the filesystem built-ins.</td>
+                <td><code>search_support.py</code> holds shared ripgrep parsing, glob validation, containment filtering, and search-root helpers used by both text search and JSONL search.</td>
+              </tr>
+              <tr>
+                <td>Subagents</td>
+                <td>The <code>subagent</code> framework tool builds a child <code>Harness</code> and returns the child result as a tool result.</td>
+                <td>Child runs start fresh, recursion is structurally disabled, and inherited custom tools are live <code>ToolSpec</code> objects.</td>
+              </tr>
+              <tr>
+                <td>MCP</td>
+                <td>Configured server objects connect lazily and discover tools into live <code>ToolSpec</code> objects.</td>
+                <td>Subagents do not inherit parent-discovered MCP tools as ordinary custom <code>ToolSpec</code> objects. They opt into MCP through inherited or explicit server config, then discover tools in the child harness lifecycle.</td>
+              </tr>
+              <tr>
+                <td>Skills</td>
+                <td><code>SkillRegistry</code> exposes <code>skill_read</code> and <code>skill_run</code> when skills are configured.</td>
+                <td>Skills add prompt summaries plus <code>skill_read</code> and <code>skill_run</code>; they do not create one tool per skill. Script runners are extension-based.</td>
+              </tr>
+              <tr>
+                <td>Parallel LLM</td>
+                <td>A normal <code>ToolSpec</code> wrapper for independent one-shot model calls.</td>
+                <td>The built-in is configured by application code and text-only; custom <code>ParallelLlmTool</code> can opt into structured output.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      <p>Part of the ThinHarness documentation site · last updated 2026-06-05. The source focus is current project runtime and docs; generated caches, build outputs, and vendor reference checkouts are treated as non-runtime material.</p>
+    </footer>
+  </div>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <div class="mono-mark"><span class="dot"></span>thinharness · codebase explainer</div>
+      <div class="links">
+        <a href="index.html">home</a>
+        <a href="about.html">about</a>
+        <a href="transcripts.html">transcripts</a>
+        <a href="https://github.com/ryanbbrown/thinharness">github</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
