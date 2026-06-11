@@ -71,7 +71,7 @@ When `builtin_tools` is omitted, the model gets these filesystem tools:
 
 - `read`: read bounded UTF-8 file ranges with line numbers.
 - `write`: create, overwrite, or append UTF-8 files. This tool is sequential.
-- `edit`: replace exact text in a UTF-8 file. This tool is sequential.
+- `edit`: apply one or more exact text replacements to UTF-8 files; edits apply in order. This tool is sequential.
 - `search`: ripgrep-backed grouped path/line search.
 - `list`: list files or directories.
 - `glob`: find files by glob pattern.

@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from thinharness.defaults import (
     DEFAULT_EDIT_DESCRIPTION,
@@ -15,6 +16,7 @@ from thinharness.defaults import (
     DEFAULT_SEARCH_DESCRIPTION,
     DEFAULT_WRITE_DESCRIPTION,
 )
+from thinharness.tools.base import StrictArgs, tool_parameters
 from thinharness.tools.filesystem import FileTools, PathValidationError, SearchArgs
 from thinharness.tools.jsonl import JsonlSearchArgs
 
@@ -32,16 +34,251 @@ def test_file_tool_descriptions_use_defaults(tmp_path: Path) -> None:
         "jsonl_search": DEFAULT_JSONL_SEARCH_DESCRIPTION,
     }
 
+def test_tool_parameters_preserves_title_field_while_stripping_schema_titles() -> None:
+    class TitledArgs(StrictArgs):
+        title: str
+        path: str
+
+    schema = tool_parameters(TitledArgs)
+
+    assert "title" in schema["properties"]
+    assert schema["properties"]["title"] == {"type": "string"}
+    assert "title" in schema["required"]
+    assert schema.get("title") is None
+
 def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
     tools = FileTools(tmp_path)
     assert tools.write({"path": "notes/todo.txt", "content": "one\ntwo\n"}).ok
     read = tools.read({"path": "notes/todo.txt", "offset": 2, "limit": 1})
     assert read.ok
     assert "2\ttwo" in read.content
-    edit = tools.edit({"path": "notes/todo.txt", "old_string": "two", "new_string": "TWO"})
+    edit = tools.edit({"edits": [{"path": "notes/todo.txt", "old_string": "two", "new_string": "TWO"}]})
     assert edit.ok
     listed = tools.list_files({"path": ".", "recursive": True})
     assert "notes/todo.txt" in listed.content
+
+def test_file_tools_edit_batches_across_files_without_cross_file_state(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("shared\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("shared\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "a.txt", "old_string": "shared", "new_string": "alpha"},
+            {"path": "b.txt", "old_string": "shared", "new_string": "beta"},
+        ],
+    })
+
+    assert result.ok, result.content
+    assert result.metadata["applied"] == 2
+    assert result.metadata["failed"] == 0
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "alpha\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "beta\n"
+
+def test_file_tools_edit_applies_same_file_edits_in_order(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("one\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "notes.txt", "old_string": "one", "new_string": "two"},
+            {"path": "notes.txt", "old_string": "two", "new_string": "three"},
+        ],
+    })
+
+    assert result.ok
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "three\n"
+
+def test_file_tools_edit_reports_partial_failures_and_continues(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("two\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "a.txt", "old_string": "one", "new_string": "ONE"},
+            {"path": "b.txt", "old_string": "missing", "new_string": "MISSING"},
+            {"path": "b.txt", "old_string": "two", "new_string": "TWO"},
+        ],
+    })
+
+    assert not result.ok
+    assert result.metadata["applied"] == 2
+    assert result.metadata["failed"] == 1
+    assert "1. ok a.txt: replaced 1 occurrence(s)" in result.content
+    assert "2. FAILED b.txt: old_string not found" in result.content
+    assert "3. ok b.txt: replaced 1 occurrence(s)" in result.content
+    assert result.metadata["results"][1]["error"] == "old_string not found"
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "ONE\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "TWO\n"
+
+def test_file_tools_edit_reports_when_all_items_fail(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "missing-a.txt", "old_string": "one", "new_string": "ONE"},
+            {"path": "missing-b.txt", "old_string": "two", "new_string": "TWO"},
+        ],
+    })
+
+    assert not result.ok
+    assert result.metadata["applied"] == 0
+    assert result.metadata["failed"] == 2
+    assert "1. FAILED missing-a.txt: file not found" in result.content
+    assert "2. FAILED missing-b.txt: file not found" in result.content
+
+def test_file_tools_edit_reports_ambiguity_introduced_by_earlier_edit(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("first\nsecond\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "notes.txt", "old_string": "first", "new_string": "second"},
+            {"path": "notes.txt", "old_string": "second", "new_string": "done"},
+        ],
+    })
+
+    assert not result.ok
+    assert result.metadata["applied"] == 1
+    assert result.metadata["results"][1]["matches"] == 2
+    assert "old_string appears 2 times" in result.metadata["results"][1]["error"]
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "second\nsecond\n"
+
+def test_file_tools_edit_supports_per_item_all(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("x x y\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "notes.txt", "old_string": "x", "new_string": "z", "all": True},
+        ],
+    })
+
+    assert result.ok
+    assert result.metadata["results"][0]["replacements"] == 2
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "z z y\n"
+
+def test_file_tools_edit_expected_replacements_is_count_assertion_per_item(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("x x\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "c.txt").write_text("q q\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    mismatch = tools.edit({
+        "edits": [
+            {"path": "a.txt", "old_string": "x", "new_string": "z", "all": True, "expected_replacements": 3},
+            {"path": "b.txt", "old_string": "one", "new_string": "two"},
+        ],
+    })
+    assert not mismatch.ok
+    assert mismatch.metadata["applied"] == 1
+    assert mismatch.metadata["results"][0]["matches"] == 2
+    assert "expected 3 replacement(s), found 2" in mismatch.content
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "x x\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "two\n"
+
+    ambiguity = tools.edit({
+        "edits": [
+            {"path": "a.txt", "old_string": "x", "new_string": "z", "expected_replacements": 2},
+        ],
+    })
+    assert not ambiguity.ok
+    assert ambiguity.metadata["results"][0]["matches"] == 2
+    assert "old_string appears 2 times" in ambiguity.content
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "x x\n"
+
+    matched_all = tools.edit({
+        "edits": [
+            {"path": "c.txt", "old_string": "q", "new_string": "r", "all": True, "expected_replacements": 2},
+        ],
+    })
+    assert matched_all.ok
+    assert matched_all.metadata["results"][0]["replacements"] == 2
+    assert (tmp_path / "c.txt").read_text(encoding="utf-8") == "r r\n"
+
+def test_file_tools_edit_path_and_file_errors_are_per_item(tmp_path: Path) -> None:
+    (tmp_path / "ok.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "folder").mkdir()
+    tools = FileTools(tmp_path, write_paths=["ok.txt", "missing.txt", "folder"])
+
+    result = tools.edit({
+        "edits": [
+            {"path": "../blocked.txt", "old_string": "x", "new_string": "y"},
+            {"path": "missing.txt", "old_string": "x", "new_string": "y"},
+            {"path": "folder", "old_string": "x", "new_string": "y"},
+            {"path": "ok.txt", "old_string": "one", "new_string": "two"},
+        ],
+    })
+
+    assert not result.ok
+    assert result.metadata["applied"] == 1
+    assert result.metadata["failed"] == 3
+    assert result.metadata["results"][0]["error_type"] == "PathValidationError"
+    assert result.metadata["results"][1]["error"] == "file not found"
+    assert result.metadata["results"][2]["error"] == "path is not a file"
+    assert result.metadata["results"][2]["error_type"] == "PathTypeError"
+    assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "two\n"
+
+def test_file_tools_edit_reports_os_errors_per_item_and_continues(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "fail.txt").write_text("one\n", encoding="utf-8")
+    (tmp_path / "ok.txt").write_text("two\n", encoding="utf-8")
+    original_write_text = Path.write_text
+
+    def write_text(path: Path, data: str, *args: object, **kwargs: object) -> int:
+        if path == tmp_path / "fail.txt":
+            raise PermissionError("denied")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({
+        "edits": [
+            {"path": "fail.txt", "old_string": "one", "new_string": "ONE"},
+            {"path": "ok.txt", "old_string": "two", "new_string": "TWO"},
+        ],
+    })
+
+    assert not result.ok
+    assert result.metadata["applied"] == 1
+    assert result.metadata["failed"] == 1
+    assert result.metadata["results"][0]["error_type"] == "PermissionError"
+    assert result.metadata["results"][1]["replacements"] == 1
+    assert (tmp_path / "fail.txt").read_text(encoding="utf-8") == "one\n"
+    assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "TWO\n"
+
+def test_file_tools_edit_rejects_empty_old_string_per_item(tmp_path: Path) -> None:
+    (tmp_path / "ok.txt").write_text("one\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    result = tools.edit({"edits": [{"path": "ok.txt", "old_string": "", "new_string": "two"}]})
+
+    assert not result.ok
+    assert result.metadata["applied"] == 0
+    assert result.metadata["results"][0]["path"] == "ok.txt"
+    assert result.metadata["results"][0]["error"] == "old_string must not be empty"
+    assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "one\n"
+
+def test_file_tools_edit_rejects_empty_list_and_old_flat_shape(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path)
+
+    with pytest.raises(ValidationError):
+        tools.edit({"edits": []})
+    with pytest.raises(ValidationError):
+        tools.edit({"path": "notes.txt", "old_string": "one", "new_string": "two"})
+
+def test_file_tools_edit_provider_schema_inlines_nested_operation(tmp_path: Path) -> None:
+    edit_schema = next(tool.response_tool() for tool in FileTools(tmp_path).specs() if tool.name == "edit")
+    parameters = edit_schema["parameters"]
+
+    assert not _contains_key(parameters, "$ref")
+    assert not _contains_key(parameters, "$defs")
+    assert "edits" in parameters["required"]
+    assert parameters["properties"]["edits"]["type"] == "array"
+    assert parameters["properties"]["edits"]["minItems"] == 1
+    operation_schema = parameters["properties"]["edits"]["items"]
+    assert operation_schema["additionalProperties"] is False
 
 def test_file_tools_read_without_limit_reads_through_eof_under_hard_caps(tmp_path: Path) -> None:
     (tmp_path / "many.txt").write_text("\n".join(f"line {i}" for i in range(450)), encoding="utf-8")
@@ -485,6 +722,13 @@ def test_gitignore_ignores_thinharness_outputs() -> None:
     ignore = Path(".gitignore").read_text(encoding="utf-8")
 
     assert ".thinharness/" in ignore
+
+def _contains_key(value: object, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
 
 def _rg_match(path: str, line_number: int, line_text: str) -> str:
     return json.dumps({

@@ -39,6 +39,11 @@ class Person(BaseModel):
     age: int
 
 
+class TitledRecord(BaseModel):
+    title: str
+    summary: str
+
+
 class Address(BaseModel):
     city: str
     zip_code: str
@@ -133,6 +138,15 @@ def test_resolve_turn_output_classifies_native_mode_retry() -> None:
     assert decision.kind == "retry_user_message"
     assert decision.error is not None
     assert "Return only valid JSON" in decision.retry_message
+
+
+def test_output_schema_preserves_title_field_while_stripping_schema_titles() -> None:
+    schema = OutputSchema.build(TitledRecord, "native")
+
+    assert "title" in schema.schema["properties"]
+    assert schema.schema["properties"]["title"] == {"type": "string"}
+    assert "title" in schema.schema["required"]
+    assert schema.schema.get("title") is None
 
 
 def test_resolve_turn_output_text_mode_tool_calls_continue() -> None:

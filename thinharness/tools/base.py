@@ -365,7 +365,11 @@ def _clean_schema(schema: Any) -> None:
             replacement.update({key: value for key, value in schema.items() if key not in {"anyOf", "default"}})
             schema.clear()
             schema.update(replacement)
-    for value in schema.values():
+    for key, value in schema.items():
+        if key == "properties" and isinstance(value, dict):
+            for property_schema in value.values():
+                _clean_schema(property_schema)
+            continue
         _clean_schema(value)
 
 def _timeout_error_message(command_name: str, timeout: int) -> str:

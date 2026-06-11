@@ -8,14 +8,14 @@ Use edit for targeted replacements and write for creating or replacing files.
 Start narrow, broaden only if needed, and use offset/limit when a file is large or you only need a known section.
 Prefer batching independent tool calls in one assistant turn. When several reads, searches, listings, or other inspections do not
 depend on each other's results, emit them together instead of waiting between calls.
-When making several independent, non-overlapping edits to the same file, emit multiple edit calls in the same assistant turn;
-only read between edits when a later edit depends on the result of an earlier one.
+When making edits, batch independent replacements into one edit call, order dependent replacements deliberately within the edits list,
+and after any per-edit failure, retry only the failed items after reading the per-edit results.
 
 When finished, respond concisely with what changed and any verification run."""
 
 DEFAULT_READ_DESCRIPTION = "Read a UTF-8 text file with line numbers and optional offset/limit."
 DEFAULT_WRITE_DESCRIPTION = "Create, overwrite, or append to a UTF-8 text file under the workspace root."
-DEFAULT_EDIT_DESCRIPTION = "Replace exact text in a UTF-8 file. old_string must be unique unless all=true."
+DEFAULT_EDIT_DESCRIPTION = "Apply one or more exact text replacements to UTF-8 files. Each old_string must be unique unless all=true."
 DEFAULT_SEARCH_DESCRIPTION = "Search readable workspace files with ripgrep and return compact grouped path/line matches."
 DEFAULT_LIST_DESCRIPTION = "List a directory or glob files under the workspace root."
 DEFAULT_GLOB_DESCRIPTION = "Find files by glob pattern under the workspace root."
@@ -33,10 +33,14 @@ DEFAULT_WRITE_INSTRUCTIONS = """write usage:
 - Include path and complete content at the top level of the tool arguments."""
 
 DEFAULT_EDIT_INSTRUCTIONS = """edit usage:
-- Use edit for targeted replacements in existing UTF-8 files.
+- Use edit for one or more targeted replacements in existing UTF-8 files.
+- Include edits as a non-empty list. Each item must include path, old_string, and new_string.
+- Edits apply sequentially in list order; each edit sees the file content left by earlier edits in the same call.
+- Batch independent edits together. Order dependent edits deliberately, and resolve any failed item before relying on final file state.
 - old_string must match the file text exactly and should include enough surrounding context to be unique.
-- If old_string appears multiple times, add more context or set all=true only when every occurrence should change.
-- Include path, old_string, and new_string at the top level of the tool arguments."""
+- If an old_string appears multiple times, add more context or set all=true only when every occurrence should change.
+- expected_replacements is only a count assertion; replacing multiple occurrences still requires all=true.
+- When a batch has failures, retry only the failed items after reading the numbered per-edit results."""
 
 DEFAULT_SEARCH_INSTRUCTIONS = """search usage:
 - Use search to find text or regex matches in readable workspace files.

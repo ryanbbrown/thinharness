@@ -67,14 +67,20 @@ class WriteArgs(StrictArgs):
     append: bool = False
 
 
-class EditArgs(StrictArgs):
-    """Arguments for edit."""
+class EditOperation(StrictArgs):
+    """One exact replacement for edit."""
 
     path: str
     old_string: str
     new_string: str
     all: bool = False
     expected_replacements: int | None = Field(default=None, ge=1)
+
+
+class EditArgs(StrictArgs):
+    """Arguments for edit."""
+
+    edits: list[EditOperation] = Field(min_length=1)
 
 
 class SearchArgs(StrictArgs):
@@ -227,8 +233,41 @@ class FileTools:
         return ToolResult(True, f"{action} {len(content.encode('utf-8'))} bytes to {self._display(path)}", {"path": str(path)})
 
     def edit(self, args: EditArgs | Json) -> ToolResult:
-        """Replace exact text in a contained UTF-8 file."""
+        """Apply one or more exact replacements to contained UTF-8 files."""
         args = coerce_args(args, EditArgs)
+        applied = 0
+        results: list[Json] = []
+        lines: list[str] = []
+        for index, edit in enumerate(args.edits, start=1):
+            result = self._edit_one(edit)
+            path = self._edit_result_path(edit, result)
+            replacements = result.metadata.get("replacements", 0) if result.ok else 0
+            item: Json = {
+                "index": index,
+                "ok": result.ok,
+                "path": edit.path,
+                "replacements": replacements,
+            }
+            if result.ok:
+                applied += 1
+                lines.append(f"{index}. ok {path}: replaced {replacements} occurrence(s)")
+            else:
+                item["error"] = result.content
+                if "error_type" in result.metadata:
+                    item["error_type"] = result.metadata["error_type"]
+                if "matches" in result.metadata:
+                    item["matches"] = result.metadata["matches"]
+                lines.append(f"{index}. FAILED {path}: {result.content}")
+            results.append(item)
+        failed = len(results) - applied
+        return ToolResult(
+            failed == 0,
+            "\n".join(lines),
+            {"applied": applied, "failed": failed, "results": results},
+        )
+
+    def _edit_one(self, args: EditOperation) -> ToolResult:
+        """Apply one exact replacement and return its isolated outcome."""
         try:
             path = self.write_policy.resolve(args.path)
         except PathValidationError as exc:
@@ -237,21 +276,33 @@ class FileTools:
         new = args.new_string
         replace_all = args.all
         if not old:
-            return ToolResult(False, "old_string must not be empty")
+            return ToolResult(False, "old_string must not be empty", {"path": str(path)})
         if not path.exists():
-            return ToolResult(False, f"file not found: {self._display(path)}", {"path": str(path)})
-        text = path.read_text(encoding="utf-8", errors="replace")
+            return ToolResult(False, "file not found", {"path": str(path)})
+        if not path.is_file():
+            return ToolResult(False, "path is not a file", {"path": str(path), "error_type": "PathTypeError"})
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return ToolResult(False, f"{type(exc).__name__}: {exc}", {"path": str(path), "error_type": type(exc).__name__})
         count = text.count(old)
         if count == 0:
             return ToolResult(False, "old_string not found", {"path": str(path)})
         if args.expected_replacements is not None and count != args.expected_replacements:
-            return ToolResult(False, f"expected {args.expected_replacements} replacement(s), found {count}", {"matches": count})
+            return ToolResult(False, f"expected {args.expected_replacements} replacement(s), found {count}", {"path": str(path), "matches": count})
         if count > 1 and not replace_all:
-            return ToolResult(False, f"old_string appears {count} times; add more context or set all=true", {"matches": count})
+            return ToolResult(False, f"old_string appears {count} times; add more context or set all=true", {"path": str(path), "matches": count})
         updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
-        path.write_text(updated, encoding="utf-8")
+        try:
+            path.write_text(updated, encoding="utf-8")
+        except OSError as exc:
+            return ToolResult(False, f"{type(exc).__name__}: {exc}", {"path": str(path), "error_type": type(exc).__name__})
         changed = count if replace_all else 1
-        return ToolResult(True, f"replaced {changed} occurrence(s) in {self._display(path)}", {"path": str(path), "replacements": changed})
+        return ToolResult(True, "replaced", {"path": str(path), "replacements": changed})
+
+    def _edit_result_path(self, args: EditOperation, result: ToolResult) -> str:
+        path = result.metadata.get("path")
+        return self._display(Path(path)) if isinstance(path, str) else args.path
 
     # -------------------------------------------------------------------------
     # Search and listing tools
