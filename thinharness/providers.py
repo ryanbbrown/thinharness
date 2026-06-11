@@ -6,15 +6,13 @@ import copy
 import json
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, Field
 
 from .tools.base import Json
-
-if TYPE_CHECKING:
-    from .core import HarnessError
+from .types import HarnessError
 
 # =============================================================================
 # Normalized model types
@@ -186,13 +184,6 @@ class ProviderError(RuntimeError):
 _BASE_RESUME_KEYS = frozenset({"kind", "version", "model"})
 
 
-def _resume_error(message: str) -> HarnessError:
-    """Create a HarnessError without importing core at module import time."""
-    from .core import HarnessError
-
-    return HarnessError(message)
-
-
 def _validate_resume_state(
     state: dict[str, Any],
     *,
@@ -202,25 +193,25 @@ def _validate_resume_state(
 ) -> None:
     """Validate resume state shape before any session mutation."""
     if not isinstance(state, dict):
-        raise _resume_error("resume_from must be a dict")
+        raise HarnessError("resume_from must be a dict")
     if state.get("kind") != expected_kind:
-        raise _resume_error(f"resume_from kind {state.get('kind')!r} does not match {expected_kind!r}")
+        raise HarnessError(f"resume_from kind {state.get('kind')!r} does not match {expected_kind!r}")
     if state.get("version") != 1:
-        raise _resume_error(f"resume_from version {state.get('version')!r} is not supported")
+        raise HarnessError(f"resume_from version {state.get('version')!r} is not supported")
     if state.get("model") != expected_model:
-        raise _resume_error(f"resume_from model {state.get('model')!r} does not match current model {expected_model!r}")
+        raise HarnessError(f"resume_from model {state.get('model')!r} does not match current model {expected_model!r}")
     for field_name, expected_type in required_fields.items():
         if field_name not in state:
-            raise _resume_error(f"resume_from missing required field: {field_name!r}")
+            raise HarnessError(f"resume_from missing required field: {field_name!r}")
         if not isinstance(state[field_name], expected_type):
-            raise _resume_error(f"resume_from field {field_name!r} has wrong type")
+            raise HarnessError(f"resume_from field {field_name!r} has wrong type")
     unknown = set(state) - (_BASE_RESUME_KEYS | required_fields.keys())
     if unknown:
-        raise _resume_error(f"resume_from has unknown keys: {sorted(unknown)!r}")
+        raise HarnessError(f"resume_from has unknown keys: {sorted(unknown)!r}")
     try:
         json.dumps(state)
     except (TypeError, ValueError) as exc:
-        raise _resume_error("resume_from must be JSON-serializable") from exc
+        raise HarnessError("resume_from must be JSON-serializable") from exc
 
 
 # =============================================================================
@@ -397,7 +388,7 @@ class OpenAIResponsesModel:
             required_fields={"previous_response_id": str},
         )
         if not state["previous_response_id"]:
-            raise _resume_error("resume_from field 'previous_response_id' must be non-empty")
+            raise HarnessError("resume_from field 'previous_response_id' must be non-empty")
         session = OpenAIResponsesSession(self)
         session.previous_response_id = state["previous_response_id"]
         return session
@@ -588,7 +579,7 @@ class AnthropicMessagesModel:
             required_fields={"system": (str, list), "messages": list},
         )
         if not all(isinstance(message, dict) for message in state["messages"]):
-            raise _resume_error("resume_from field 'messages' has wrong type")
+            raise HarnessError("resume_from field 'messages' has wrong type")
         session = AnthropicMessagesSession(self)
         session.system = state["system"]
         session.messages = copy.deepcopy(state["messages"])
@@ -741,7 +732,7 @@ class OpenRouterModel:
             required_fields={"messages": list},
         )
         if not all(isinstance(message, dict) for message in state["messages"]):
-            raise _resume_error("resume_from field 'messages' has wrong type")
+            raise HarnessError("resume_from field 'messages' has wrong type")
         session = OpenRouterSession(self)
         session.messages = copy.deepcopy(state["messages"])
         return session

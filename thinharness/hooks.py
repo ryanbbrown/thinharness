@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from .tools.base import Json, ToolSpec
+from .types import HarnessResult, RunUsage, StopReason
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
 _CURRENT_TOOL_RUNTIME: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
@@ -26,7 +27,7 @@ def current_tool_runtime_context() -> Json | None:
     return _CURRENT_TOOL_RUNTIME.get()
 
 if TYPE_CHECKING:
-    from .core import Harness, HarnessResult, RunUsage, StopReason
+    from .core import Harness
 
 
 logger = logging.getLogger(__name__)

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -31,7 +29,6 @@ from .output import (
 from .providers import (
     Model,
     ModelCapabilities,
-    ModelNotice,
     ModelSession,
     ProviderError,
     ResumableModel,
@@ -40,7 +37,7 @@ from .providers import (
     infer_model,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import Json, ToolResult, ToolSpec
+from .tools.base import ToolResult, ToolSpec
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
@@ -54,109 +51,9 @@ from .tracing import (
     annotate_agent_start,
     create_local_tracing,
 )
+from .types import HarnessError, HarnessResult, Json, RunUsage, UnexpectedModelBehavior
 
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
-StopReason = Literal[
-    "end_turn",
-    "provider_error",
-    "limit_reached",
-    "error",
-    "cancelled_by_hook",
-    "cancelled",
-    "output_validation_failed",
-    "tool_retries_exceeded",
-    "unexpected_model_behavior",
-]
-LimitNoticeKey = tuple[Literal["limit_warning"], Literal["model_requests", "tool_calls"], int]
-
-
-def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
-    """Return the once-per-run key for a model notice."""
-    assert notice.limit_kind is not None and notice.remaining is not None
-    return (notice.kind, notice.limit_kind, notice.remaining)
-
-
-def _append_notice_once(notices: list[ModelNotice], emitted: set[LimitNoticeKey], notice: ModelNotice) -> None:
-    """Append a notice once per run."""
-    key = _limit_notice_dedup_key(notice)
-    if key in emitted:
-        return
-    notices.append(notice)
-    emitted.add(key)
-
-
-def _compute_limit_notices(
-    config: HarnessConfig,
-    usage: RunUsage,
-    emitted: set[LimitNoticeKey],
-    *,
-    final_result_tool_available: bool,
-) -> list[ModelNotice]:
-    """Return model-facing warnings for the current run budget state."""
-    notices: list[ModelNotice] = []
-    final_model_text = (
-        "Final request: produce the answer now with final_result."
-        if final_result_tool_available
-        else "Final request: produce the answer now; do not request tools."
-    )
-    remaining_model_requests = config.max_model_requests - usage.model_requests
-    if remaining_model_requests == 1:
-        _append_notice_once(notices, emitted, ModelNotice(
-            kind="limit_warning",
-            content=final_model_text,
-            limit_kind="model_requests",
-            remaining=1,
-        ))
-
-    if config.max_tool_calls is None:
-        return notices
-    remaining_tool_calls = config.max_tool_calls - usage.tool_calls
-    if remaining_tool_calls == 0:
-        no_tools_text = (
-            "Tool calls are not available on this run; produce the answer with final_result."
-            if final_result_tool_available and config.max_tool_calls == 0
-            else "No tool calls remain: produce the answer with final_result."
-            if final_result_tool_available
-            else "Tool calls are not available on this run; answer without tools."
-            if config.max_tool_calls == 0
-            else "No tool calls remain: answer now without tools."
-        )
-        _append_notice_once(notices, emitted, ModelNotice(
-            kind="limit_warning",
-            content=no_tools_text,
-            limit_kind="tool_calls",
-            remaining=0,
-        ))
-    elif remaining_tool_calls == 1:
-        tool_phrase = "tool call remains besides final_result" if final_result_tool_available else "tool call remains"
-        _append_notice_once(notices, emitted, ModelNotice(
-            kind="limit_warning",
-            content=f"One {tool_phrase}: avoid fan-out.",
-            limit_kind="tool_calls",
-            remaining=1,
-        ))
-    return notices
-
-
-def _build_resume_state(
-    session: ModelSession,
-    stop_reason: StopReason,
-    finalized_via_output_tool: bool,
-    require_dump_state: bool,
-) -> dict[str, Any] | None:
-    """Apply resume lifecycle rules and return an isolated JSON copy."""
-    if stop_reason != "end_turn" or finalized_via_output_tool:
-        return None
-    dump_state = getattr(session, "dump_state", None)
-    if dump_state is None:
-        # Non-resumable custom models may omit dump_state; resumable models must provide it.
-        if require_dump_state:
-            raise HarnessError("resumable model session is missing dump_state()")
-        return None
-    state = dump_state()
-    if state is None:
-        return None
-    return json.loads(json.dumps(state))
 
 
 def _local_tracing_enabled(configured: bool) -> bool:
@@ -218,38 +115,6 @@ class HarnessConfig(BaseModel):
             if always_background:
                 raise ValueError("background='always' subagents cannot be used with tool_execution='sequential'")
         return self
-
-
-@dataclass
-class HarnessResult:
-    """Final result returned by a harness run."""
-
-    text: str
-    output: Any | None = None
-    responses: list[Json] = field(default_factory=list)
-    tool_call_records: list[Json] = field(default_factory=list)
-    usage: RunUsage = field(default_factory=lambda: RunUsage())
-    stop_reason: StopReason = "end_turn"
-    resume_state: dict[str, Any] | None = None
-
-
-@dataclass
-class RunUsage:
-    """Provider and tool usage for one harness run."""
-
-    model_requests: int = 0
-    tool_calls: int = 0
-    cancelled_tool_calls: int = 0
-    output_retries: int = 0
-    tool_retries: dict[str, int] = field(default_factory=dict)
-
-
-class HarnessError(RuntimeError):
-    """Raised when the harness cannot complete a run."""
-
-
-class UnexpectedModelBehavior(HarnessError):
-    """Raised when the model returns an invalid tool/finalization pattern."""
 
 
 class Harness:

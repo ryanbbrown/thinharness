@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -16,15 +17,104 @@ from .tracing import (
     annotate_model_request,
     annotate_model_span,
 )
+from .types import HarnessError, HarnessResult, Json, LimitNoticeKey, RunUsage, StopReason
 
 if TYPE_CHECKING:
-    from .core import Harness, HarnessResult, LimitNoticeKey, RunUsage, StopReason
+    from .core import Harness, HarnessConfig
     from .tool_execution import BackgroundToolCompletion, BackgroundToolManager
-    from .tools.base import Json
     from .tracing import _TraceSpan
 
 
 ModelRequest = Callable[[list[ModelNotice]], Awaitable[ModelTurn]]
+
+
+def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
+    """Return the once-per-run key for a model notice."""
+    assert notice.limit_kind is not None and notice.remaining is not None
+    return (notice.kind, notice.limit_kind, notice.remaining)
+
+
+def _append_notice_once(notices: list[ModelNotice], emitted: set[LimitNoticeKey], notice: ModelNotice) -> None:
+    """Append a notice once per run."""
+    key = _limit_notice_dedup_key(notice)
+    if key in emitted:
+        return
+    notices.append(notice)
+    emitted.add(key)
+
+
+def _compute_limit_notices(
+    config: HarnessConfig,
+    usage: RunUsage,
+    emitted: set[LimitNoticeKey],
+    *,
+    final_result_tool_available: bool,
+) -> list[ModelNotice]:
+    """Return model-facing warnings for the current run budget state."""
+    notices: list[ModelNotice] = []
+    final_model_text = (
+        "Final request: produce the answer now with final_result."
+        if final_result_tool_available
+        else "Final request: produce the answer now; do not request tools."
+    )
+    remaining_model_requests = config.max_model_requests - usage.model_requests
+    if remaining_model_requests == 1:
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=final_model_text,
+            limit_kind="model_requests",
+            remaining=1,
+        ))
+
+    if config.max_tool_calls is None:
+        return notices
+    remaining_tool_calls = config.max_tool_calls - usage.tool_calls
+    if remaining_tool_calls == 0:
+        no_tools_text = (
+            "Tool calls are not available on this run; produce the answer with final_result."
+            if final_result_tool_available and config.max_tool_calls == 0
+            else "No tool calls remain: produce the answer with final_result."
+            if final_result_tool_available
+            else "Tool calls are not available on this run; answer without tools."
+            if config.max_tool_calls == 0
+            else "No tool calls remain: answer now without tools."
+        )
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=no_tools_text,
+            limit_kind="tool_calls",
+            remaining=0,
+        ))
+    elif remaining_tool_calls == 1:
+        tool_phrase = "tool call remains besides final_result" if final_result_tool_available else "tool call remains"
+        _append_notice_once(notices, emitted, ModelNotice(
+            kind="limit_warning",
+            content=f"One {tool_phrase}: avoid fan-out.",
+            limit_kind="tool_calls",
+            remaining=1,
+        ))
+    return notices
+
+
+def _build_resume_state(
+    session: ModelSession,
+    stop_reason: StopReason,
+    finalized_via_output_tool: bool,
+    require_dump_state: bool,
+) -> dict[str, Any] | None:
+    """Apply resume lifecycle rules and return an isolated JSON copy."""
+    if stop_reason != "end_turn" or finalized_via_output_tool:
+        return None
+    dump_state = getattr(session, "dump_state", None)
+    if dump_state is None:
+        # Non-resumable custom models may omit dump_state; resumable models must provide it.
+        if require_dump_state:
+            raise HarnessError("resumable model session is missing dump_state()")
+        return None
+    state = dump_state()
+    if state is None:
+        return None
+    return json.loads(json.dumps(state))
 
 
 class _ToolRetryCall(Protocol):
@@ -86,8 +176,6 @@ class RunContext:
 
     def check_model_limit(self) -> None:
         """Raise if another provider request would exceed the configured limit."""
-        from .core import HarnessError
-
         if self.usage.model_requests < self.harness.config.max_model_requests:
             return
         self.harness.hooks.fire(LimitReachedContext(
@@ -103,8 +191,6 @@ class RunContext:
 
     def check_tool_limit(self, batch_size: int) -> None:
         """Raise if a requested tool batch would exceed the configured limit."""
-        from .core import HarnessError
-
         max_tool_calls = self.harness.config.max_tool_calls
         if max_tool_calls is None or self.usage.tool_calls + batch_size <= max_tool_calls:
             return
@@ -127,8 +213,6 @@ class RunContext:
         output_retry: bool = False,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Run one provider request with limit, usage, and tracing ceremony."""
-        from .core import _compute_limit_notices
-
         assert self.tracer is not None
         self.check_model_limit()
         notices = _compute_limit_notices(
@@ -173,8 +257,6 @@ class RunContext:
 
     def build_terminal_result(self, text: str, output: Any | None = None) -> HarnessResult:
         """Create the terminal HarnessResult for this run."""
-        from .core import HarnessResult
-
         return HarnessResult(
             text=text,
             output=output,
@@ -186,8 +268,6 @@ class RunContext:
 
     def attach_resume_state(self, session: ModelSession, *, require_dump_state: bool) -> None:
         """Attach final resume state before run_end hooks observe the result."""
-        from .core import _build_resume_state
-
         if self.result is not None:
             self.result.resume_state = _build_resume_state(
                 session,
@@ -225,8 +305,6 @@ class RunContext:
 
     def retry_or_fail(self) -> None:
         """Track one structured-output validation retry or fail the run."""
-        from .core import HarnessError
-
         if self.usage.output_retries >= self.harness.config.output_retries:
             self.stop_reason = "output_validation_failed"
             self.terminal_error = HarnessError("output validation exceeded output_retries")
@@ -234,8 +312,6 @@ class RunContext:
 
     def check_tool_retry_limits(self, calls: Sequence[_ToolRetryCall], executions: Sequence[_ToolRetryExecution]) -> None:
         """Track retryable tool failures and raise if any tool exceeds its budget."""
-        from .core import HarnessError
-
         for call, execution in zip(calls, executions, strict=True):
             if execution.retry_kind is None or execution.cancelled:
                 continue

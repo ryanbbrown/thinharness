@@ -28,9 +28,9 @@ from thinharness import (
     build_child_harness,
     create_subagent_tool,
 )
-from thinharness.core import _compute_limit_notices
 from thinharness.output import OutputSchema, resolve_turn_output
 from thinharness.providers import ProviderError
+from thinharness.runtime import _compute_limit_notices
 from thinharness.subagents import SubAgentArgs, run_subagent_tool
 
 

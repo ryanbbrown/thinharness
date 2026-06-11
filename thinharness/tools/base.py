@@ -14,7 +14,8 @@ from typing import Any, Literal, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-Json = dict[str, Any]
+from ..types import Json
+
 ToolBackgroundMode = Literal["never", "always", "model"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
