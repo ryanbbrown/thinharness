@@ -191,6 +191,7 @@ asyncio.run(main())</code></pre>
           <div class="f"><div class="ft">Resume</div><p>Clean new-turn continuation through opaque provider session state.</p></div>
           <div class="f"><div class="ft">MCP</div><p>Optional MCP client support with lazy tool discovery and collision checks.</p></div>
           <div class="f"><div class="ft">Parallel tool calls</div><p>Same-turn tool batches run concurrently when every called tool is parallel-safe.</p></div>
+          <div class="f"><div class="ft">Background tools</div><p>Opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.</p></div>
           <div class="f"><div class="ft">Tool retries</div><p>Tools raise <code>ModelRetry</code> to send structured feedback back to the model and trigger a retry within a per-tool budget.</p></div>
           <div class="f"><div class="ft">Limit notices</div><p>Near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Harness-owned model input — parent and child runs compute them from their own local budgets.</p></div>
           <div class="f"><div class="ft">Tracing</div><p>Local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.</p></div>
@@ -207,7 +208,7 @@ asyncio.run(main())</code></pre>
       <section id="status">
         <div class="eyebrow">// status</div>
         <h2>Status</h2>
-        <p>Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap. Each major feature (MCP, subagents, jsonl_search, parallel_llm, skills) lives in its own file with no hidden dependencies. If you don't use one, that's even less code to worry about. If you want to delete it entirely, that's a one-shot 10-word prompt to a coding agent.</p>
+        <p>Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap. Each major feature (MCP, subagents, jsonl_search, parallel_llm, background tools, skills) lives in its own file with no hidden dependencies. If you don't use one, that's even less code to worry about. If you want to delete it entirely, that's a one-shot 10-word prompt to a coding agent.</p>
       </section>
 
       <section id="license">

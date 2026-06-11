@@ -49,6 +49,7 @@ def slug_for_opinion(title: str) -> str:
         "Skills are tools, not auto-discovery": "skills",
         "Search is a top priority": "search",
         "Parallel LLM calls, built in": "parallel_llm",
+        "Background tools are simple": "background_tools",
         "Three providers, no matrix": "providers",
         "No compaction": "no_compaction",
         "No deployment layer": "no_deployment",
@@ -231,6 +232,8 @@ def render_about(markdown: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>About — ThinHarness</title>
 <link rel="stylesheet" href="assets/site.css">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 </head>
 <body class="th page-about">
   <header class="site-header">
