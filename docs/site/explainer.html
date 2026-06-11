@@ -117,8 +117,9 @@
       <pre class="tree-map"><code>.
 |-- thinharness/
 |   |-- __init__.py                  public API exports
-|   |-- core.py                      HarnessConfig, HarnessResult, run-loop coordination
-|   |-- runtime.py                   RunContext per-run state and provider-call wrapper
+|   |-- core.py                      HarnessConfig, Harness, run-loop coordination
+|   |-- runtime.py                   RunContext, TurnDriver, and provider-call wrapper
+|   |-- types.py                     leaf run result, usage, errors, stop reasons, Json alias
 |   |-- tool_execution.py            tool batch execution and one-call hook/tracing flow
 |   |-- providers.py                 provider transports, model adapters, session state
 |   |-- output.py                    structured-output schemas and turn decisions
@@ -153,6 +154,7 @@
             <tbody>
               <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, tool selection, limits, output mode, tracing, MCP, subagents, path policies.</td><td>Configures a <code>Harness</code>.</td></tr>
               <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns tool maps, model object, hooks, skill registry, MCP server list, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
+              <tr><td><code>TurnDriver</code></td><td>Internal runtime helper that owns the active model session plus per-run request constants.</td><td>Builds trace snapshots and delegates every model-session call through <code>RunContext.advance_model()</code>.</td></tr>
               <tr><td><code>RunContext</code></td><td>Internal state for one <code>Harness.run(...)</code>: responses, tool records, usage, retry/notice state, terminal error, stop reason, tracing span, and final result.</td><td>References the reusable <code>Harness</code>, but is not stored on it after the run.</td></tr>
               <tr><td><code>HarnessResult</code></td><td>Final run result: final text, parsed structured output, raw provider responses, tool call records, usage, stop reason, and resume state.</td><td>Receives finalized state from <code>RunContext</code>.</td></tr>
               <tr><td><code>RunUsage</code></td><td>Counts model requests, tool calls, cancelled tool calls, output retries, and per-tool retry counts.</td><td>Per-run counter owned by <code>RunContext</code> and returned in <code>HarnessResult</code>.</td></tr>
@@ -441,7 +443,7 @@
         <li><code>thinharness/tools/base.py</code> to understand <code>ToolSpec</code>, <code>ToolResult</code>, argument validation, retry envelopes, and path policy.</li>
         <li><code>thinharness/providers.py</code> through the common dataclasses/protocols, then skim each provider session.</li>
         <li><code>thinharness/output.py</code> so final-answer decisions make sense before reading the loop.</li>
-        <li><code>thinharness/core.py</code> and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>RunContext.advance_model</code>.</li>
+        <li><code>thinharness/core.py</code> and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>TurnDriver</code> and <code>RunContext.advance_model</code>.</li>
         <li><code>thinharness/tool_execution.py</code> to see how a model-emitted batch becomes ordered provider outputs.</li>
         <li><code>thinharness/tools/filesystem.py</code> to understand the default workspace tools the model can call.</li>
         <li><code>thinharness/hooks.py</code> and <code>thinharness/tracing.py</code> to understand lifecycle callbacks and run observability.</li>
@@ -515,7 +517,7 @@
         <div class="inside">
           <p>
             The run loop is divided by ownership. <code>core.py</code> coordinates the public run,
-            <code>runtime.py</code> owns one run's mutable state and the repeated wrapper around each provider call, and
+            <code>runtime.py</code> owns one run's mutable state, the active-session <code>TurnDriver</code>, and the repeated wrapper around each provider call, and
             <code>tool_execution.py</code> owns model-requested tool batches and the hook/tracing flow for one tool call.
           </p>
           <table>
@@ -528,7 +530,7 @@
               </tr>
               <tr>
                 <td><code>runtime.py</code></td>
-                <td>One run's mutable state: responses, usage, tool records, limit notices, terminal result/error, stop reason, resume attachment, <code>run_end</code> guard.</td>
+                <td>One run's mutable state, active-session turn driver, responses, usage, tool records, limit notices, terminal result/error, stop reason, resume attachment, <code>run_end</code> guard.</td>
                 <td><code>providers.py</code> owns provider-specific API request formats; <code>tool_execution.py</code> owns individual tool invocation mechanics.</td>
               </tr>
               <tr>
@@ -544,9 +546,9 @@
             </tbody>
           </table>
           <p>
-            The important handoff is <code>RunContext.advance_model(request, trace_snapshot, output_retry=False)</code>.
-            <code>core.py</code> supplies a provider-session method call, usually <code>active_session.start(...)</code> for the
-            first model request or <code>active_session.continue_with_tools(...)</code> after ordinary tool calls. The run-loop
+            The important handoff is <code>TurnDriver</code> plus <code>RunContext.advance_model(request, trace_snapshot, output_retry=False)</code>.
+            <code>core.py</code> chooses whether to start, resume, send tool outputs, or send a correction, and <code>TurnDriver</code>
+            supplies the matching provider-session method call. The run-loop
             diagram may label the second case as "continue" for space, but the code path is <code>continue_with_tools(...)</code>.
             <code>runtime.py</code> wraps that callable with limit checks, usage accounting,
             model tracing, notice computation, response capture, and output turn resolution.

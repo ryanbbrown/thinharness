@@ -32,7 +32,7 @@ from thinharness import (
     create_subagent_tool,
 )
 from thinharness.hooks import current_tool_runtime_context
-from thinharness.providers import ModelToolCall, ModelTurn
+from thinharness.providers import ModelToolCall, ModelTurn, ProviderError
 
 
 def test_current_tool_runtime_context_is_unset_outside_tool_call() -> None:
@@ -84,6 +84,28 @@ def test_run_end_fires_when_new_session_fails(tmp_path: Path) -> None:
         harness.run_sync("go")
 
     assert events == [("error", "RuntimeError", 0)]
+
+
+def test_new_session_provider_error_is_wrapped_and_reported(tmp_path: Path) -> None:
+    events = []
+    provider_error = ProviderError("provider unavailable")
+
+    class BrokenProviderModel(ScriptedModel):
+        def new_session(self):
+            raise provider_error
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=BrokenProviderModel([]),
+        hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
+    )
+
+    with pytest.raises(HarnessError, match="provider unavailable") as exc_info:
+        harness.run_sync("go")
+
+    assert exc_info.value.__cause__ is provider_error
+    assert events == [("provider_error", "HarnessError")]
+
 
 def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> None:
     events = []
