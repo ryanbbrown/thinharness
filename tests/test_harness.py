@@ -36,7 +36,7 @@ from thinharness import (
     call_tool,
     create_subagent_tool,
 )
-from thinharness.defaults import DEFAULT_PARALLEL_LLM_INSTRUCTIONS
+from thinharness.defaults import DEFAULT_PARALLEL_LLM_INSTRUCTIONS, DEFAULT_SEARCH_INSTRUCTIONS
 from thinharness.hooks import current_tool_call_context
 from thinharness.providers import ModelToolCall, ModelTurn
 from thinharness.tools.base import _invoke_tool
@@ -264,6 +264,14 @@ def test_tool_instructions_follow_skill_summary(tmp_path: Path) -> None:
     instructions = harness.system_instructions()
 
     assert instructions.index("demo - Demo skill") < instructions.index(DEFAULT_PARALLEL_LLM_INSTRUCTIONS)
+
+def test_builtin_tool_instructions_are_appended(tmp_path: Path) -> None:
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=["search"]),
+        model=ScriptedModel([]),
+    )
+
+    assert DEFAULT_SEARCH_INSTRUCTIONS in harness.system_instructions()
 
 def test_blank_tool_instructions_are_omitted(tmp_path: Path) -> None:
     custom = ToolSpec(

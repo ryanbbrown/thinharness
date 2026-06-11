@@ -21,3 +21,4 @@ vendor/
 examples/*/outputs/
 examples/*/outputs_failed_*/
 .agent/learnings.jsonl
+.gstack/

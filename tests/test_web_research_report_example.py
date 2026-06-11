@@ -11,7 +11,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from examples.web_research_report.agent import (
-    CompactSourceNotesArgs,
     ExaFetchSourcesArgs,
     ExaSearchSourcesArgs,
     ExaTools,
@@ -147,7 +146,7 @@ async def test_exa_fetch_sources_preserves_source_ids_and_statuses(tmp_path: Pat
 
 def test_prepare_source_note_prompts_writes_full_document_record(tmp_path: Path) -> None:
     (tmp_path / "outputs/sources/fetch_001/documents").mkdir(parents=True)
-    (tmp_path / "outputs/research_plan.md").write_text("# Plan\nResearch brief.", encoding="utf-8")
+    (tmp_path / "outputs/source_note_context.md").write_text("# Context\nFocus on adoption signals.", encoding="utf-8")
     document = {
         "document_id": "d001",
         "title": "Title",
@@ -158,7 +157,10 @@ def test_prepare_source_note_prompts_writes_full_document_record(tmp_path: Path)
     tools = ExaTools(tmp_path, api_key="exa-key")
 
     result = tools.prepare_source_note_prompts(
-        PrepareSourceNotePromptsArgs(document_paths=["outputs/sources/fetch_001/documents/d001.json"])
+        PrepareSourceNotePromptsArgs(
+            context_path="outputs/source_note_context.md",
+            document_paths=["outputs/sources/fetch_001/documents/d001.json"],
+        )
     )
 
     assert result.ok is True
@@ -166,42 +168,10 @@ def test_prepare_source_note_prompts_writes_full_document_record(tmp_path: Path)
     assert compact["prompt_count"] == 1
     prompts = json.loads((tmp_path / "outputs/source_note_prompts.json").read_text(encoding="utf-8"))
     assert len(prompts) == 1
+    assert "Context:" in prompts[0]
+    assert "Focus on adoption signals." in prompts[0]
     assert "Source record:" in prompts[0]
     assert '"text": "Full fetched document text."' in prompts[0]
-
-
-def test_compact_source_notes_writes_markdown_summary(tmp_path: Path) -> None:
-    (tmp_path / "outputs").mkdir()
-    batch = {
-        "results": [
-            {
-                "index": 0,
-                "ok": True,
-                "result": {
-                    "document_id": "d001",
-                    "title": "Source",
-                    "url": "https://example.com",
-                    "source_type": "news",
-                    "summary": "Useful summary.",
-                    "useful_points": [{"point": "Point", "evidence_excerpt": "Excerpt"}],
-                    "numbers_or_dates": ["2026", "$25M"],
-                    "limitations": ["single source"],
-                    "citation_worthy": True,
-                },
-            }
-        ]
-    }
-    (tmp_path / "outputs/source_notes_batch.json").write_text(json.dumps(batch), encoding="utf-8")
-    tools = ExaTools(tmp_path, api_key="exa-key")
-
-    result = tools.compact_source_notes(CompactSourceNotesArgs())
-
-    assert result.ok is True
-    compact = json.loads(result.content)
-    assert compact["source_count"] == 1
-    text = (tmp_path / "outputs/source_notes_compact.md").read_text(encoding="utf-8")
-    assert "https://example.com" in text
-    assert "$25M" in text
 
 
 def test_source_audit_hook_writes_exa_tool_summary(tmp_path: Path) -> None:
@@ -247,8 +217,23 @@ def test_build_harness_uses_custom_parallel_llm_without_name_collision(tmp_path:
     assert "exa_search_sources" in tool_names
     assert "exa_fetch_sources" in tool_names
     assert "prepare_source_note_prompts" in tool_names
-    assert "compact_source_notes" in tool_names
+    assert "edit" in tool_names
     assert "subagent" in tool_names
+
+
+def test_build_harness_uses_default_trace_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "example"
+    monkeypatch.delenv("THINHARNESS_DISABLE_LOCAL_TRACING", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    harness = build_harness(root, model="openrouter:deepseek/deepseek-v4-pro")
+
+    assert harness.local_tracing is not None
+    trace_dir = harness.local_tracing.trace_dir
+    assert str(trace_dir).startswith(str(home / ".thinharness" / "traces"))
+    assert not str(trace_dir).startswith(str(root))
 
 
 def test_build_harness_keeps_critical_path_tools_synchronous(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

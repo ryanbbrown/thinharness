@@ -170,7 +170,7 @@ class HarnessConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model: str = "openai:gpt-5.2"
+    model: str = "openai:gpt-5.5"
     root: str | Path = "."
     api_key: str | None = None
     base_url: str | None = None

@@ -13,7 +13,7 @@ the command beside each row. To reproduce locally, clone each upstream repo at
 the pinned commit and run the command shown below.
 
 Measured 2026-05-16 for upstream libraries. ThinHarness was remeasured from the
-current working tree on 2026-06-07.
+current working tree on 2026-06-10.
 
 ## LOC Commands
 
@@ -37,7 +37,7 @@ LOC. The table counts the Python SDK package and footnotes that relationship.
 - **Subagents** — Pydantic AI documents an "agent delegation" pattern, where one agent is called inside another's tool function, but ships no class, decorator, or middleware for it. Its own multi-agent docs point users to deepagents for that case, so it is marked `❌`.
 - **Structured output** — Claude Agent SDK and deepagents return free-form messages with no built-in validation step, so they are marked `❌`.
 - **Skills** — Pydantic AI, OpenAI Agents SDK, smolagents, and AWS Strands have no Markdown/frontmatter skills primitive, so they are marked `❌`.
-- **Built-in FS tools** — Pydantic AI, OpenAI Agents SDK, Google ADK, smolagents, AWS Strands, and Microsoft Agent Framework do not ship typed read/write/edit/search-style filesystem tools in the core package, so they are marked `❌`. Generic shell or code-exec tools do not count here.
+- **Built-in FS tools** — A `✅` means the project ships a model-facing filesystem toolkit with read/write/edit or search-style primitives. OpenAI Agents SDK is marked `⚠️` because it has hosted `apply_patch` and shell tools, but not a full read/write/search toolkit. Google ADK is marked `⚠️` because its experimental environment tools include `ReadFile`, `WriteFile`, and `EditFile`, but those are outside the strict core LOC scope above. Pydantic AI, smolagents, AWS Strands, and Microsoft Agent Framework are marked `❌` because they do not ship a comparable toolkit in the core package. Generic shell or code-exec tools do not count as full filesystem tools.
 - **OTel tracing** — deepagents leans on LangSmith rather than emitting OTel from its own code, so it is marked `❌`. Claude Agent SDK is marked `⚠️` because the Python SDK itself ships no instrumentation beyond W3C traceparent propagation into the CLI subprocess, while the Claude Code CLI it shells out to has beta OTel support.
 
 ## What "Strict Framework-Only" Excludes

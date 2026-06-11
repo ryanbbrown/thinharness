@@ -43,6 +43,17 @@ def test_file_tools_read_write_edit_and_list(tmp_path: Path) -> None:
     listed = tools.list_files({"path": ".", "recursive": True})
     assert "notes/todo.txt" in listed.content
 
+def test_file_tools_read_without_limit_reads_through_eof_under_hard_caps(tmp_path: Path) -> None:
+    (tmp_path / "many.txt").write_text("\n".join(f"line {i}" for i in range(450)), encoding="utf-8")
+    tools = FileTools(tmp_path, max_read_chars=20_000)
+
+    result = tools.read({"path": "many.txt"})
+
+    assert result.ok
+    assert result.metadata["returned_lines"] == 450
+    assert "450\tline 449" in result.content
+    assert "more lines available" not in result.content
+
 def test_file_tools_large_reads_require_and_stream_bounded_range(tmp_path: Path) -> None:
     path = tmp_path / "large.txt"
     path.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
@@ -95,11 +106,25 @@ def test_file_tools_enforce_read_and_write_paths(tmp_path: Path) -> None:
 
 def test_file_tools_validate_glob_selectors(tmp_path: Path) -> None:
     tools = FileTools(tmp_path)
+    read_schema = next(tool.response_tool() for tool in tools.specs() if tool.name == "read")
+    read_properties = read_schema["parameters"]["properties"]
+    assert "limit" not in read_schema["parameters"]["required"]
+    assert "default" not in read_properties["limit"]
+
+    search_schema = next(tool.response_tool() for tool in tools.specs() if tool.name == "search")
+    search_properties = search_schema["parameters"]["properties"]
+    assert "path" in search_properties
+    assert "path_glob" not in search_properties
+    jsonl_schema = next(tool.response_tool() for tool in tools.specs() if tool.name == "jsonl_search")
+    jsonl_properties = jsonl_schema["parameters"]["properties"]
+    assert "path" in jsonl_properties
+    assert "path_glob" not in jsonl_properties
+
     for result in [
-        tools.search({"query": "x", "path_glob": "../*.py"}),
+        tools.search({"query": "x", "path": "../src"}),
         tools.list_files({"path": ".", "glob": "../*"}),
         tools.glob({"path": ".", "pattern": "/tmp/*"}),
-        tools.jsonl_search({"path_glob": "src/../../*.jsonl"}),
+        tools.jsonl_search({"path": "src/../../*.jsonl"}),
     ]:
         assert not result.ok
         assert result.metadata["error_type"] == "PathValidationError"
@@ -132,11 +157,12 @@ def test_search_groups_document_results_by_path_and_line(tmp_path: Path) -> None
     assert result.metadata["cmd"] == ["rg", "--json", "--", "Refund|refund", "."]
 
 def test_search_no_matches_has_refinement_hint(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
-    result = FileTools(tmp_path).search({"query": "MissingThing", "path_glob": "**/*.py"})
+    (tmp_path / "claims").mkdir()
+    (tmp_path / "claims" / "a.txt").write_text("hello\n", encoding="utf-8")
+    result = FileTools(tmp_path).search({"query": "MissingThing", "path": "claims"})
     assert result.ok
     assert "No matches found." in result.content
-    assert "scope: glob=**/*.py" in result.content
+    assert "scope: path=claims" in result.content
 
 def test_search_reports_ripgrep_errors(tmp_path: Path) -> None:
     result = FileTools(tmp_path).search({"query": "["})
@@ -239,7 +265,7 @@ def test_jsonl_search_filters_projects_and_formats(tmp_path: Path) -> None:
     data.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
     result = FileTools(tmp_path).jsonl_search({
-        "path_glob": "*.jsonl",
+        "path": "*.jsonl",
         "fields": {"user.name": 0, "msg": 4},
         "where": [
             {"field": "user.tags[0]", "op": "eq", "value": "admin"},
@@ -261,7 +287,7 @@ def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
     )
     result = FileTools(tmp_path).jsonl_search({
         "query": "login",
-        "path_glob": "*.jsonl",
+        "path": "*.jsonl",
         "where": [{"field": "msg", "op": "contains", "value": "fail"}],
         "fields": {"id": 0},
     })
@@ -269,8 +295,34 @@ def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
     assert "rows_matched: 1" in result.content
     assert '  3: {"id": 3}' in result.content
 
+def test_jsonl_search_path_accepts_recursive_directory(tmp_path: Path) -> None:
+    nested = tmp_path / "logs" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "events.jsonl").write_text('{"id":1,"msg":"hit"}\n', encoding="utf-8")
+    (tmp_path / "logs" / "notes.txt").write_text('{"id":2,"msg":"hit"}\n', encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({"path": "logs", "fields": {"id": 0}})
+
+    assert result.ok
+    assert "scope: path=logs" in result.content
+    assert "logs/nested/events.jsonl" in result.content
+    assert '  1: {"id": 1}' in result.content
+    assert "notes.txt" not in result.content
+
+def test_jsonl_search_broad_glob_skips_non_jsonl_files(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_text('{"id":1,"msg":"hit"}\n', encoding="utf-8")
+    (tmp_path / "notes.txt").write_text('{"id":2,"msg":"hit"}\nnot json\n', encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({"query": "hit", "path": "*", "fields": {"id": 0}})
+
+    assert result.ok
+    assert "events.jsonl" in result.content
+    assert '  1: {"id": 1}' in result.content
+    assert "notes.txt" not in result.content
+    assert "json_parse_errors" not in result.content
+
 def test_jsonl_search_reports_ripgrep_errors(tmp_path: Path) -> None:
-    result = FileTools(tmp_path).jsonl_search({"query": "[", "path_glob": "*.jsonl"})
+    result = FileTools(tmp_path).jsonl_search({"query": "[", "path": "*.jsonl"})
     assert not result.ok
     assert "ripgrep failed" in result.content
 
@@ -281,7 +333,7 @@ def test_jsonl_search_limits_display_without_losing_counts(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    result = FileTools(tmp_path).jsonl_search({"path_glob": "*.jsonl", "max_matches_per_file": 2})
+    result = FileTools(tmp_path).jsonl_search({"path": "*.jsonl", "max_matches_per_file": 2})
 
     assert result.ok
     assert "rows_matched: 4" in result.content
@@ -295,7 +347,7 @@ def test_jsonl_search_timeout_returns_structured_result(tmp_path: Path, monkeypa
         raise subprocess.TimeoutExpired(kwargs.get("args", "rg"), timeout=1)
 
     monkeypatch.setattr("subprocess.run", timeout)
-    result = FileTools(tmp_path).jsonl_search({"query": "hit", "path_glob": "*.jsonl", "timeout": 1})
+    result = FileTools(tmp_path).jsonl_search({"query": "hit", "path": "*.jsonl", "timeout": 1})
 
     assert not result.ok
     assert result.content == "ripgrep timed out after 1s"
@@ -311,7 +363,7 @@ def test_jsonl_search_preserves_partial_ripgrep_warning_metadata(tmp_path: Path,
 
     monkeypatch.setattr("subprocess.run", partial)
     (tmp_path / "events.jsonl").write_text('{"id":1,"msg":"login ok","secret":"hidden"}\n', encoding="utf-8")
-    result = FileTools(tmp_path).jsonl_search({"query": "login", "path_glob": "*.jsonl", "fields": {"id": 0}})
+    result = FileTools(tmp_path).jsonl_search({"query": "login", "path": "*.jsonl", "fields": {"id": 0}})
 
     assert result.ok
     assert '  1: {"id": 1}' in result.content
@@ -331,7 +383,7 @@ def test_spill_output_uses_thinharness_directory_and_read_guidance(tmp_path: Pat
     assert result.metadata["saved_to_display"].startswith(".thinharness/outputs/search-")
     assert Path(result.metadata["saved_to"]).exists()
     assert "Read the saved output with read(path=\".thinharness/outputs/search-" in result.content
-    assert "offset=1, limit=400" in result.content
+    assert "offset=1)" in result.content
 
 def test_spilled_output_can_be_read_with_restricted_read_paths(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
@@ -403,22 +455,26 @@ def test_missing_search_roots_return_successful_no_match_metadata(tmp_path: Path
     assert jsonl.metadata["returncode"] == 1
 
 def test_raised_search_display_defaults() -> None:
+    assert SearchArgs(query="hit").path == "."
+    assert JsonlSearchArgs().path == "."
     assert SearchArgs(query="hit").max_files == 50
     assert SearchArgs(query="hit").max_matches_per_file == 10
     assert JsonlSearchArgs().max_files == 100
     assert JsonlSearchArgs().max_matches_per_file == 25
 
 def test_raised_search_display_defaults_show_more_than_old_limits(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
     for index in range(11):
-        (tmp_path / f"doc_{index:02}.txt").write_text("hit\n", encoding="utf-8")
+        (docs / f"doc_{index:02}.txt").write_text("hit\n", encoding="utf-8")
     (tmp_path / "events.jsonl").write_text(
         "\n".join(json.dumps({"id": index, "msg": "hit"}) for index in range(4)) + "\n",
         encoding="utf-8",
     )
     tools = FileTools(tmp_path)
 
-    search = tools.search({"query": "hit", "path_glob": "*.txt"})
-    jsonl = tools.jsonl_search({"path_glob": "*.jsonl"})
+    search = tools.search({"query": "hit", "path": "docs"})
+    jsonl = tools.jsonl_search({"path": "*.jsonl"})
 
     assert "files: 11 total, 11 shown" in search.content
     assert "matches: 11 shown, 0 omitted" in search.content

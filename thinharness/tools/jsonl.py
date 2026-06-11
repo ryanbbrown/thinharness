@@ -46,7 +46,7 @@ class JsonlSearchArgs(StrictArgs):
     """Arguments for jsonl_search."""
 
     query: str = Field(default="", description="Optional ripgrep query. If omitted, scan all rows in scope.")
-    path_glob: str = Field(default="**/*.jsonl", description="Glob filter; defaults to **/*.jsonl.")
+    path: str = Field(default=".", description="File, directory, or glob path to JSONL files. Directories are searched recursively.")
     fields: dict[str, Annotated[int, Field(ge=0)]] = Field(
         default_factory=dict,
         description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
@@ -85,24 +85,21 @@ class JsonlSearch:
         self.rg_timeout = rg_timeout
         self._truncate = truncate
 
-    def spec(self) -> ToolSpec:
+    def spec(self, *, instructions: str | None = None) -> ToolSpec:
         """Return the jsonl_search tool spec."""
         return ToolSpec(
             "jsonl_search",
             DEFAULT_JSONL_SEARCH_DESCRIPTION,
             JsonlSearchArgs,
             self.search,
+            instructions=instructions,
         )
 
     def search(self, args: JsonlSearchArgs | Json) -> ToolResult:
         """Filter JSONL files with an optional ripgrep prefilter and structured field/where filtering."""
         args = coerce_args(args, JsonlSearchArgs)
         query = args.query
-        path_glob = args.path_glob
-        try:
-            validate_glob_selector(path_glob, field="path_glob")
-        except PathValidationError as exc:
-            return _path_error(exc)
+        path = args.path
         fields = args.fields
         where = [item.model_dump(exclude_none=True) for item in args.where]
         max_files = args.max_files
@@ -110,7 +107,7 @@ class JsonlSearch:
         timeout = args.timeout or self.rg_timeout
         limit_chars = args.max_chars or self.max_tool_chars
 
-        scan = self._candidates(query, path_glob, timeout)
+        scan = self._candidates(query, path, timeout)
         if scan.error is not None:
             return scan.error
 
@@ -147,7 +144,7 @@ class JsonlSearch:
         header = [
             "summary:",
             f"  query: {query or '(none)'}",
-            f"  scope: glob={path_glob}",
+            f"  scope: path={path}",
         ]
         if where:
             header.append(f"  where: {_describe_where(where)}")
@@ -177,11 +174,17 @@ class JsonlSearch:
         result.metadata.update(scan.metadata)
         return result
 
-    def _candidates(self, query: str, path_glob: str, timeout: int) -> _CandidateScan:
+    def _candidates(self, query: str, path: str, timeout: int) -> _CandidateScan:
         """Collect (path, line_number, line_text) tuples for jsonl_search."""
         if query:
-            search_roots = search_root_display_paths(self.root, self.read_policy)
-            command = ["rg", "--json", "--glob", path_glob, "--", query, *search_roots]
+            try:
+                search_roots, glob_filter = self._query_scope(path)
+            except PathValidationError as exc:
+                return _CandidateScan(iter(()), {}, _path_error(exc))
+            command = ["rg", "--json"]
+            if glob_filter is not None:
+                command.extend(["--glob", glob_filter])
+            command.extend(["--", query, *search_roots])
             if not search_roots:
                 return _CandidateScan(iter(()), {"returncode": 1, "cmd": command})
             try:
@@ -207,22 +210,91 @@ class JsonlSearch:
             if proc.returncode not in (0, 1):
                 metadata.update(_rg_partial_warning_metadata(proc.returncode, proc.stdout, include_match_events=False))
             rows = sorted(
-                ((file.path, match.line_number, match.line_text) for file in files for match in file.matches),
+                (
+                    (file.path, match.line_number, match.line_text)
+                    for file in files
+                    if _is_jsonl_path(file.path)
+                    for match in file.matches
+                ),
                 key=lambda item: (item[0], item[1]),
             )
             return _CandidateScan(iter(rows), metadata)
-        return _CandidateScan(self._iter_jsonl_files(path_glob), {})
+        try:
+            paths = self._jsonl_paths(path)
+        except PathValidationError as exc:
+            return _CandidateScan(iter(()), {}, _path_error(exc))
+        return _CandidateScan(self._iter_jsonl_rows(paths), {})
 
-    def _iter_jsonl_files(self, path_glob: str) -> Iterator[tuple[str, int, str]]:
+    def _query_scope(self, path: str) -> tuple[list[str], str | None]:
+        """Return ripgrep roots and optional glob for a JSONL search path."""
+        if path in {"", "."}:
+            return search_root_display_paths(self.root, self.read_policy), "**/*.jsonl"
+        if _has_glob(path):
+            validate_glob_selector(path, field="path")
+            return search_root_display_paths(self.root, self.read_policy), path
+        resolved = self.read_policy.resolve(path)
+        if not resolved.exists():
+            return [], None
+        display = _display_path(self.root, resolved)
+        if resolved.is_file():
+            return ([display], None) if _is_jsonl_path(display) else ([], None)
+        return [display], "**/*.jsonl"
+
+    def _iter_jsonl_rows(self, paths: list[Path]) -> Iterator[tuple[str, int, str]]:
         """Yield JSONL candidate rows without accumulating them."""
-        for path in sorted(self.root.glob(path_glob), key=lambda item: str(item)):
-            resolved = path.resolve()
-            if not self.read_policy.allows(resolved) or not path.is_file():
+        for item in sorted(paths, key=lambda file_path: str(file_path)):
+            resolved = item.resolve()
+            if not self.read_policy.allows(resolved) or not item.is_file() or not _is_jsonl_path(item.name):
                 continue
             rel = str(resolved.relative_to(self.root))
             with resolved.open("r", encoding="utf-8", errors="replace") as handle:
                 for line_number, line_text in enumerate(handle, start=1):
                     yield rel, line_number, line_text.rstrip("\n")
+
+    def _jsonl_paths(self, path: str) -> list[Path]:
+        """Return JSONL file paths for a file, directory, or glob selector."""
+        if path in {"", "."}:
+            paths: list[Path] = []
+            for root in self.read_policy.existing_search_roots():
+                if root.is_file():
+                    if _is_jsonl_path(root.name):
+                        paths.append(root)
+                    continue
+                paths.extend(item for item in root.rglob("*.jsonl") if item.is_file())
+            return paths
+        if _has_glob(path):
+            validate_glob_selector(path, field="path")
+            return [
+                item
+                for item in self.root.glob(path)
+                if item.is_file() and _is_jsonl_path(item.name) and self.read_policy.allows(item.resolve())
+            ]
+        resolved = self.read_policy.resolve(path)
+        if not resolved.exists():
+            return []
+        if resolved.is_file():
+            if _is_jsonl_path(resolved.name):
+                return [resolved]
+            return []
+        return [item for item in resolved.rglob("*.jsonl") if item.is_file()]
+
+
+def _has_glob(path: str) -> bool:
+    """Return whether a path value uses glob syntax."""
+    return any(char in path for char in "*?[")
+
+
+def _is_jsonl_path(path: str) -> bool:
+    """Return whether a display path or filename points at a JSONL file."""
+    return Path(path).suffix.lower() == ".jsonl"
+
+
+def _display_path(root: Path, path: Path) -> str:
+    """Return a workspace-relative display path when possible."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
 
 
 _MISSING = object()

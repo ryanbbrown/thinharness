@@ -1,54 +1,305 @@
-# ThinHarness Docs
+# ThinHarness User Guide
 
-## Continuing a Conversation
+ThinHarness is a small SDK for purpose-built agent loops. The host application chooses the model, tools, limits, context, output contract, and lifecycle hooks. The model gets enough room to plan and use tools, but the run stays bounded by configuration.
 
-`HarnessResult.resume_state` is an opaque, JSON-serializable token that lets callers continue a completed conversation with a new user message.
+For code ownership and the run-loop mental model, see `docs/site/explainer.html`. This file is the user-facing API guide.
 
-```python
-first = await harness.run("Summarize this repository.")
-if first.resume_state is None:
-    raise RuntimeError("run cannot be continued")
-save_json(first.resume_state)
+## Install
 
-state = load_json()
-second = await harness.run("Now turn that into a checklist.", resume_from=state)
+```bash
+uv add thinharness
 ```
 
-The contract:
+Optional extras:
 
-- Save `result.resume_state` exactly as JSON.
-- Pass it back as `resume_from` with the next user message.
-- Use the same provider, model, system prompt, and tools as the run that produced it.
-- Expect no state after failed, cancelled, partial, or exhausted runs.
-- Treat the contents as provider-owned details; do not read or construct them.
-
-`resume_from` is a new-turn API. It means the prior run completed, and the next call appends a new user message to that conversation. It is not a retry mechanism, an interrupted-tool-call recovery mechanism, or a way to continue the assistant's previous response.
-
-`user_prompt_submit` hooks run for every caller-submitted prompt, including resumed prompts. If a hook adds prompt context on a resumed run, the provider receives the resumed prompt, then hook context, then any harness-owned limit notice.
-
-`resume_state` is emitted only for clean terminal runs where `stop_reason == "end_turn"` and the provider session can produce a usable continuation token. It is `None` after provider errors, tool errors, hook cancellation, max-turn or max-tool limits, structured-output validation exhaustion, tool retry exhaustion, and structured-output `final_result` tool termination.
-
-Provider behavior differs internally:
-
-- OpenAI Responses stores conversation state server-side. `resume_state` contains the previous response id, and a later resumed call sends that id as `previous_response_id`.
-- Anthropic Messages is stateless. `resume_state` contains the full message transcript and grows with the conversation.
-- OpenRouter chat completions is stateless. `resume_state` contains the full chat transcript and grows with the conversation.
-
-Model-facing limit notices are real provider input, so they may be part of the conversation state behind `resume_state`. Notice text is scoped to "this run", deduping is per `Harness.run(...)`, and a resumed run may emit a notice that is also visible in prior conversation history.
-
-OpenAI response retention is controlled by the provider. If a stored response is deleted or expires, resuming from that state surfaces as a provider error with the provider's error text.
-
-The same `resume_state` can be reused for sequential branching:
-
-```python
-base = await harness.run("Draft three product names.")
-one = await harness.run("Make them more formal.", resume_from=base.resume_state)
-two = await harness.run("Make them more playful.", resume_from=base.resume_state)
+```bash
+uv add "thinharness[mcp]"
+uv add "thinharness[tracing]"
 ```
 
-For parallel branches, use separate `Harness` instances. A single `Harness` instance still rejects concurrent `run()` calls.
+ThinHarness requires Python 3.11+.
 
-ThinHarness has no separate cross-run message-history parameter. `resume_from` is the supported way to carry prior context across `run()` calls.
+## First Run
+
+```python
+import asyncio
+
+from thinharness import Harness, HarnessConfig
+
+
+async def main() -> None:
+    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.5")) as harness:
+        result = await harness.run("Read README.md and summarize it.")
+        print(result.text)
+
+
+asyncio.run(main())
+```
+
+`Harness.run()` is the primary API. `Harness.run_sync(...)` is a convenience wrapper for synchronous callers outside an existing event loop.
+
+A `Harness` instance is reusable, but one instance cannot run two prompts concurrently. Use separate harness instances for parallel branches.
+
+## Configuration Shape
+
+Most behavior is configured with `HarnessConfig`:
+
+```python
+config = HarnessConfig(
+    root=".",
+    model="openai:gpt-5.5",
+    system_prompt="You are a focused research agent.",
+    max_model_requests=32,
+    max_tool_calls=80,
+    read_paths=["inputs", "docs"],
+    write_paths=["outputs"],
+)
+```
+
+Important groups:
+
+- `root`, `read_paths`, `write_paths`, and `output_dir` define filesystem scope.
+- `model`, `api_key`, `base_url`, `temperature`, `extra_body`, and `request_timeout` define provider settings.
+- `builtin_tools`, `tools`, `subagents`, `mcp_servers`, and `skills_dir` define the model-callable surface.
+- `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
+- `output_type` and `output_mode` define structured output.
+- `tracing`, `local_tracing`, and `local_trace_dir` define observability.
+
+## Built-In Filesystem Tools
+
+When `builtin_tools` is omitted, the model gets these filesystem tools:
+
+- `read`: read bounded UTF-8 file ranges with line numbers.
+- `write`: create, overwrite, or append UTF-8 files. This tool is sequential.
+- `edit`: replace exact text in a UTF-8 file. This tool is sequential.
+- `search`: ripgrep-backed grouped path/line search.
+- `list`: list files or directories.
+- `glob`: find files by glob pattern.
+
+When `builtin_tools` is provided, it is an explicit replacement list. Include every built-in tool the model should see.
+
+`jsonl_search` is available as an opt-in built-in:
+
+```python
+harness = Harness(HarnessConfig(
+    root=".",
+    builtin_tools=["read", "search", "jsonl_search"],
+))
+```
+
+Filesystem tools enforce the configured read and write policies. Paths are resolved under `root`; absolute paths and `..` escape attempts are rejected.
+
+## Custom Tools
+
+Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, or JSON-serializable data. The model always receives a JSON envelope with `ok`, `content`, and `metadata`.
+
+```python
+from pydantic import BaseModel
+
+from thinharness import Harness, HarnessConfig, ToolSpec
+
+
+class LookupArgs(BaseModel):
+    account_id: str
+
+
+def lookup_account(args: LookupArgs) -> dict[str, str]:
+    return {"account_id": args.account_id, "tier": "enterprise"}
+
+
+harness = Harness(
+    HarnessConfig(root="."),
+    tools=[
+        ToolSpec(
+            name="lookup_account",
+            description="Look up account metadata by account id.",
+            parameters=LookupArgs,
+            handler=lookup_account,
+        )
+    ],
+)
+```
+
+Use a Pydantic model for `parameters` when you want argument validation. Invalid JSON, non-object arguments, and Pydantic validation errors are treated as model-retryable mistakes.
+
+If a handler detects a domain mistake the model can fix, raise `ModelRetry`:
+
+```python
+from thinharness import ModelRetry
+
+
+def lookup_account(args: LookupArgs) -> dict[str, str]:
+    if not args.account_id.startswith("acct_"):
+        raise ModelRetry("account_id must start with acct_")
+    return {"account_id": args.account_id, "tier": "enterprise"}
+```
+
+Tool retry budgets are per tool name per run. Ordinary handler exceptions become failed tool results, but they are not retryable unless the tool result says so.
+
+## Tool Execution Policy
+
+By default, same-turn tool calls run concurrently when all called tools are parallel-safe. The provider-facing outputs and `tool_call_records` still preserve the model's original tool-call order.
+
+Set `sequential=True` on a `ToolSpec` when calls to that tool must not overlap with sibling tool calls:
+
+```python
+ToolSpec(
+    name="send_invoice",
+    description="Send an invoice email.",
+    parameters=InvoiceArgs,
+    handler=send_invoice,
+    sequential=True,
+)
+```
+
+If any tool in a model-emitted batch is sequential, the whole batch runs serially in model order. You can force every batch to run serially with:
+
+```python
+HarnessConfig(tool_execution="sequential")
+```
+
+## Background Tools
+
+Background tools let long-running independent work stop blocking the agent loop. The work is still owned by the current `Harness.run(...)`: the model gets a start notice, continues other work, and later receives the completion as provider input.
+
+There is no detached job queue, polling API, or job-control surface.
+
+```python
+import asyncio
+
+from pydantic import BaseModel
+
+from thinharness import ToolSpec
+
+
+class ReportArgs(BaseModel):
+    topic: str
+
+
+async def build_report(args: ReportArgs) -> str:
+    await asyncio.sleep(10)
+    return f"report for {args.topic}"
+
+
+report_tool = ToolSpec(
+    name="build_report",
+    description="Build a long report for a topic.",
+    parameters=ReportArgs,
+    handler=build_report,
+    background="model",
+)
+```
+
+Background modes:
+
+- `background="never"` is the default.
+- `background="model"` exposes a private `_background: true` argument when `tool_execution` is not sequential. The model chooses whether to start that call in the background.
+- `background="always"` always starts the tool in the background and does not expose a model-facing switch.
+
+Sequential tools cannot run in the background. `tool_execution="sequential"` disables model-facing background arguments and rejects `background="always"` tools.
+
+## Structured Output
+
+Set `output_type` to validate the final result with Pydantic. `result.text` remains the final text; `result.output` contains the parsed value.
+
+```python
+from pydantic import BaseModel
+
+from thinharness import Harness, HarnessConfig
+
+
+class Summary(BaseModel):
+    title: str
+    bullets: list[str]
+
+
+harness = Harness(HarnessConfig(
+    root=".",
+    output_type=Summary,
+    output_mode="auto",
+))
+
+result = await harness.run("Summarize README.md.")
+summary: Summary = result.output
+```
+
+`output_mode` options:
+
+- `auto`: choose the best mode for the provider.
+- `native`: request provider-native JSON-schema output.
+- `tool`: expose a synthetic `final_result` tool.
+- `prompted`: ask for JSON in prompt instructions and validate the text.
+- `text`: copy final text into `result.output`.
+
+Tool-mode structured output uses a harness-created `final_result` tool. It is not a normal registered tool, does not fire tool hooks, and clean exits through it are not resumable because the provider transcript would contain an unanswered synthetic tool call.
+
+## Hooks
+
+Hooks are runtime callables registered on a `Harness`. They can observe lifecycle events, append prompt context, cancel selected before-events, or rewrite tool output.
+
+```python
+from thinharness import Hook, Harness, HarnessConfig
+
+
+def add_policy(ctx) -> None:
+    ctx.additional_context.append("Use the internal refund policy dated 2026-06.")
+
+
+harness = Harness(
+    HarnessConfig(root="."),
+    hooks=[Hook("user_prompt_submit", add_policy)],
+)
+```
+
+Hook events:
+
+- `run_start`
+- `user_prompt_submit`
+- `before_tool_call`
+- `after_tool_call`
+- `before_subagent_run`
+- `after_subagent_run`
+- `limit_reached`
+- `run_end`
+
+`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. `after_tool_call` can rewrite `ctx.output`, but retry control flow is captured before that rewrite. Tool filters apply only to tool events; agent filters apply only to subagent events.
+
+By default, hook exceptions are logged and the run continues. Set `strict_hooks=True` to make hook exceptions fail the run.
+
+## Subagents
+
+The `subagent` tool is opt-in. It lets the parent delegate a bounded task to a child harness. Child runs start fresh; they do not inherit the parent provider transcript.
+
+```python
+from thinharness import Harness, HarnessConfig, SubAgentConfig
+
+
+harness = Harness(HarnessConfig(
+    root=".",
+    builtin_tools=["read", "search", "subagent"],
+    subagents=[
+        SubAgentConfig(
+            name="reviewer",
+            description="Review a draft for factual and citation issues.",
+            system_prompt="You are a careful review agent.",
+            inherit_parent_tools=True,
+            max_model_requests=12,
+        )
+    ],
+))
+```
+
+Calling `subagent` without an `agent` argument uses the framework default subagent, which inherits parent tools except for recursive `subagent` access and MCP-discovered tools. Named subagents use their own `SubAgentConfig`.
+
+Named subagents can:
+
+- inherit parent tools with `inherit_parent_tools=True`
+- choose explicit `builtin_tools`
+- receive explicit custom `tools`
+- opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
+- use their own model, limits, structured output, and background policy
+
+`default` is reserved for the framework default subagent name.
 
 ## Parallel LLM Batches
 
@@ -56,39 +307,43 @@ ThinHarness has no separate cross-run message-history parameter. `resume_from` i
 
 ```python
 harness = Harness(HarnessConfig(
+    root=".",
     builtin_tools=["parallel_llm"],
-    builtin_parallel_llm_model="openai:gpt-5.2-mini",  # optional; defaults to the parent model
+    builtin_parallel_llm_model="openai:gpt-5.5-mini",
     builtin_parallel_llm_temperature=0,
     parallel_llm_max_prompts=100,
     parallel_llm_max_attempts=4,
 ))
 ```
 
-Each batch call is stateless. The per-prompt model session receives `tools=[]`, no memory, no continuation, and no inherited harness system prompt. Pass `system` when the batch needs shared instructions.
+Each batch call is stateless. Per-prompt calls receive no tools, no memory, no continuation, and no inherited parent harness system prompt. Pass `system` when the batch needs shared instructions.
 
-The model-facing prompt source is a single `source` object. For inline prompts, use `{"kind": "inline", "prompts": [...]}`. For a JSON prompt file under the read path policy, use `{"kind": "file", "path": "prompts.json"}`.
+The model-facing prompt source is structurally discriminated:
 
-Use `output_file` when combined results may be large. Inline output returns compact JSON in the normal `ToolResult.content`; file output writes pretty JSON under the workspace path policy and returns only a summary with failed indices.
+- inline prompts: `{"kind": "inline", "prompts": [...]}`
+- prompt file: `{"kind": "file", "path": "prompts.json"}`
 
-`max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields for the built-in. Parallel attempts are reported as `model_requests` in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.
+Use `output_file` when combined results may be large. Inline output returns compact JSON in `ToolResult.content`; file output writes pretty JSON under the write path policy and returns a summary.
 
-The model-facing arguments do not include model, temperature, or output-schema overrides. The built-in uses `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` when set, otherwise it falls back to the parent harness model and temperature. Custom `ParallelLlmTool` instances own their model, temperature, API settings, prompt cap, retry budget, and optional structured output schema.
+`max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields. Internal parallel attempts are reported in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.
 
-For a custom, renameable version, construct the same tool as a normal `ToolSpec`:
+For a custom, renameable version, construct `ParallelLlmTool` directly:
 
 ```python
-from thinharness import ParallelLlmTool
 from pydantic import BaseModel
+
+from thinharness import Harness, HarnessConfig, ParallelLlmTool
 
 
 class InvoiceFields(BaseModel):
     vendor: str
     total: float
 
+
 extract_tool = ParallelLlmTool(
     name="parallel_extract",
     description="Extract fields from independent chunks.",
-    model="openai:gpt-5.2-mini",
+    model="openai:gpt-5.5-mini",
     root=".",
     read_paths=["inputs"],
     write_paths=["outputs"],
@@ -102,6 +357,167 @@ extract_tool = ParallelLlmTool(
 harness = Harness(HarnessConfig(root="."), tools=[extract_tool])
 ```
 
-When `output_type` is set on a custom `ParallelLlmTool`, each successful result entry contains the parsed JSON-compatible value rather than raw text. `output_mode` accepts the same modes as harness structured output: `auto`, `native`, `tool`, `prompted`, and `text`.
+When `output_type` is set on a custom `ParallelLlmTool`, successful entries contain parsed JSON-compatible values rather than raw text.
 
-For structured custom tools, pass a description that tells the parent model the tool returns validated result values rather than raw text.
+## Skills
+
+Skills are explicit tools, not auto-discovery. Configure `skills_dir`, then expose `skill_read` and/or `skill_run` through `builtin_tools`.
+
+```python
+harness = Harness(HarnessConfig(
+    root=".",
+    skills_dir="skills",
+    selected_skills=["invoice-review"],
+    builtin_tools=["read", "search", "skill_read", "skill_run"],
+))
+```
+
+If skills are configured and skill tools are exposed, the system prompt includes a compact skill summary. The model still has to call `skill_read` to inspect details.
+
+`skill_run` runs scripts from trusted skill directories. Python scripts run through `uv run`; shell scripts run through `bash`; JavaScript and Go files use `node` and `go run`.
+
+## MCP
+
+MCP support is optional. Importing ThinHarness does not require the `mcp` package; using MCP requires the `mcp` extra.
+
+```python
+from thinharness import Harness, HarnessConfig, MCPServerStdio
+
+
+harness = Harness(HarnessConfig(
+    root=".",
+    mcp_servers=[
+        MCPServerStdio(
+            "uvx",
+            ["my-mcp-server"],
+            tool_prefix="external",
+            include_tools=["lookup"],
+        )
+    ],
+))
+```
+
+MCP servers connect lazily during harness startup. Discovered MCP tools become normal `ToolSpec` objects in the live harness tool map. Name collisions are rejected; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
+
+Available transports:
+
+- `MCPServerStdio`
+- `MCPServerSSE`
+- `MCPServerStreamableHTTP`
+
+ThinHarness only turns MCP tools into harness tools. MCP prompts, resources, sampling, OAuth flows, and `.mcp.json` discovery are outside the current scope.
+
+## Resume
+
+`HarnessResult.resume_state` is an opaque, JSON-serializable token that lets callers continue a completed conversation with a new user message.
+
+```python
+first = await harness.run("Summarize this repository.")
+if first.resume_state is None:
+    raise RuntimeError("run cannot be continued")
+
+second = await harness.run(
+    "Now turn that into a checklist.",
+    resume_from=first.resume_state,
+)
+```
+
+The contract:
+
+- Save `result.resume_state` exactly as JSON.
+- Pass it back as `resume_from` with the next user message.
+- Use the same provider, model, system prompt, and tools as the run that produced it.
+- Expect no state after failed, cancelled, partial, or exhausted runs.
+- Treat the contents as provider-owned details; do not read or construct them.
+
+`resume_from` is a new-turn API. The prior run completed, and the next call appends a new user message. It is not a retry mechanism, interrupted-tool-call recovery, or a way to continue the assistant's previous response.
+
+Provider behavior differs internally:
+
+- OpenAI Responses stores conversation state server-side. `resume_state` contains the previous response id.
+- Anthropic Messages stores the full message transcript in `resume_state`.
+- OpenRouter chat completions stores the full chat transcript in `resume_state`.
+
+The same `resume_state` can be reused for sequential branching:
+
+```python
+base = await harness.run("Draft three product names.")
+one = await harness.run("Make them more formal.", resume_from=base.resume_state)
+two = await harness.run("Make them more playful.", resume_from=base.resume_state)
+```
+
+For parallel branches, use separate `Harness` instances.
+
+## Limits And Notices
+
+Hard limits stop runs:
+
+- `max_model_requests`: maximum provider turns in one run.
+- `max_tool_calls`: maximum model-requested ordinary tool calls in one run.
+- `tool_retries`: default retry budget per tool name.
+- `output_retries`: structured-output retry budget.
+
+Near-limit notices are deterministic model input emitted before some limits are exhausted. They are not hooks, and they do not replace hard limit enforcement. Parent and child runs compute notices from their own local budgets.
+
+Because notices are real provider input, they may become part of provider history and resume state.
+
+## Tracing
+
+Local tracing is on by default. It writes plaintext JSONL traces under:
+
+```text
+~/.thinharness/traces/<encoded-project-root>/
+```
+
+Those traces can include prompts, model outputs, tool arguments, and tool results. Treat them as sensitive local data.
+
+Disable local trace files with:
+
+```python
+HarnessConfig(local_tracing=False)
+```
+
+or:
+
+```bash
+THINHARNESS_DISABLE_LOCAL_TRACING=1
+```
+
+External tracing uses OpenTelemetry-compatible tracers:
+
+```python
+from thinharness import Harness, HarnessConfig, TracingOptions, create_otlp_tracing
+
+
+otlp = create_otlp_tracing(
+    service_name="thinharness-agent",
+    endpoint="https://otel.example.com/v1/traces",
+)
+
+harness = Harness(
+    HarnessConfig(root="."),
+    tracing=[TracingOptions(
+        tracer=otlp.tracer,
+        agent_name="support-review-agent",
+        capture_messages=False,
+        capture_tool_args=False,
+        capture_tool_results=False,
+    )],
+)
+```
+
+Each tracing sink owns its capture policy. External spans can exist without recording raw prompts or tool payloads unless capture flags are enabled.
+
+## Result Object
+
+`Harness.run(...)` returns `HarnessResult`:
+
+- `text`: final model text.
+- `output`: parsed structured output, if configured.
+- `responses`: raw provider responses.
+- `tool_call_records`: normalized tool call and output records.
+- `usage`: model request counts, tool call counts, cancellations, and retry counters.
+- `stop_reason`: terminal reason.
+- `resume_state`: opaque continuation state when the run is cleanly resumable.
+
+Most applications should read `text`, `output`, `usage`, and `resume_state`; the raw provider responses and tool records are mainly for debugging, auditing, and tests.

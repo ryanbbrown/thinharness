@@ -15,11 +15,18 @@ from pydantic import Field
 
 from ..defaults import (
     DEFAULT_EDIT_DESCRIPTION,
+    DEFAULT_EDIT_INSTRUCTIONS,
     DEFAULT_GLOB_DESCRIPTION,
+    DEFAULT_GLOB_INSTRUCTIONS,
+    DEFAULT_JSONL_SEARCH_INSTRUCTIONS,
     DEFAULT_LIST_DESCRIPTION,
+    DEFAULT_LIST_INSTRUCTIONS,
     DEFAULT_READ_DESCRIPTION,
+    DEFAULT_READ_INSTRUCTIONS,
     DEFAULT_SEARCH_DESCRIPTION,
+    DEFAULT_SEARCH_INSTRUCTIONS,
     DEFAULT_WRITE_DESCRIPTION,
+    DEFAULT_WRITE_INSTRUCTIONS,
 )
 from .base import (
     Json,
@@ -39,7 +46,6 @@ from .search_support import (
     _rg_error_message,
     _rg_partial_warning_metadata,
     parse_contained_rg_json,
-    search_root_display_paths,
     validate_glob_selector,
 )
 
@@ -49,7 +55,7 @@ class ReadArgs(StrictArgs):
 
     path: str
     offset: int = Field(default=1, ge=1)
-    limit: int = Field(default=400, ge=1)
+    limit: int | None = Field(default=None, ge=1)
     max_chars: int | None = Field(default=None, ge=1)
 
 
@@ -75,7 +81,7 @@ class SearchArgs(StrictArgs):
     """Arguments for search."""
 
     query: str = Field(description="Regex or literal search string.")
-    path_glob: str = Field(default="", description="Optional glob filter such as **/*.py.")
+    path: str = Field(default=".", description="Optional file or directory path to search. Defaults to all readable roots.")
     file_type: str = Field(default="", description="Optional ripgrep type such as py, rust, or js.")
     max_files: int = Field(default=50, ge=1)
     max_matches_per_file: int = Field(default=10, ge=1)
@@ -149,13 +155,13 @@ class FileTools:
     def specs(self) -> list[ToolSpec]:
         """Return built-in filesystem tool specs."""
         return [
-            ToolSpec("read", DEFAULT_READ_DESCRIPTION, ReadArgs, self.read),
-            ToolSpec("write", DEFAULT_WRITE_DESCRIPTION, WriteArgs, self.write, sequential=True),
-            ToolSpec("edit", DEFAULT_EDIT_DESCRIPTION, EditArgs, self.edit, sequential=True),
-            ToolSpec("search", DEFAULT_SEARCH_DESCRIPTION, SearchArgs, self.search),
-            ToolSpec("list", DEFAULT_LIST_DESCRIPTION, ListArgs, self.list_files),
-            ToolSpec("glob", DEFAULT_GLOB_DESCRIPTION, GlobArgs, self.glob),
-            self.jsonl.spec(),
+            ToolSpec("read", DEFAULT_READ_DESCRIPTION, ReadArgs, self.read, instructions=DEFAULT_READ_INSTRUCTIONS),
+            ToolSpec("write", DEFAULT_WRITE_DESCRIPTION, WriteArgs, self.write, sequential=True, instructions=DEFAULT_WRITE_INSTRUCTIONS),
+            ToolSpec("edit", DEFAULT_EDIT_DESCRIPTION, EditArgs, self.edit, sequential=True, instructions=DEFAULT_EDIT_INSTRUCTIONS),
+            ToolSpec("search", DEFAULT_SEARCH_DESCRIPTION, SearchArgs, self.search, instructions=DEFAULT_SEARCH_INSTRUCTIONS),
+            ToolSpec("list", DEFAULT_LIST_DESCRIPTION, ListArgs, self.list_files, instructions=DEFAULT_LIST_INSTRUCTIONS),
+            ToolSpec("glob", DEFAULT_GLOB_DESCRIPTION, GlobArgs, self.glob, instructions=DEFAULT_GLOB_INSTRUCTIONS),
+            self.jsonl.spec(instructions=DEFAULT_JSONL_SEARCH_INSTRUCTIONS),
         ]
 
     # -------------------------------------------------------------------------
@@ -175,9 +181,8 @@ class FileTools:
             return ToolResult(False, f"path is a directory: {self._display(path)}", {"path": str(path)})
         offset = args.offset
         limit = args.limit
-        is_bounded_request = "offset" in args.model_fields_set or "limit" in args.model_fields_set
         size = path.stat().st_size
-        if size > self.max_read_bytes and not is_bounded_request:
+        if size > self.max_read_bytes and limit is None:
             return ToolResult(
                 False,
                 (
@@ -187,6 +192,7 @@ class FileTools:
                 {"path": str(path), "size_bytes": size, "max_read_bytes": self.max_read_bytes},
             )
         if size > self.max_read_bytes:
+            assert limit is not None
             selected, total_lines = self._read_large_range(path, offset, limit)
             note = f"read {len(selected)} line(s) from large file {self._display(path)} starting at line {offset}"
             if len(selected) == limit:
@@ -194,10 +200,10 @@ class FileTools:
         else:
             text = path.read_text(encoding="utf-8", errors="replace")
             lines = text.splitlines()
-            selected = lines[offset - 1: offset - 1 + limit]
+            selected = lines[offset - 1:] if limit is None else lines[offset - 1: offset - 1 + limit]
             total_lines = len(lines)
             note = f"read {len(selected)} of {total_lines} lines from {self._display(path)}"
-            if offset + len(selected) - 1 < total_lines:
+            if limit is not None and offset + len(selected) - 1 < total_lines:
                 note += " (more lines available; increase offset/limit)"
         limit_chars = min(args.max_chars or self.max_read_chars, self.max_read_chars)
         body = "\n".join(f"{i}\t{line}" for i, line in enumerate(selected, start=offset))
@@ -257,28 +263,27 @@ class FileTools:
         query = args.query
         if not query:
             return ToolResult(False, "query is required; pass a non-empty query string")
-        path_glob = args.path_glob
-        try:
-            validate_glob_selector(path_glob, field="path_glob")
-        except PathValidationError as exc:
-            return _path_error(exc)
         file_type = args.file_type
         max_files = args.max_files
         max_matches_per_file = args.max_matches_per_file
         max_line_chars = args.max_line_chars or self.max_search_line_chars
         command = ["rg", "--json"]
-        if path_glob:
-            command.extend(["--glob", path_glob])
         for exclude_glob in self.search_exclude_globs:
             command.extend(["--glob", _exclude_glob(exclude_glob)])
         if file_type:
             command.extend(["--type", file_type])
-        search_roots = self.read_policy.existing_search_roots()
+        try:
+            search_paths = self._search_paths(args)
+        except PathValidationError as exc:
+            return _path_error(exc)
+        if "path" in args.model_fields_set and args.path != "." and not search_paths:
+            return ToolResult(False, f"path not found: {args.path}", {"path": args.path})
+        search_roots = search_paths or self.read_policy.existing_search_roots()
         if not search_roots:
             command.extend(["--", query])
-            return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": 1, "cmd": command, "matches": 0})
+            return ToolResult(True, self._no_matches_message(query, args.path, file_type), {"returncode": 1, "cmd": command, "matches": 0})
         command.extend(["--", query])
-        command.extend(search_root_display_paths(self.root, self.read_policy))
+        command.extend(self._display(path) for path in search_roots)
         timeout = args.timeout or self.rg_timeout
         try:
             proc = subprocess.run(
@@ -299,7 +304,7 @@ class FileTools:
                 return ToolResult(False, _rg_error_message(proc.returncode, proc.stdout), {"returncode": proc.returncode, "cmd": command})
             warning_metadata = _rg_partial_warning_metadata(proc.returncode, proc.stdout)
         if not files:
-            return ToolResult(True, self._no_matches_message(query, path_glob, file_type), {"returncode": proc.returncode, "cmd": command, "matches": 0})
+            return ToolResult(True, self._no_matches_message(query, args.path, file_type), {"returncode": proc.returncode, "cmd": command, "matches": 0})
         files.sort(key=lambda file: file.path)
         for file in files:
             file.matches.sort(key=lambda match: match.line_number)
@@ -308,7 +313,7 @@ class FileTools:
         shown_files = files[:max_files]
         content = self._format_search_output(
             query,
-            path_glob,
+            args.path,
             file_type,
             shown_files,
             total_files,
@@ -371,20 +376,20 @@ class FileTools:
     # Search formatting helpers
     # -------------------------------------------------------------------------
 
-    def _no_matches_message(self, query: str, path_glob: str, file_type: str) -> str:
+    def _no_matches_message(self, query: str, path: str, file_type: str) -> str:
         """Return a diagnostic empty-search message."""
-        scope = _describe_search_scope(path_glob, file_type, self.search_exclude_globs)
+        scope = _describe_search_scope(path, file_type, self.search_exclude_globs)
         return (
             "No matches found.\n"
             f"  query: {query}\n"
             f"  scope: {scope}\n"
-            "  hint: broaden the query, remove path_glob/file_type filters, or try simpler terms."
+            "  hint: broaden the query, remove path/file_type filters, or try simpler terms."
         )
 
     def _format_search_output(
         self,
         query: str,
-        path_glob: str,
+        path: str,
         file_type: str,
         files: list[SearchFile],
         total_files: int,
@@ -399,7 +404,7 @@ class FileTools:
         parts = [
             "summary:\n"
             f"  query: {query}\n"
-            f"  scope: {_describe_search_scope(path_glob, file_type, self.search_exclude_globs)}\n"
+            f"  scope: {_describe_search_scope(path, file_type, self.search_exclude_globs)}\n"
             f"  files: {total_files} total, {len(files)} shown\n"
             f"  matches: {shown_matches} shown, {omitted_matches} omitted\n"
         ]
@@ -415,6 +420,15 @@ class FileTools:
         if total_files > max_files:
             parts.append(f"note: {total_files - max_files} more file(s) omitted")
         return "\n".join(parts)
+
+    def _search_paths(self, args: SearchArgs) -> list[Path]:
+        """Return explicit search paths, or an empty list when using configured roots."""
+        if "path" not in args.model_fields_set or args.path == ".":
+            return []
+        path = self.read_policy.resolve(args.path)
+        if not path.exists():
+            return []
+        return [path]
 
     # -------------------------------------------------------------------------
     # Shared file/output helpers
@@ -501,7 +515,7 @@ class FileTools:
         tail = limit - head
         content = (
             f"[truncated {len(text)} chars to {limit}; full output saved to {saved_to_display}]\n"
-            f"Read the saved output with read(path=\"{saved_to_display}\", offset=1, limit=400), then continue with later offsets as needed.\n"
+            f"Read the saved output with read(path=\"{saved_to_display}\", offset=1), then continue with later offsets as needed.\n"
             f"{text[:head]}\n...\n{text[-tail:]}"
         )
         return ToolResult(
@@ -525,11 +539,11 @@ def _exclude_glob(pattern: str) -> str:
     return pattern if pattern.startswith("!") else f"!{pattern}"
 
 
-def _describe_search_scope(path_glob: str, file_type: str, exclude_globs: list[str] | None = None) -> str:
+def _describe_search_scope(path: str, file_type: str, exclude_globs: list[str] | None = None) -> str:
     """Describe active search filters."""
     parts = []
-    if path_glob:
-        parts.append(f"glob={path_glob}")
+    if path and path != ".":
+        parts.append(f"path={path}")
     if file_type:
         parts.append(f"type={file_type}")
     for exclude_glob in exclude_globs or []:

@@ -240,7 +240,7 @@ def render_about(markdown: str) -> str:
         <a href="index.html">~/home</a>
         <a href="about.html" class="is-active">~/about</a>
         <a href="explainer.html">~/explainer</a>
-        <a href="transcripts.html">~/transcripts</a>
+        <a href="examples.html">~/examples</a>
         <a href="{GITHUB_ROOT}" class="ext">github&nbsp;↗</a>
       </nav>
     </div>
@@ -362,7 +362,7 @@ def render_about(markdown: str) -> str:
       <section id="license">
         <div class="eyebrow">// license</div>
         <h2>License</h2>
-        <p>MIT. See <code>docs/THIRD_PARTY_NOTICES.md</code>.</p>
+        <p>MIT. See <code>LICENSE</code>.</p>
       </section>
     </div>
   </div>

@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>About — ThinHarness</title>
 <link rel="stylesheet" href="assets/site.css">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 </head>
 <body class="th page-about">
   <header class="site-header">
@@ -14,7 +16,7 @@
         <a href="index.html">~/home</a>
         <a href="about.html" class="is-active">~/about</a>
         <a href="explainer.html">~/explainer</a>
-        <a href="transcripts.html">~/transcripts</a>
+        <a href="examples.html">~/examples</a>
         <a href="https://github.com/ryanbbrown/thinharness" class="ext">github&nbsp;↗</a>
       </nav>
     </div>
@@ -148,6 +150,7 @@
           <div class="op-item"><div class="tag">skills</div><h3>Skills are tools, not auto-discovery</h3><p>Skills live in directories you point at explicitly. The agent calls <code>skill_read</code> and <code>skill_run</code> like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.</p></div>
           <div class="op-item"><div class="tag">search</div><h3>Search is a top priority</h3><p>The <code>search</code> tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a <code>jsonl_search</code> variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, <code>jq</code> + <code>rg</code>).</p></div>
           <div class="op-item"><div class="tag">parallel_llm</div><h3>Parallel LLM calls, built in</h3><p>Fan out from inside the harness when a workflow needs reliability beyond a single agent loop — majority vote, ensembled extraction. Set <code>builtin_parallel_llm_model</code> to enable the default <code>parallel_llm</code> tool for plain-text batches; for validated structured output per call, instantiate <code>ParallelLlmTool</code> yourself with <code>output_type</code> (a Pydantic model). Each call is stateless, and large batches can write JSON to <code>output_file</code>.</p></div>
+          <div class="op-item"><div class="tag">background_tools</div><h3>Background tools are simple</h3><p>Some long-running tools can start in the background so the agent can keep working. There is no detached job queue, polling API, or job-control surface; the current run still owns the task, and the completion is sent back to the model when it finishes.</p></div>
           <div class="op-item"><div class="tag">providers</div><h3>Three providers, no matrix</h3><p>ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing.</p></div>
           <div class="op-item"><div class="tag">no_compaction</div><h3>No compaction</h3><p>Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.</p></div>
           <div class="op-item"><div class="tag">no_deployment</div><h3>No deployment layer</h3><p>Agents still need serving, auth, storage, retries, and observability in production. ThinHarness does not try to own that stack. A bundled deployment layer might work for some teams, but it will miss plenty of real production shapes; instead of adding more code and more options, ThinHarness stays an SDK and lets the host application own deployment.</p></div>
@@ -210,7 +213,7 @@ asyncio.run(main())</code></pre>
       <section id="license">
         <div class="eyebrow">// license</div>
         <h2>License</h2>
-        <p>MIT. See <code>docs/THIRD_PARTY_NOTICES.md</code>.</p>
+        <p>MIT. See <code>LICENSE</code>.</p>
       </section>
     </div>
   </div>

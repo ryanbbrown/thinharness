@@ -20,10 +20,8 @@ from thinharness import Harness, HarnessConfig, Hook, ParallelLlmTool, PathPolic
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_ROOT = Path(__file__).resolve().parent
-DEFAULT_MODEL = os.getenv("WEB_RESEARCH_REPORT_MODEL", "openrouter:deepseek/deepseek-v4-pro")
+DEFAULT_MODEL = os.getenv("WEB_RESEARCH_REPORT_MODEL", "openai:gpt-5.5")
 CURRENT_DATE = os.getenv("WEB_RESEARCH_REPORT_CURRENT_DATE", "June 9, 2026")
-TARGET_QUERY_COUNT = os.getenv("WEB_RESEARCH_REPORT_TARGET_QUERIES", "8")
-TARGET_SOURCE_COUNT = os.getenv("WEB_RESEARCH_REPORT_TARGET_SOURCES", "8")
 DEFAULT_PROMPT = (
     "Prepare a market landscape brief for a product strategy team evaluating AI-powered support quality monitoring tools "
     "for mid-market B2B SaaS companies. Identify buyer pain, vendor categories, adoption signals, risks, and recommended next research steps."
@@ -42,9 +40,7 @@ class SourceNote(BaseModel):
     url: str
     source_type: Literal["vendor_page", "news", "analyst_post", "docs", "case_study", "forum", "other"]
     summary: str
-    useful_points: list[SourcePoint]
-    numbers_or_dates: list[str]
-    limitations: list[str]
+    useful_points: list[SourcePoint] = Field(max_length=3)
     citation_worthy: bool
 
 
@@ -79,7 +75,7 @@ class SelectedSource(BaseModel):
 class ExaFetchSourcesArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sources: list[SelectedSource] = Field(min_length=1, max_length=20)
+    sources: list[SelectedSource] = Field(min_length=1, max_length=10)
     text_max_characters: int = Field(default=12_000, ge=1_000, le=30_000)
     highlights_query: str | None = None
 
@@ -87,17 +83,9 @@ class ExaFetchSourcesArgs(BaseModel):
 class PrepareSourceNotePromptsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    context_path: str = "outputs/research_plan.md"
     document_paths: list[str] = Field(min_length=1, max_length=20)
-    research_brief_path: str = "outputs/research_plan.md"
     output_file: str = "outputs/source_note_prompts.json"
-
-
-class CompactSourceNotesArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    batch_paths: list[str] = Field(default_factory=lambda: ["outputs/source_notes_batch.json"], min_length=1, max_length=3)
-    output_file: str = "outputs/source_notes_compact.md"
-    max_points_per_source: int = Field(default=2, ge=1, le=4)
 
 
 class ExaTools:
@@ -139,21 +127,11 @@ class ExaTools:
             ToolSpec(
                 "prepare_source_note_prompts",
                 (
-                    "Build outputs/source_note_prompts.json from fetched per-document JSON files. "
+                    "Build outputs/source_note_prompts.json from a context file and fetched per-document JSON files. "
                     "Use this deterministic helper after exa_fetch_sources and before parallel_llm."
                 ),
                 PrepareSourceNotePromptsArgs,
                 self.prepare_source_note_prompts,
-                sequential=True,
-            ),
-            ToolSpec(
-                "compact_source_notes",
-                (
-                    "Parse one or more parallel_llm source-note batch JSON files and write a compact markdown evidence file. "
-                    "Use this before drafting so the agent does not need to read large batch JSON payloads."
-                ),
-                CompactSourceNotesArgs,
-                self.compact_source_notes,
                 sequential=True,
             ),
         ]
@@ -347,15 +325,15 @@ class ExaTools:
         read_policy = PathPolicy(self.root, ["outputs"], "read")
         write_policy = PathPolicy(self.root, ["outputs"], "write")
         try:
-            brief_path = read_policy.resolve(args.research_brief_path)
+            context_path = read_policy.resolve(args.context_path)
             output_path = write_policy.resolve(args.output_file)
             document_paths = [read_policy.resolve(path) for path in args.document_paths]
         except PathValidationError as exc:
             return ToolResult(False, str(exc), {"error_type": "PathValidationError"})
-        if not brief_path.exists():
-            return ToolResult(False, f"research brief not found: {args.research_brief_path}", {"error_type": "FileNotFound"})
+        if not context_path.exists():
+            return ToolResult(False, f"context file not found: {args.context_path}", {"error_type": "FileNotFound"})
 
-        research_brief = brief_path.read_text(encoding="utf-8", errors="replace")
+        context = context_path.read_text(encoding="utf-8", errors="replace")
         prompts: list[str] = []
         document_ids: list[str] = []
         for document_path in document_paths:
@@ -368,81 +346,13 @@ class ExaTools:
             if not isinstance(document, dict):
                 return ToolResult(False, f"document JSON is not an object: {_rel(document_path, self.root)}", {"error_type": "InvalidDocument"})
             document_ids.append(str(document.get("document_id") or document_path.stem))
-            prompts.append(_source_note_prompt(research_brief, document))
+            prompts.append(_source_note_prompt(context, document))
 
         _write_json(output_path, prompts)
         compact = {
             "output_file": _rel(output_path, self.root),
             "prompt_count": len(prompts),
             "document_ids": document_ids,
-        }
-        return ToolResult(True, json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
-
-    def compact_source_notes(self, args: CompactSourceNotesArgs) -> ToolResult:
-        read_policy = PathPolicy(self.root, ["outputs"], "read")
-        write_policy = PathPolicy(self.root, ["outputs"], "write")
-        try:
-            batch_paths = [read_policy.resolve(path) for path in args.batch_paths]
-            output_path = write_policy.resolve(args.output_file)
-        except PathValidationError as exc:
-            return ToolResult(False, str(exc), {"error_type": "PathValidationError"})
-
-        notes: list[dict[str, Any]] = []
-        failures = 0
-        for batch_path in batch_paths:
-            if not batch_path.exists():
-                return ToolResult(False, f"batch not found: {_rel(batch_path, self.root)}", {"error_type": "FileNotFound"})
-            try:
-                batch = json.loads(batch_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                return ToolResult(False, f"invalid batch JSON at {_rel(batch_path, self.root)}: {exc}", {"error_type": "JSONDecodeError"})
-            if not isinstance(batch, dict):
-                return ToolResult(False, f"batch JSON is not an object: {_rel(batch_path, self.root)}", {"error_type": "InvalidBatch"})
-            for item in batch.get("results") or []:
-                if not isinstance(item, dict) or item.get("ok") is not True:
-                    failures += 1
-                    continue
-                result = item.get("result")
-                if isinstance(result, dict):
-                    notes.append(result)
-                else:
-                    failures += 1
-
-        lines = ["# Compact Source Notes", ""]
-        citation_worthy = 0
-        for index, note in enumerate(notes, start=1):
-            if note.get("citation_worthy"):
-                citation_worthy += 1
-            lines.extend([
-                f"## {index}. {note.get('title') or 'Untitled'}",
-                f"- URL: {note.get('url') or ''}",
-                f"- Document ID: {note.get('document_id') or ''}",
-                f"- Source type: {note.get('source_type') or 'other'}",
-                f"- Citation worthy: {bool(note.get('citation_worthy'))}",
-                f"- Summary: {_one_line(note.get('summary'), 700)}",
-            ])
-            numbers = note.get("numbers_or_dates")
-            if isinstance(numbers, list) and numbers:
-                lines.append(f"- Numbers/dates/signals: {_one_line('; '.join(str(item) for item in numbers[:8]), 700)}")
-            points = note.get("useful_points")
-            if isinstance(points, list) and points:
-                lines.append("- Useful points:")
-                for point in points[: args.max_points_per_source]:
-                    if isinstance(point, dict):
-                        text = point.get("point") or ""
-                        excerpt = point.get("evidence_excerpt") or ""
-                        lines.append(f"  - {_one_line(text, 300)} Evidence: {_one_line(excerpt, 300)}")
-            limitations = note.get("limitations")
-            if isinstance(limitations, list) and limitations:
-                lines.append(f"- Limitations: {_one_line('; '.join(str(item) for item in limitations[:4]), 500)}")
-            lines.append("")
-
-        _atomic_write(output_path, "\n".join(lines).rstrip() + "\n")
-        compact = {
-            "output_file": _rel(output_path, self.root),
-            "source_count": len(notes),
-            "citation_worthy_count": citation_worthy,
-            "failed_results": failures,
         }
         return ToolResult(True, json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
 
@@ -484,26 +394,23 @@ SYSTEM_PROMPT = (
     "Work from saved artifacts, not memory. Search results and fetched web pages should be written to workspace files, "
     "then read back before you rely on them. Keep source-backed facts separate from your interpretation.\n"
     "\n"
-    "Required workflow:\n"
-    "1. Write outputs/research_plan.md before searching. The plan should define the report sections or research questions "
-    "implied by the user request, explain why each matters, and list the initial search queries you intend to run.\n"
-    f"2. Use exa_search_sources for the initial query set. Use about {TARGET_QUERY_COUNT} well-targeted queries.\n"
-    "3. Read or search the Exa results JSONL before selecting URLs to fetch. Before fetching, write outputs/source_selection.md "
-    "with selected source_id/url pairs and a short rationale. This artifact is required.\n"
-    "4. Fetch full contents only for selected high-value URLs with exa_fetch_sources. Do not fetch every search result "
-    f"automatically. For this first public trace, select {TARGET_SOURCE_COUNT} high-value sources.\n"
-    "5. Call prepare_source_note_prompts with the fetched per-document JSON paths returned by exa_fetch_sources. Do not hand-write "
-    "or summarize the prompt file yourself; the helper must include one full source record per prompt.\n"
-    "6. Use parallel_llm to create one source note per fetched document. Use "
-    "source={\"kind\":\"file\",\"path\":\"outputs/source_note_prompts.json\"} and write the batch artifact to "
-    "outputs/source_notes_batch.json.\n"
-    "7. Call compact_source_notes on outputs/source_notes_batch.json and read outputs/source_notes_compact.md before drafting. "
-    "Do not read the full source_notes_batch.json unless resolving a specific discrepancy.\n"
-    "8. Skip follow-up search for the default trace unless the compact evidence has zero independent adoption or funding signals; "
-    "preserve uncertainty instead of expanding scope.\n"
-    "9. Write outputs/draft_report.md, then ask the citation_critic subagent to review the draft against outputs/source_notes_compact.md. "
-    "Do not ask the critic to read large batch JSON files unless there is a specific citation discrepancy.\n"
-    "10. Revise useful issues from the critic and write the final markdown report to outputs/market_landscape_report.md.\n"
+    "Prefer batching independent tool calls in one assistant turn. When several reads, searches, listings, or other "
+    "inspections do not depend on each other's results, emit them together instead of waiting between calls.\n"
+    "When making several independent, non-overlapping edits to the same file, emit multiple edit calls in the same "
+    "assistant turn; only read between edits when a later edit depends on the result of an earlier one.\n"
+    "\n"
+    "Workflow:\n"
+    "1. Plan: Write a brief research plan to outputs/research_plan.md: the user's goal, key questions, likely source "
+    "types, and initial search directions.\n"
+    "2. Research: Use exa_search_sources, jsonl_search, and exa_fetch_sources as needed to search, inspect results, "
+    "choose useful sources, fetch sources worth relying on, and adapt if important gaps appear. Write source-selection "
+    "rationale to outputs/source_selection.md before fetching.\n"
+    "3. Extract and synthesize: Use prepare_source_note_prompts and parallel_llm as needed to turn saved sources into "
+    "auditable source notes. Use source={\"kind\":\"file\",\"path\":\"outputs/source_note_prompts.json\"} and write "
+    "the batch artifact to outputs/source_notes_batch.json.\n"
+    "4. Draft, critique, edit, finalize: Write outputs/draft_report.md, ask citation_critic to review support and "
+    "citations against outputs/source_notes_batch.json and saved sources, use edit for targeted draft revisions, "
+    "then write the final markdown report to outputs/market_landscape_report.md.\n"
     "\n"
     "Evidence standards:\n"
     "- Cite sources by title and URL.\n"
@@ -515,8 +422,7 @@ SYSTEM_PROMPT = (
     "- Do not invent citations or cite sources you did not save.\n"
     "\n"
     "The final report should include an executive summary, scope and method, key findings, evidence notes, risks or "
-    "counterarguments, recommended next steps, and a source list. Keep it credible but readable, roughly 1,200-1,800 words "
-    "for the first public trace.\n"
+    "counterarguments, recommended next steps, and a source list. Keep it credible and readable.\n"
     "\n"
     "When finished, submit the structured receipt with completed, report_path, source_count, citation_issues, open_questions, "
     "and next_action."
@@ -528,6 +434,8 @@ CITATION_CRITIC_PROMPT = (
     "\n"
     "You do not perform new web research. You review the draft report against the saved source-note batch and source "
     "documents provided by the parent agent.\n"
+    "Start from the draft and source-note batch. Do not read raw fetched source documents exhaustively; read raw source "
+    "documents only when a claim is disputed, suspicious, missing from the source notes, or needs exact quote/title/URL verification.\n"
     "\n"
     "Your job is to identify evidence problems that should be fixed before publication:\n"
     "- Important claims that lack a citation.\n"
@@ -579,14 +487,13 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
             root=root,
             model=model,
             system_prompt=SYSTEM_PROMPT,
-            builtin_tools=["read", "write", "search", "list", "glob", "jsonl_search", "subagent"],
+            builtin_tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search", "subagent"],
             output_type=ReportReceipt,
             output_mode=output_mode,
             output_retries=2,
             tool_retries=2,
             max_model_requests=64,
             max_tool_calls=96,
-            local_trace_dir=root / "outputs" / "traces",
             read_paths=["outputs"],
             write_paths=["outputs"],
             max_read_chars=80_000,
@@ -600,7 +507,7 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
                     name="citation_critic",
                     description="Citation and evidence critic for saved draft reports.",
                     system_prompt=CITATION_CRITIC_PROMPT,
-                    builtin_tools=["read", "search"],
+                    builtin_tools=["read", "search", "list", "glob"],
                     max_model_requests=10,
                     max_tool_calls=20,
                     output_retries=1,
@@ -616,10 +523,11 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
 def run_report(prompt: str = DEFAULT_PROMPT, *, root: Path = EXAMPLE_ROOT, model: str = DEFAULT_MODEL, validate: bool = True) -> dict[str, Any]:
     root = root.resolve()
     (root / "outputs").mkdir(parents=True, exist_ok=True)
-    before_trace_files = set((root / "outputs" / "traces").glob("**/*.jsonl"))
     harness = build_harness(root, model=model)
+    trace_dir = _local_trace_dir(harness)
+    before_trace_files = _trace_files(trace_dir)
     result = harness.run_sync(prompt, metadata={"example": "web_research_report", "conversation_id": "web_research_report"})
-    trace_files = sorted(set((root / "outputs" / "traces").glob("**/*.jsonl")) - before_trace_files)
+    trace_files = sorted(_trace_files(trace_dir) - before_trace_files)
     validation = validate_outputs(root, result, trace_files) if validate else {"validated": False}
     payload = {
         "model": model,
@@ -630,7 +538,7 @@ def run_report(prompt: str = DEFAULT_PROMPT, *, root: Path = EXAMPLE_ROOT, model
             "cancelled_tool_calls": result.usage.cancelled_tool_calls,
         },
         "tools": [record["call"]["name"] for record in result.tool_call_records if "call" in record],
-        "trace_files": [_rel(path, root) for path in trace_files],
+        "trace_files": [_display_path(path, root) for path in trace_files],
         "receipt": result.output.model_dump() if isinstance(result.output, ReportReceipt) else None,
         "validation": validation,
     }
@@ -651,7 +559,6 @@ def validate_outputs(root: Path, result: Any, trace_files: list[Path]) -> dict[s
         "outputs/source_selection.md",
         "outputs/source_note_prompts.json",
         "outputs/source_notes_batch.json",
-        "outputs/source_notes_compact.md",
         "outputs/draft_report.md",
         "outputs/market_landscape_report.md",
     ]
@@ -694,7 +601,6 @@ def validate_outputs(root: Path, result: Any, trace_files: list[Path]) -> dict[s
         "invoke_agent",
         "execute_tool exa_search_sources",
         "execute_tool prepare_source_note_prompts",
-        "execute_tool compact_source_notes",
         "execute_tool parallel_llm",
         "execute_tool subagent",
     ]:
@@ -706,7 +612,7 @@ def validate_outputs(root: Path, result: Any, trace_files: list[Path]) -> dict[s
         "fetch_runs": len(fetch_results),
         "source_notes_succeeded": source_notes["succeeded"],
         "report_path": "outputs/market_landscape_report.md",
-        "trace_files": [_rel(path, root) for path in trace_files],
+        "trace_files": [_display_path(path, root) for path in trace_files],
     }
 
 
@@ -747,13 +653,15 @@ def _source_audit_hook(ctx: Any) -> None:
 
 
 def _model_extra_body(model: str) -> dict[str, Any]:
-    if not model.startswith("openrouter:"):
-        return {}
-    raw_max_tokens = os.getenv("WEB_RESEARCH_REPORT_MAX_TOKENS", "4096")
+    raw_max_tokens = os.getenv("WEB_RESEARCH_REPORT_MAX_TOKENS", "16000")
     try:
         max_tokens = int(raw_max_tokens)
     except ValueError:
-        max_tokens = 4096
+        max_tokens = 16000
+    if model.startswith("openai:"):
+        return {"max_output_tokens": max_tokens, "reasoning": {"effort": "none"}}
+    if not model.startswith("openrouter:"):
+        return {}
     return {"max_tokens": max_tokens}
 
 
@@ -775,10 +683,10 @@ def _search_payload(args: ExaSearchSourcesArgs, query: str) -> dict[str, Any]:
     return payload
 
 
-def _source_note_prompt(research_brief: str, document: dict[str, Any]) -> str:
+def _source_note_prompt(context: str, document: dict[str, Any]) -> str:
     return (
-        "Research brief:\n"
-        f"{research_brief.strip()}\n\n"
+        "Context:\n"
+        f"{context.strip()}\n\n"
         "Source record:\n"
         f"{json.dumps(document, ensure_ascii=False, indent=2, default=str)}\n\n"
         "Create a compact source note using only this source.\n\n"
@@ -788,23 +696,14 @@ def _source_note_prompt(research_brief: str, document: dict[str, Any]) -> str:
         "- url\n"
         "- source_type: vendor_page | news | analyst_post | docs | case_study | forum | other\n"
         "- summary: 2-4 sentences\n"
-        "- useful_points: list of {point, evidence_excerpt}\n"
-        "- numbers_or_dates: list of concrete numbers, dates, customer names, vendor names, or adoption signals\n"
-        "- limitations: list of bias, uncertainty, missing context, or reasons not to over-weight this source\n"
+        "- useful_points: up to 3 of the most report-relevant {point, evidence_excerpt} items\n"
         "- citation_worthy: boolean\n\n"
         "Rules:\n"
         "- Do not infer beyond the source text.\n"
         "- Prefer concrete evidence over marketing claims.\n"
         "- Preserve exact numbers and named entities when present.\n"
-        "- If the source is vendor-authored, say so in limitations."
+        "- Make evidence_excerpt a short direct excerpt from the source text when available."
     )
-
-
-def _one_line(value: Any, limit: int) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return f"{text[: max(limit - 3, 0)]}..."
 
 
 def _normalize_highlights(value: Any) -> list[str]:
@@ -916,8 +815,26 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _local_trace_dir(harness: Harness) -> Path | None:
+    return harness.local_tracing.trace_dir if harness.local_tracing is not None else None
+
+
+def _trace_files(trace_dir: Path | None) -> set[Path]:
+    if trace_dir is None:
+        return set()
+    return set(trace_dir.glob("**/*.jsonl"))
+
+
 def _rel(path: Path, root: Path) -> str:
     return str(path.resolve().relative_to(root.resolve()))
+
+
+def _display_path(path: Path, root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(root.resolve()))
+    except ValueError:
+        return str(resolved)
 
 
 def main(argv: list[str] | None = None) -> None:

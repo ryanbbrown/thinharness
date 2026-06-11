@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Codebase Explainer — ThinHarness</title>
   <link rel="stylesheet" href="assets/site.css">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 </head>
 <body class="th page-explainer">
   <header class="site-header">
@@ -14,7 +16,7 @@
         <a href="index.html">~/home</a>
         <a href="about.html">~/about</a>
         <a href="explainer.html" class="is-active">~/explainer</a>
-        <a href="transcripts.html">~/transcripts</a>
+        <a href="examples.html">~/examples</a>
         <a href="https://github.com/ryanbbrown/thinharness" class="ext">github&nbsp;↗</a>
       </nav>
     </div>
@@ -51,7 +53,7 @@
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>5,382</strong>
+          <strong>6,079</strong>
           <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
         </div>
         <div class="panel kpi">
@@ -80,6 +82,9 @@
       <h2>Run Loop</h2>
       <figure class="diagram-frame">
         <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, retries, and HarnessResult construction.">
+        <figcaption>
+          Background-capable tools are omitted from the diagram for clarity. They still enter through the tool-execution path: a background start notice is returned immediately, and the completion is delivered later as provider input before the run can finish.
+        </figcaption>
       </figure>
 
       <div class="grid cols-2 grid-spaced">
@@ -133,7 +138,7 @@
 |-- tests/                           pytest coverage for every feature area
 |-- e2e/                             live-provider journeys, intentionally outside CI
 |-- examples/                        shared scenario registry plus thin agent entrypoints
-|-- docs/                            architecture, decisions, user docs, releasing notes
+|-- docs/                            decisions, user docs, site files, releasing notes
 |-- README.md                        motivation, usage, comparison table
 `-- pyproject.toml                   package metadata, deps, ruff, pyright, pytest</code></pre>
     </section>
@@ -247,7 +252,7 @@
             <td>Custom</td>
             <td>Caller-provided <code>ToolSpec</code></td>
             <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
-            <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes.</td>
+            <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>.</td>
           </tr>
         </tbody>
       </table>
@@ -272,6 +277,15 @@
             <li>Ordinary handler exceptions become failed tool results but are not retryable unless metadata says so.</li>
             <li>Tool retry budgets are per tool name per run, not per individual call id.</li>
             <li><code>after_tool_call</code> hooks can rewrite output text, but retry control flow is captured before that mutation.</li>
+          </ul>
+        </div>
+        <div class="plain-panel">
+          <h3>Background execution</h3>
+          <ul>
+            <li><code>ToolSpec.background="model"</code> exposes a private <code>_background</code> boolean when the harness is not in sequential mode.</li>
+            <li><code>ToolSpec.background="always"</code> starts the tool in the background without exposing a model-facing switch.</li>
+            <li>The original call returns a start notice immediately; the real handler result is delivered later as a background completion message.</li>
+            <li>Background tasks are owned by the current <code>Harness.run(...)</code>, not by a detached job queue.</li>
           </ul>
         </div>
       </div>
@@ -566,6 +580,14 @@
             <li>Tracing records one tool span per call, while <code>tool_call_records</code> and provider-facing <code>ToolOutput</code> values preserve the original model order.</li>
           </ul>
           <p>
+            Background-capable tools are a special case inside that same path. When the model requests
+            <code>_background: true</code>, or the tool is configured with <code>background="always"</code>,
+            the provider-facing output for the original call is only a start notice. The real handler runs under
+            <code>BackgroundToolManager</code>, and its completion is later sent back through either
+            <code>continue_with_user_message(...)</code> or <code>continue_with_tools(...)</code> when a pending
+            <code>final_result</code> tool call must be answered.
+          </p>
+          <p>
             These are the main branches after a model asks for a tool call. They determine whether ThinHarness asks the
             model to repair its request, reports a normal tool failure, or continues the provider conversation.
           </p>
@@ -596,6 +618,11 @@
                 <td>Any called tool has <code>sequential=True</code></td>
                 <td>The whole current batch runs serially in model order.</td>
                 <td>Mutating tools avoid race conditions without partitioning the batch into smaller dependency groups.</td>
+              </tr>
+              <tr>
+                <td>Tool runs in background</td>
+                <td>The original call returns a start notice, the handler keeps running, and completion is injected into a later model turn.</td>
+                <td>The agent can keep using independent tools without losing the eventual result or leaving detached work behind.</td>
               </tr>
             </tbody>
           </table>
@@ -814,7 +841,7 @@
       <div class="links">
         <a href="index.html">home</a>
         <a href="about.html">about</a>
-        <a href="transcripts.html">transcripts</a>
+        <a href="examples.html">examples</a>
         <a href="https://github.com/ryanbbrown/thinharness">github</a>
       </div>
     </div>
