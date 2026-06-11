@@ -4,6 +4,7 @@ import asyncio
 import json
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -32,13 +33,15 @@ from thinharness import (
     OpenRouterModel,
     SubAgentConfig,
     ToolSpec,
+    UnexpectedModelBehavior,
     build_child_harness,
     call_tool,
     create_subagent_tool,
 )
+from thinharness.core import _classify_run_failure
 from thinharness.defaults import DEFAULT_PARALLEL_LLM_INSTRUCTIONS, DEFAULT_SEARCH_INSTRUCTIONS
 from thinharness.hooks import current_tool_call_context
-from thinharness.providers import ModelToolCall, ModelTurn
+from thinharness.providers import ModelToolCall, ModelTurn, ProviderError
 from thinharness.tools.base import _invoke_tool
 
 
@@ -53,6 +56,68 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert client.payloads[1]["previous_response_id"] == "resp_1"
     assert client.payloads[1]["input"][0]["type"] == "function_call_output"
     assert "hello" in client.payloads[1]["input"][0]["output"]
+
+def test_session_receives_none_metadata_when_run_has_no_metadata(tmp_path: Path) -> None:
+    captured = {}
+    session = ScriptedSession(
+        start_turn=ModelTurn(text="done", raw={"id": "done"}),
+        on_start=lambda _prompt, _instructions, _tools, metadata, _previous: captured.setdefault("metadata", metadata),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+
+    assert harness.run_sync("go").text == "done"
+
+    assert captured == {"metadata": None}
+
+
+class _FailureSpan:
+    """Minimal span recorder for run-failure classification tests."""
+
+    def __init__(self) -> None:
+        self.exceptions = []
+        self.error = None
+
+    def record_exception(self, exc: Exception) -> None:
+        """Record the exception passed to the span."""
+        self.exceptions.append(exc)
+
+    def set_error(self, message: str, error_type: str) -> None:
+        """Record the span error status."""
+        self.error = (message, error_type)
+
+
+def test_classify_run_failure_preserves_exception_ladder_semantics() -> None:
+    cases = [
+        (ProviderError("provider failed"), "provider_error", HarnessError, False),
+        (UnexpectedModelBehavior("bad turn"), "unexpected_model_behavior", UnexpectedModelBehavior, True),
+        (HarnessError("harness failed"), "error", HarnessError, True),
+        (ValueError("plain failed"), "error", ValueError, True),
+    ]
+    for exc, stop_reason, raised_type, same_exception in cases:
+        run_ctx = SimpleNamespace(stop_reason="end_turn", terminal_error=None)
+        span = _FailureSpan()
+
+        raised = _classify_run_failure(run_ctx, span, exc)
+
+        assert run_ctx.stop_reason == stop_reason
+        assert isinstance(raised, raised_type)
+        assert (raised is exc) is same_exception
+        assert run_ctx.terminal_error is raised
+        assert span.exceptions == [exc]
+        assert span.error == (str(exc), type(exc).__name__)
+
+
+def test_classify_run_failure_preserves_existing_harness_stop_reason() -> None:
+    existing = HarnessError("blocked by hook")
+    exc = HarnessError("strict hook failure")
+    run_ctx = SimpleNamespace(stop_reason="cancelled_by_hook", terminal_error=existing)
+    span = _FailureSpan()
+
+    raised = _classify_run_failure(run_ctx, span, exc)
+
+    assert raised is exc
+    assert run_ctx.stop_reason == "cancelled_by_hook"
+    assert run_ctx.terminal_error is existing
 
 def test_max_model_requests_zero_blocks_before_provider_request(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))

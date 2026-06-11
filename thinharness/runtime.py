@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .hooks import LimitReachedContext, RunEndContext
 from .output import OutputTurnDecision, resolve_turn_output
-from .providers import ModelNotice, ModelSession, ModelTurn
+from .providers import ModelNotice, ModelSession, ModelTurn, StructuredOutputRequest, ToolOutput
+from .tool_execution import BackgroundToolCompletion, background_completion_message
 from .tracing import (
     ModelTraceSnapshot,
     RunTracer,
+    _trace_output_mode,
     annotate_agent_result,
     annotate_model_request,
     annotate_model_span,
@@ -21,11 +23,121 @@ from .types import HarnessError, HarnessResult, Json, LimitNoticeKey, RunUsage, 
 
 if TYPE_CHECKING:
     from .core import Harness, HarnessConfig
-    from .tool_execution import BackgroundToolCompletion, BackgroundToolManager
+    from .tool_execution import BackgroundToolManager
     from .tracing import _TraceSpan
 
 
 ModelRequest = Callable[[list[ModelNotice]], Awaitable[ModelTurn]]
+
+
+class TurnDriver:
+    """Owns one active ModelSession plus the per-run request constants."""
+
+    def __init__(
+        self,
+        *,
+        session: ModelSession,
+        run_ctx: RunContext,
+        harness: Harness,
+        instructions: str,
+        metadata: Json | None,
+        structured_output: StructuredOutputRequest | None,
+    ) -> None:
+        self._session = session
+        self._run_ctx = run_ctx
+        self._harness = harness
+        self._instructions = instructions
+        self._metadata = metadata
+        self._structured_output = structured_output
+        self._output_mode = _trace_output_mode(harness.output_schema)
+
+    async def start(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Start a model run."""
+        return await self._run_model_request(
+            lambda notices: self._session.start(
+                prompt=prompt,
+                instructions=self._instructions,
+                tools=self._harness.tool_schemas(),
+                metadata=self._metadata,
+                structured_output=self._structured_output,
+                notices=notices,
+            ),
+            trace_snapshot=ModelTraceSnapshot(kind="start", prompt=prompt, structured_output=self._output_mode),
+        )
+
+    async def resume(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Continue a resumed model run with a new prompt."""
+        return await self._run_model_request(
+            lambda notices: self._session.continue_with_user_prompt(
+                prompt=prompt,
+                instructions=self._instructions,
+                tools=self._harness.tool_schemas(),
+                metadata=self._metadata,
+                structured_output=self._structured_output,
+                notices=notices,
+            ),
+            trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=prompt, structured_output=self._output_mode),
+        )
+
+    async def send_tool_outputs(
+        self,
+        outputs: list[ToolOutput],
+        *,
+        kind: Literal["tool_outputs", "output_retry_tool", "background_completion"] = "tool_outputs",
+        output_retry: bool = False,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Continue the model run with tool outputs."""
+        return await self._run_model_request(
+            lambda notices: self._session.continue_with_tools(
+                outputs,
+                instructions=self._instructions,
+                tools=self._harness.tool_schemas(),
+                metadata=self._metadata,
+                structured_output=self._structured_output,
+                notices=notices,
+            ),
+            trace_snapshot=ModelTraceSnapshot(
+                kind=kind,
+                tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in outputs],
+                structured_output=self._output_mode,
+            ),
+            output_retry=output_retry,
+        )
+
+    async def send_user_message(
+        self,
+        message: str,
+        *,
+        kind: Literal["correction", "background_completion"],
+        output_retry: bool = False,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Continue the model run with a user message."""
+        return await self._run_model_request(
+            lambda notices: self._session.continue_with_user_message(
+                message,
+                instructions=self._instructions,
+                tools=self._harness.tool_schemas(),
+                metadata=self._metadata,
+                structured_output=self._structured_output,
+                notices=notices,
+            ),
+            trace_snapshot=ModelTraceSnapshot(kind=kind, prompt=message, structured_output=self._output_mode),
+            output_retry=output_retry,
+        )
+
+    async def _run_model_request(
+        self,
+        request: ModelRequest,
+        *,
+        trace_snapshot: ModelTraceSnapshot,
+        output_retry: bool = False,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Delegate to RunContext model advancement."""
+        return await self._run_ctx.advance_model(
+            request,
+            trace_snapshot=trace_snapshot,
+            output_retry=output_retry,
+        )
 
 
 def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
@@ -336,3 +448,10 @@ class RunContext:
     def record_background_completion(self, completion: BackgroundToolCompletion) -> None:
         """Append a background completion record to this run."""
         self.tool_call_records.append(completion.record())
+
+    async def drain_next_background(self) -> tuple[BackgroundToolCompletion, str]:
+        """Wait for, record, and format the next background completion."""
+        assert self.background is not None
+        completion = await self.background.wait_next()
+        self.record_background_completion(completion)
+        return completion, background_completion_message(completion)

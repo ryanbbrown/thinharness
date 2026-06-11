@@ -23,6 +23,7 @@ from .output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
+    OutputTurnDecision,
     resolve_output_schema_for_model,
     structured_instructions,
 )
@@ -30,6 +31,7 @@ from .providers import (
     Model,
     ModelCapabilities,
     ModelSession,
+    ModelTurn,
     ProviderError,
     ResumableModel,
     StructuredOutputRequest,
@@ -44,10 +46,8 @@ from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
 from .tracing import (
     LocalTracing,
-    ModelTraceSnapshot,
     RunTracer,
     TracingOptions,
-    _trace_output_mode,
     annotate_agent_start,
     create_local_tracing,
 )
@@ -60,6 +60,28 @@ def _local_tracing_enabled(configured: bool) -> bool:
     """Return whether local plaintext tracing should be active."""
     disabled = os.getenv("THINHARNESS_DISABLE_LOCAL_TRACING", "").lower() in {"1", "true", "yes"}
     return configured and not disabled
+
+
+def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exception:
+    """Record a run failure and return the exception to raise."""
+    agent_span.record_exception(exc)
+    agent_span.set_error(str(exc), type(exc).__name__)
+    if isinstance(exc, ProviderError):
+        run_ctx.stop_reason = "provider_error"
+        run_ctx.terminal_error = HarnessError(str(exc))
+        return run_ctx.terminal_error
+    if isinstance(exc, UnexpectedModelBehavior):
+        run_ctx.stop_reason = "unexpected_model_behavior"
+        run_ctx.terminal_error = run_ctx.terminal_error or exc
+        return exc
+    if isinstance(exc, HarnessError):
+        run_ctx.terminal_error = run_ctx.terminal_error or exc
+        if run_ctx.stop_reason == "end_turn":
+            run_ctx.stop_reason = "error"
+        return exc
+    run_ctx.stop_reason = "error"
+    run_ctx.terminal_error = exc
+    return exc
 
 
 class HarnessConfig(BaseModel):
@@ -211,7 +233,7 @@ class Harness:
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         from .runtime import RunContext
-        from .tool_execution import BackgroundToolManager, ToolBatchExecutor, background_completion_message
+        from .tool_execution import BackgroundToolManager, ToolBatchExecutor
 
         if self._closed:
             raise HarnessError("harness is closed")
@@ -254,109 +276,24 @@ class Harness:
                         tool_execution=self.config.tool_execution,
                     )
                     try:
-                        self.hooks.fire(RunStartContext(
-                            harness=self,
-                            metadata=dict(run_metadata),
-                            prompt=prompt,
-                            root=self.root,
-                            max_model_requests=self.config.max_model_requests,
-                            max_tool_calls=self.config.max_tool_calls,
-                        ))
-                        await self._ensure_mcp_connected()
-                        prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
-                        self.hooks.fire(prompt_ctx)
-                        if prompt_ctx.cancelled:
-                            reason = prompt_ctx.cancel_reason or "unspecified"
-                            run_ctx.stop_reason = "cancelled_by_hook"
-                            run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
-                            raise run_ctx.terminal_error
-                        effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
-                        instructions = structured_instructions(self.system_instructions(), self.output_schema)
-                        agent_span.for_each(
-                            lambda span, option: annotate_agent_start(
-                                span,
-                                prompt=prompt,
-                                instructions=instructions,
-                                capture_messages=option.capture_messages,
-                                top_level=not self._is_child_run,
-                            )
-                        )
+                        effective_prompt, instructions = await self._prepare_run_start(prompt, run_metadata, run_ctx, agent_span)
                         structured_output = self._structured_output_request()
-                        output_mode = _trace_output_mode(self.output_schema)
-                        if first_turn_kind == "start":
-                            try:
-                                active_session = self.model.new_session()
-                            except Exception as exc:
-                                run_ctx.stop_reason = "error"
-                                run_ctx.terminal_error = exc
-                                agent_span.record_exception(exc)
-                                agent_span.set_error(str(exc), type(exc).__name__)
-                                raise
-                            turn, decision = await run_ctx.advance_model(lambda notices: active_session.start(
-                                prompt=effective_prompt,
-                                instructions=instructions,
-                                tools=self.tool_schemas(),
-                                metadata=metadata,
-                                structured_output=structured_output,
-                                notices=notices,
-                            ), trace_snapshot=ModelTraceSnapshot(kind="start", prompt=effective_prompt, structured_output=output_mode))
-                        else:
-                            assert session is not None
-                            active_session = session
-                            turn, decision = await run_ctx.advance_model(lambda notices: active_session.continue_with_user_prompt(
-                                prompt=effective_prompt,
-                                instructions=instructions,
-                                tools=self.tool_schemas(),
-                                metadata=metadata,
-                                structured_output=structured_output,
-                                notices=notices,
-                            ), trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=effective_prompt, structured_output=output_mode))
+                        active_session, driver, turn, decision = await self._start_or_resume_turn(
+                            first_turn_kind=first_turn_kind,
+                            session=session,
+                            effective_prompt=effective_prompt,
+                            instructions=instructions,
+                            metadata=metadata,
+                            structured_output=structured_output,
+                            run_ctx=run_ctx,
+                            agent_span=agent_span,
+                        )
                         while True:
                             run_ctx.responses.append(turn.raw)
                             if decision.kind == "final":
                                 assert run_ctx.background is not None
                                 if run_ctx.background.has_pending():
-                                    completion = await run_ctx.background.wait_next()
-                                    run_ctx.record_background_completion(completion)
-                                    message = background_completion_message(completion)
-                                    if decision.finalized_via_output_tool:
-                                        final_id = decision.final_tool_call_id
-                                        assert final_id is not None
-                                        tool_outputs = [ToolOutput(
-                                            final_id,
-                                            f"Final answer deferred because background work completed.\n\n{message}\n\nProduce the final answer again now.",
-                                        )]
-                                        turn, decision = await run_ctx.advance_model(
-                                            lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
-                                                tool_outputs,
-                                                instructions=instructions,
-                                                tools=self.tool_schemas(),
-                                                metadata=metadata,
-                                                structured_output=structured_output,
-                                                notices=notices,
-                                            ),
-                                            trace_snapshot=ModelTraceSnapshot(
-                                                kind="background_completion",
-                                                tool_outputs=[{"call_id": final_id, "output": tool_outputs[0].output}],
-                                                structured_output=output_mode,
-                                            ),
-                                        )
-                                    else:
-                                        turn, decision = await run_ctx.advance_model(
-                                            lambda notices, message=message: active_session.continue_with_user_message(
-                                                message,
-                                                instructions=instructions,
-                                                tools=self.tool_schemas(),
-                                                metadata=metadata,
-                                                structured_output=structured_output,
-                                                notices=notices,
-                                            ),
-                                            trace_snapshot=ModelTraceSnapshot(
-                                                kind="background_completion",
-                                                prompt=message,
-                                                structured_output=output_mode,
-                                            ),
-                                        )
+                                    turn, decision = await self._defer_final_for_background(decision, driver, run_ctx)
                                     continue
                                 return run_ctx.finalize(
                                     decision.text,
@@ -370,40 +307,18 @@ class Harness:
                                 final_id = decision.retry_call_id
                                 assert final_id, "tool-mode final_result retry requires a tool call id"
                                 retry_message = decision.retry_message
-                                turn, decision = await run_ctx.advance_model(
-                                    lambda notices, final_id=final_id, retry_message=retry_message: active_session.continue_with_tools(
-                                        [ToolOutput(final_id, retry_message)],
-                                        instructions=instructions,
-                                        tools=self.tool_schemas(),
-                                        metadata=metadata,
-                                        structured_output=structured_output,
-                                        notices=notices,
-                                    ),
-                                    trace_snapshot=ModelTraceSnapshot(
-                                        kind="output_retry_tool",
-                                        tool_outputs=[{"call_id": final_id, "output": retry_message}],
-                                        structured_output=output_mode,
-                                    ),
+                                turn, decision = await driver.send_tool_outputs(
+                                    [ToolOutput(final_id, retry_message)],
+                                    kind="output_retry_tool",
                                     output_retry=True,
                                 )
                                 continue
                             if decision.kind == "retry_user_message":
                                 run_ctx.retry_or_fail()
                                 retry_message = decision.retry_message
-                                turn, decision = await run_ctx.advance_model(
-                                    lambda notices, retry_message=retry_message: active_session.continue_with_user_message(
-                                        retry_message,
-                                        instructions=instructions,
-                                        tools=self.tool_schemas(),
-                                        metadata=metadata,
-                                        structured_output=structured_output,
-                                        notices=notices,
-                                    ),
-                                    trace_snapshot=ModelTraceSnapshot(
-                                        kind="correction",
-                                        prompt=retry_message,
-                                        structured_output=output_mode,
-                                    ),
+                                turn, decision = await driver.send_user_message(
+                                    retry_message,
+                                    kind="correction",
                                     output_retry=True,
                                 )
                                 continue
@@ -416,89 +331,20 @@ class Harness:
                                 and run_ctx.usage.tool_calls + len(turn.tool_calls) > max_tool_calls
                                 and run_ctx.background.has_pending()
                             ):
-                                completion = await run_ctx.background.wait_next()
-                                run_ctx.record_background_completion(completion)
-                                message = background_completion_message(completion)
-                                tool_outputs = [
-                                    ToolOutput(
-                                        call.id,
-                                        ToolResult(
-                                            False,
-                                            (
-                                                f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted. "
-                                                f"A pending background completion is available instead.\n\n{message}"
-                                            ),
-                                            {"error_type": "ToolCallsExceeded"},
-                                        ).as_json(),
-                                    )
-                                    for call in turn.tool_calls
-                                ]
-                                turn, decision = await run_ctx.advance_model(
-                                    lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
-                                        tool_outputs,
-                                        instructions=instructions,
-                                        tools=self.tool_schemas(),
-                                        metadata=metadata,
-                                        structured_output=structured_output,
-                                        notices=notices,
-                                    ),
-                                    trace_snapshot=ModelTraceSnapshot(
-                                        kind="background_completion",
-                                        tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in tool_outputs],
-                                        structured_output=output_mode,
-                                    ),
-                                )
+                                turn, decision = await self._reject_batch_for_background(turn, driver, run_ctx)
                                 continue
-                            run_ctx.check_tool_limit(len(turn.tool_calls))
-                            run_ctx.usage.tool_calls += len(turn.tool_calls)
-                            recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
-                            run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
-                            run_ctx.record_tool_batch(recorded)
-                            run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
-                            tool_outputs = outputs
-                            turn, decision = await run_ctx.advance_model(lambda notices, tool_outputs=tool_outputs: active_session.continue_with_tools(
-                                tool_outputs,
-                                instructions=instructions,
-                                tools=self.tool_schemas(),
-                                metadata=metadata,
-                                structured_output=structured_output,
-                                notices=notices,
-                            ), trace_snapshot=ModelTraceSnapshot(
-                                kind="tool_outputs",
-                                tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in tool_outputs],
-                                structured_output=output_mode,
-                            ))
+                            turn, decision = await self._execute_tool_turn(turn, driver, run_ctx, tool_executor)
                     except asyncio.CancelledError as exc:
                         run_ctx.stop_reason = "cancelled"
                         run_ctx.terminal_error = exc
                         agent_span.record_exception(exc)
                         agent_span.set_error("run cancelled", "CancelledError")
                         raise
-                    except ProviderError as exc:
-                        run_ctx.stop_reason = "provider_error"
-                        run_ctx.terminal_error = HarnessError(str(exc))
-                        agent_span.record_exception(exc)
-                        agent_span.set_error(str(exc), type(exc).__name__)
-                        raise run_ctx.terminal_error from exc
-                    except UnexpectedModelBehavior as exc:
-                        run_ctx.stop_reason = "unexpected_model_behavior"
-                        run_ctx.terminal_error = run_ctx.terminal_error or exc
-                        agent_span.record_exception(exc)
-                        agent_span.set_error(str(exc), type(exc).__name__)
-                        raise
-                    except HarnessError as exc:
-                        run_ctx.terminal_error = run_ctx.terminal_error or exc
-                        if run_ctx.stop_reason == "end_turn":
-                            run_ctx.stop_reason = "error"
-                        agent_span.record_exception(exc)
-                        agent_span.set_error(str(exc), type(exc).__name__)
-                        raise
                     except Exception as exc:
-                        run_ctx.stop_reason = "error"
-                        run_ctx.terminal_error = exc
-                        agent_span.record_exception(exc)
-                        agent_span.set_error(str(exc), type(exc).__name__)
-                        raise
+                        failure = _classify_run_failure(run_ctx, agent_span, exc)
+                        if failure is exc:
+                            raise
+                        raise failure from exc
             finally:
                 if run_ctx.background is not None and run_ctx.background.has_pending():
                     for completion in await run_ctx.background.cancel_and_drain():
@@ -506,6 +352,154 @@ class Harness:
                 run_ctx.fire_run_end_once()
         finally:
             self._running = False
+
+    async def _prepare_run_start(
+        self,
+        prompt: str,
+        run_metadata: Json,
+        run_ctx: Any,
+        agent_span: Any,
+    ) -> tuple[str, str]:
+        """Fire start hooks and return the effective prompt plus instructions."""
+        self.hooks.fire(RunStartContext(
+            harness=self,
+            metadata=dict(run_metadata),
+            prompt=prompt,
+            root=self.root,
+            max_model_requests=self.config.max_model_requests,
+            max_tool_calls=self.config.max_tool_calls,
+        ))
+        await self._ensure_mcp_connected()
+        prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
+        self.hooks.fire(prompt_ctx)
+        if prompt_ctx.cancelled:
+            reason = prompt_ctx.cancel_reason or "unspecified"
+            run_ctx.stop_reason = "cancelled_by_hook"
+            run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
+            raise run_ctx.terminal_error
+        effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
+        instructions = structured_instructions(self.system_instructions(), self.output_schema)
+        agent_span.for_each(
+            lambda span, option: annotate_agent_start(
+                span,
+                prompt=prompt,
+                instructions=instructions,
+                capture_messages=option.capture_messages,
+                top_level=not self._is_child_run,
+            )
+        )
+        return effective_prompt, instructions
+
+    async def _start_or_resume_turn(
+        self,
+        *,
+        first_turn_kind: Literal["start", "resume"],
+        session: ModelSession | None,
+        effective_prompt: str,
+        instructions: str,
+        metadata: Json | None,
+        structured_output: StructuredOutputRequest | None,
+        run_ctx: Any,
+        agent_span: Any,
+    ) -> tuple[ModelSession, Any, ModelTurn, OutputTurnDecision]:
+        """Create the turn driver and make the initial model request."""
+        from .runtime import TurnDriver
+
+        if first_turn_kind == "start":
+            try:
+                active_session = self.model.new_session()
+            except Exception as exc:
+                run_ctx.stop_reason = "error"
+                run_ctx.terminal_error = exc
+                agent_span.record_exception(exc)
+                agent_span.set_error(str(exc), type(exc).__name__)
+                raise
+            driver = TurnDriver(
+                session=active_session,
+                run_ctx=run_ctx,
+                harness=self,
+                instructions=instructions,
+                metadata=metadata,
+                structured_output=structured_output,
+            )
+            turn, decision = await driver.start(effective_prompt)
+            return active_session, driver, turn, decision
+
+        assert session is not None
+        driver = TurnDriver(
+            session=session,
+            run_ctx=run_ctx,
+            harness=self,
+            instructions=instructions,
+            metadata=metadata,
+            structured_output=structured_output,
+        )
+        turn, decision = await driver.resume(effective_prompt)
+        return session, driver, turn, decision
+
+    async def _execute_tool_turn(
+        self,
+        turn: ModelTurn,
+        driver: Any,
+        run_ctx: Any,
+        tool_executor: Any,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Execute a normal tool-call turn and continue with its outputs."""
+        run_ctx.check_tool_limit(len(turn.tool_calls))
+        run_ctx.usage.tool_calls += len(turn.tool_calls)
+        recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
+        run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
+        run_ctx.record_tool_batch(recorded)
+        run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
+        return await driver.send_tool_outputs(outputs)
+
+    async def _defer_final_for_background(
+        self,
+        decision: OutputTurnDecision,
+        driver: Any,
+        run_ctx: Any,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Send a pending background completion before accepting a final answer."""
+        _, message = await run_ctx.drain_next_background()
+        if decision.finalized_via_output_tool:
+            final_id = decision.final_tool_call_id
+            assert final_id is not None
+            return await driver.send_tool_outputs(
+                [
+                    ToolOutput(
+                        final_id,
+                        f"Final answer deferred because background work completed.\n\n{message}\n\nProduce the final answer again now.",
+                    )
+                ],
+                kind="background_completion",
+            )
+        return await driver.send_user_message(message, kind="background_completion")
+
+    async def _reject_batch_for_background(
+        self,
+        turn: ModelTurn,
+        driver: Any,
+        run_ctx: Any,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Reject over-budget tool calls while delivering a background completion."""
+        max_tool_calls = self.config.max_tool_calls
+        assert max_tool_calls is not None
+        _, message = await run_ctx.drain_next_background()
+        tool_outputs = [
+            ToolOutput(
+                call.id,
+                ToolResult(
+                    False,
+                    (
+                        f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted. "
+                        f"A pending background completion is available instead.\n\n{message}"
+                    ),
+                    {"error_type": "ToolCallsExceeded"},
+                ).as_json(),
+            )
+            for call in turn.tool_calls
+        ]
+        return await driver.send_tool_outputs(tool_outputs, kind="background_completion")
 
     def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""
