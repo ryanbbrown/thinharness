@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
+from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .providers import infer_model, parse_model_ref, provider_prefix
 from .tools.base import Json, ToolBackgroundMode, ToolResult, ToolSpec
@@ -143,7 +144,25 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
         run_error: BaseException | None = None
         run_traceback: TracebackType | None = None
         try:
-            result = await child.run(args.task, metadata=_child_metadata())
+            emitter = current_stream_emitter()
+            if emitter is not None and emitter.ctx.options.include_subagents:
+                child_stream = child.stream(
+                    args.task,
+                    metadata=_child_metadata(),
+                    stream_options=emitter.ctx.options,
+                    _parent_run_id=emitter.ctx.run_id,
+                    _parent_tool_call_id=parent_call_id,
+                    _agent_name=agent_name,
+                )
+                try:
+                    async for event in child_stream:
+                        emitter.emit_forwarded(event)
+                        if isinstance(event, RunCompletedEvent) and event.run_id == child_stream.run_id:
+                            result = event.result
+                finally:
+                    await child_stream.aclose()
+            else:
+                result = await child.run(args.task, metadata=_child_metadata())
         except BaseException as exc:
             # Preserve cancellation and other BaseException exits while still closing the child harness below.
             run_error = exc

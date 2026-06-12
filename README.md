@@ -22,7 +22,7 @@
 
 Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **6,335 LOC** across 19 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **7,084 LOC** across 21 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
 
 ThinHarness is for purpose-built agents: compliance review, support triage, web research, workflow automation, and any other agent where the developer defines the task, tools, context, and output contract. The goal is usually bounded flexibility: enough room for the model to plan, search, and adapt, with enough structure to make the agent reliable in production. It is not designed for interactive agents that aim to handle every possible task, like Claude Code or OpenClaw.
 
@@ -53,10 +53,10 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-11 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-12 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>6,335</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,084</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -231,6 +231,8 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Background tools are simple.** Some long-running tools can start in the background so the agent can keep working. There is no detached job queue, polling API, or job-control surface; the current run still owns the task, and the completion is sent back to the model when it finishes.
 
+**No token streaming.** Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, background, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.
+
 **Three providers, no matrix.** ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing
 
 **No compaction.** Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.
@@ -259,7 +261,21 @@ async def main():
 asyncio.run(main())
 ```
 
-There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed structured output, lifecycle hooks, subagents, and path-scoped FS tools. The whole library is 19 Python files; the loop you care about is in [`thinharness/core.py`](thinharness/core.py) and the tools live in [`thinharness/tools/`](thinharness/tools/). Reading those files is faster than reading the docs would be.
+There's a synchronous wrapper too: `Harness(...).run_sync(...)`.
+
+For workflow visibility, use `Harness.stream(...)`:
+
+```python
+from thinharness import RunCompletedEvent
+
+async for event in harness.stream("Process these records."):
+    if event.kind == "tool_call_started":
+        print(event.tool_name)
+    if isinstance(event, RunCompletedEvent):
+        result = event.result
+```
+
+Streaming emits coarse run, model, tool, background, retry, limit, and subagent events, then finishes with the same `HarnessResult` returned by `run()`.
 
 ## Features
 
@@ -273,6 +289,7 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Background tools:** opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.
+- **Event streaming:** async coarse-grained run, model, tool, background, retry, limit, and subagent events for workflow visibility.
 - **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
 - **Limit notices:** near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or callbacks; parent and child runs compute them from their own local budgets.
 - **Tracing:** local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.

@@ -850,6 +850,14 @@ body.page-explainer .grid-spaced {
 margin-top: 16px;
 }
 
+body.page-explainer .table-block {
+margin: 22px 0 20px;
+}
+
+body.page-explainer .table-block h3 {
+margin-bottom: 12px;
+}
+
 body.page-explainer .grid > * {
 min-width: 0;
 }
@@ -983,14 +991,18 @@ background: transparent;
       font-size: inherit;
 }
 
-body.page-explainer .tree-map {
+body.page-explainer .page pre.tree-map {
 background: #ffffff;
-      color: #17212b;
+      color: var(--green);
       border: 1px solid var(--line);
       box-shadow: inset 4px 0 0 var(--green);
 }
 
-body.page-explainer .tree-map::selection, body.page-explainer .tree-map code::selection {
+body.page-explainer .page pre.tree-map code {
+color: inherit;
+}
+
+body.page-explainer .page pre.tree-map::selection, body.page-explainer .page pre.tree-map code::selection {
 background: #235b8e;
       color: #ffffff;
 }

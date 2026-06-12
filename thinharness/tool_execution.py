@@ -6,8 +6,17 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from .events import (
+    _CURRENT_STREAM_EMITTER,
+    BackgroundTaskCompletedEvent,
+    BackgroundTaskStartedEvent,
+    RunStreamContext,
+    StreamEmitter,
+    ToolCallCompletedEvent,
+    ToolCallStartedEvent,
+)
 from .hooks import _CURRENT_TOOL_CALL, _CURRENT_TOOL_RUNTIME, AfterToolCallContext, BeforeToolCallContext
 from .providers import ModelToolCall, ToolOutput
 from .tools.base import Json, ToolResult, ToolSpec, _invoke_tool
@@ -85,8 +94,10 @@ class BackgroundToolCompletion:
 class BackgroundToolManager:
     """Own background tool tasks for one Harness.run invocation."""
 
-    def __init__(self, *, run_tracer: RunTracer) -> None:
+    def __init__(self, *, run_tracer: RunTracer, emitter: StreamEmitter | None = None, stream: RunStreamContext | None = None) -> None:
         self.run_tracer = run_tracer
+        self.emitter = emitter
+        self.stream = stream
         self._next_id = 1
         self._pending: dict[asyncio.Task[BackgroundToolCompletion], BackgroundToolTask] = {}
 
@@ -108,6 +119,12 @@ class BackgroundToolManager:
     def start(self, start: BackgroundToolStart) -> None:
         """Start one prepared background task."""
         started_at = time.perf_counter()
+        self._emit(BackgroundTaskStartedEvent(
+            **self._base(),
+            background_task_id=start.task_id,
+            tool_call_id=start.tool_call_id,
+            tool_name=start.tool_name,
+        ))
         task = asyncio.create_task(self._run(start, started_at))
         self._pending[task] = BackgroundToolTask(
             task_id=start.task_id,
@@ -141,10 +158,11 @@ class BackgroundToolManager:
             if isinstance(result, BackgroundToolCompletion):
                 completions.append(result)
             elif meta is not None:
+                cancelled = isinstance(result, asyncio.CancelledError)
                 output = ToolResult(
                     False,
-                    f"{type(result).__name__}: {result}",
-                    {"error_type": type(result).__name__},
+                    "Background task cancelled" if cancelled else f"{type(result).__name__}: {result}",
+                    {"error_type": "Cancelled" if cancelled else type(result).__name__},
                 ).as_json()
                 completions.append(BackgroundToolCompletion(
                     task_id=meta.task_id,
@@ -153,14 +171,16 @@ class BackgroundToolManager:
                     output=output,
                     elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
                     failed=True,
-                    event="failed",
+                    event="cancelled" if cancelled else "failed",
                 ))
+                self._emit_completion(completions[-1])
         return completions
 
     async def _run(self, start: BackgroundToolStart, started_at: float) -> BackgroundToolCompletion:
         """Invoke one background tool and normalize its completion."""
         call_token = _CURRENT_TOOL_CALL.set({"call_id": start.tool_call_id, "name": start.tool_name})
         runtime_token = _CURRENT_TOOL_RUNTIME.set({"run_metadata": dict(start.run_metadata)})
+        emitter_token = _CURRENT_STREAM_EMITTER.set(self.emitter)
         try:
             try:
                 with self.run_tracer.tool(tool_name=start.tool_name, call_id=start.tool_call_id, arguments=start.arguments) as span:
@@ -179,7 +199,7 @@ class BackgroundToolManager:
                     )
                     if failed:
                         span.set_error(f'Background tool "{start.tool_name}" failed', str(_background_error_type(parsed)))
-                    return BackgroundToolCompletion(
+                    completion = BackgroundToolCompletion(
                         task_id=start.task_id,
                         tool_call_id=start.tool_call_id,
                         tool_name=start.tool_name,
@@ -187,8 +207,10 @@ class BackgroundToolManager:
                         elapsed_ms=(time.perf_counter() - started_at) * 1000,
                         failed=failed,
                     )
+                    self._emit_completion(completion)
+                    return completion
             except asyncio.CancelledError:
-                return BackgroundToolCompletion(
+                completion = BackgroundToolCompletion(
                     task_id=start.task_id,
                     tool_call_id=start.tool_call_id,
                     tool_name=start.tool_name,
@@ -197,8 +219,10 @@ class BackgroundToolManager:
                     failed=True,
                     event="cancelled",
                 )
+                self._emit_completion(completion)
+                return completion
             except Exception as exc:
-                return BackgroundToolCompletion(
+                completion = BackgroundToolCompletion(
                     task_id=start.task_id,
                     tool_call_id=start.tool_call_id,
                     tool_name=start.tool_name,
@@ -207,9 +231,47 @@ class BackgroundToolManager:
                     failed=True,
                     event="failed",
                 )
+                self._emit_completion(completion)
+                return completion
         finally:
+            _CURRENT_STREAM_EMITTER.reset(emitter_token)
             _CURRENT_TOOL_RUNTIME.reset(runtime_token)
             _CURRENT_TOOL_CALL.reset(call_token)
+
+    def _base(self) -> dict[str, Any]:
+        """Return common stream event fields for background events."""
+        assert self.stream is not None
+        return {
+            "run_id": self.stream.run_id,
+            "sequence": 0,
+            "parent_run_id": self.stream.parent_run_id,
+            "parent_tool_call_id": self.stream.parent_tool_call_id,
+            "agent_name": self.stream.agent_name,
+        }
+
+    def _emit(self, event: Any) -> None:
+        """Emit one background event if streaming is active."""
+        if self.emitter is not None and self.stream is not None:
+            self.emitter.emit(event)
+
+    def _emit_completion(self, completion: BackgroundToolCompletion) -> None:
+        """Emit a public background completion event."""
+        status: Literal["completed", "failed", "cancelled"]
+        if completion.event == "cancelled":
+            status = "cancelled"
+        elif completion.failed:
+            status = "failed"
+        else:
+            status = "completed"
+        self._emit(BackgroundTaskCompletedEvent(
+            **self._base(),
+            background_task_id=completion.task_id,
+            tool_call_id=completion.tool_call_id,
+            tool_name=completion.tool_name,
+            status=status,
+            elapsed_ms=completion.elapsed_ms,
+            output=completion.output,
+        ))
 
 
 def background_completion_message(completion: BackgroundToolCompletion) -> str:
@@ -347,9 +409,13 @@ class ToolCallExecutor:
         with self.run_tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
             call_token = _CURRENT_TOOL_CALL.set({"call_id": call.id, "name": call.name})
             runtime_token = _CURRENT_TOOL_RUNTIME.set({"run_metadata": dict(self.run_context.metadata)})
+            emitter_token = _CURRENT_STREAM_EMITTER.set(self.run_context.emitter)
             cancelled = False
             background_start: BackgroundToolStart | None = None
             start = time.perf_counter()
+            completed_emitted = False
+            output: str | None = None
+            retry_kind: str | None = None
             try:
                 spec = self.tool_map.get(str(call.name))
                 before = BeforeToolCallContext(
@@ -361,6 +427,13 @@ class ToolCallExecutor:
                     tool_spec=spec,
                     tool_index=index,
                 )
+                self.run_context.emit(ToolCallStartedEvent(
+                    **self.run_context.stream_base(),
+                    call_id=call.id,
+                    tool_name=call.name,
+                    tool_index=index,
+                    arguments=call.arguments,
+                ))
                 self.harness.hooks.fire(before)
                 if before.cancelled:
                     cancelled = True
@@ -405,10 +478,67 @@ class ToolCallExecutor:
                     span.set_error(f'Tool "{call.name}" failed', retry_kind)
                 elif parsed.get("ok") is False:
                     span.set_error(f'Tool "{call.name}" failed', "ToolExecutionError")
+                self._emit_completed(
+                    call=call,
+                    output=output,
+                    parsed=parsed,
+                    cancelled=cancelled,
+                    retry_kind=retry_kind,
+                    duration_ms=(time.perf_counter() - start) * 1000,
+                    background_start=background_start,
+                )
+                completed_emitted = True
                 return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind, background_start=background_start)
+            except Exception as exc:
+                if not completed_emitted:
+                    self.run_context.emit(ToolCallCompletedEvent(
+                        **self.run_context.stream_base(),
+                        call_id=call.id,
+                        tool_name=call.name,
+                        ok=False,
+                        cancelled=cancelled,
+                        retry_kind=retry_kind,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        duration_ms=(time.perf_counter() - start) * 1000,
+                        output=output,
+                    ))
+                raise
             finally:
+                _CURRENT_STREAM_EMITTER.reset(emitter_token)
                 _CURRENT_TOOL_RUNTIME.reset(runtime_token)
                 _CURRENT_TOOL_CALL.reset(call_token)
+
+    def _emit_completed(
+        self,
+        *,
+        call: ModelToolCall,
+        output: str,
+        parsed: Json,
+        cancelled: bool,
+        retry_kind: str | None,
+        duration_ms: float,
+        background_start: BackgroundToolStart | None,
+    ) -> None:
+        """Emit a public tool completion event."""
+        ok_value = parsed.get("ok")
+        metadata_value = parsed.get("metadata")
+        metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
+        content = parsed.get("content")
+        self.run_context.emit(ToolCallCompletedEvent(
+            **self.run_context.stream_base(),
+            call_id=call.id,
+            tool_name=call.name,
+            ok=ok_value if isinstance(ok_value, bool) else None,
+            cancelled=cancelled,
+            retry_kind=retry_kind,
+            error_type=metadata.get("error_type") if isinstance(metadata.get("error_type"), str) else None,
+            message=content if isinstance(content, str) and ok_value is False else None,
+            duration_ms=duration_ms,
+            output=output,
+            background_task_id=background_start.task_id if background_start is not None else None,
+            background_status="running" if background_start is not None else None,
+        ))
 
     async def _call_output(self, name: str, arguments: str) -> str:
         """Execute one model tool call and format its output."""

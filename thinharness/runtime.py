@@ -7,6 +7,17 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from .events import (
+    HarnessStreamEvent,
+    LimitWarningEvent,
+    ModelMessageEvent,
+    ModelRequestStartedEvent,
+    ModelRetryEvent,
+    RunCompletedEvent,
+    RunStreamContext,
+    StreamEmitter,
+    StreamToolCall,
+)
 from .hooks import LimitReachedContext, RunEndContext
 from .output import OutputTurnDecision, resolve_turn_output
 from .providers import ModelNotice, ModelSession, ModelTurn, StructuredOutputRequest, ToolOutput
@@ -233,6 +244,11 @@ class _ToolRetryCall(Protocol):
     """Minimal model tool call shape needed for retry accounting."""
 
     @property
+    def id(self) -> str:
+        """Return the model-requested tool call id."""
+        ...
+
+    @property
     def name(self) -> str:
         """Return the model-requested tool name."""
         ...
@@ -271,6 +287,33 @@ class RunContext:
     finalized_via_output_tool: bool = False
     agent_span: _TraceSpan | None = None
     background: BackgroundToolManager | None = None
+    stream: RunStreamContext | None = None
+    emitter: StreamEmitter | None = None
+
+    def stream_base(self) -> dict[str, Any]:
+        """Return common event metadata for this run."""
+        assert self.stream is not None
+        return {
+            "run_id": self.stream.run_id,
+            "sequence": 0,
+            "parent_run_id": self.stream.parent_run_id,
+            "parent_tool_call_id": self.stream.parent_tool_call_id,
+            "agent_name": self.stream.agent_name,
+        }
+
+    def emit(self, event: HarnessStreamEvent) -> None:
+        """Emit one stream event if this run has an active stream."""
+        if self.emitter is not None:
+            self.emitter.emit(event)
+
+    def emit_retry_event(self, retry_kind: Literal["structured_output", "tool_retry"], message: str, call_id: str | None) -> None:
+        """Emit a model retry event."""
+        self.emit(ModelRetryEvent(
+            **self.stream_base(),
+            retry_kind=retry_kind,
+            message=message,
+            call_id=call_id,
+        ))
 
     def fire_run_end_once(self) -> None:
         """Emit run_end exactly once for this run."""
@@ -333,6 +376,20 @@ class RunContext:
             self.emitted_limit_warnings,
             final_result_tool_available=self.harness.output_schema is not None and self.harness.output_schema.mode == "tool",
         )
+        self.emit(ModelRequestStartedEvent(
+            **self.stream_base(),
+            request_kind=trace_snapshot.kind,
+            model=self.harness.model_ref,
+            provider=getattr(self.harness.model.provider, "name", None),
+        ))
+        for notice in notices:
+            assert notice.limit_kind is not None and notice.remaining is not None
+            self.emit(LimitWarningEvent(
+                **self.stream_base(),
+                limit_kind=notice.limit_kind,
+                remaining=notice.remaining,
+                content=notice.content,
+            ))
         if output_retry:
             self.usage.output_retries += 1
         with self.tracer.model(self.harness.model) as model_span:
@@ -365,6 +422,13 @@ class RunContext:
                     "thinharness.output.mode": finalized_mode,
                     "gen_ai.output.finalized": True,
                 })
+            options = self.stream.options if self.stream is not None else None
+            self.emit(ModelMessageEvent(
+                **self.stream_base(),
+                text=turn.text if options is None or options.include_model_text else "",
+                tool_calls=tuple(StreamToolCall(id=call.id, name=call.name) for call in turn.tool_calls),
+                finalized_output_mode=turn.finalized_output_mode,
+            ))
             return turn, decision
 
     def build_terminal_result(self, text: str, output: Any | None = None) -> HarnessResult:
@@ -413,6 +477,7 @@ class RunContext:
         )
         self.attach_resume_state(active_session, require_dump_state=require_dump_state)
         self.fire_run_end_once()
+        self.emit(RunCompletedEvent(**self.stream_base(), result=self.result))
         return self.result
 
     def retry_or_fail(self) -> None:
@@ -440,6 +505,12 @@ class RunContext:
                 self.stop_reason = "tool_retries_exceeded"
                 self.terminal_error = HarnessError(f"tool {call.name!r} exceeded max_retries={max_retries}")
                 raise self.terminal_error
+            self.emit(ModelRetryEvent(
+                **self.stream_base(),
+                retry_kind="tool_retry",
+                message=f"Retrying tool {call.name!r} after retryable error {execution.retry_kind!r}.",
+                call_id=call.id,
+            ))
 
     def record_tool_batch(self, records: list[Json]) -> None:
         """Append provider-facing tool call records to this run."""

@@ -34,9 +34,11 @@
       <nav aria-label="Table of contents">
         <a href="#snapshot">Snapshot</a>
         <a href="#loop">Run Loop</a>
+        <a href="#streaming">Streaming</a>
         <a href="#files">Files</a>
         <a href="#contracts">Core Objects</a>
         <a href="#tools">Default Tools</a>
+        <a href="#background-mode">Background Mode</a>
         <a href="#providers">Providers</a>
         <a href="#lifecycle-observability">Lifecycle</a>
         <a href="#extras">Extras</a>
@@ -49,11 +51,11 @@
       <h2>Snapshot</h2>
       <div class="grid cols-3">
         <div class="panel kpi">
-          <strong>18</strong>
+          <strong>21</strong>
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>6,079</strong>
+          <strong>7,084</strong>
           <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
         </div>
         <div class="panel kpi">
@@ -109,6 +111,41 @@
             <li><code>run_end</code> is guarded so success, errors, hook cancellation, and external cancellation fire it at most once.</li>
           </ul>
         </div>
+      </div>
+    </section>
+
+    <section id="streaming">
+      <h2>Streaming</h2>
+      <p>
+        <code>Harness.stream(...)</code> is the public progress API, and <code>Harness.run(...)</code> is implemented
+        by consuming that stream until the top-level <code>RunCompletedEvent</code> arrives. Streaming does not change
+        the run loop; it exposes coarse lifecycle events from the same execution path.
+      </p>
+      <div class="grid cols-2 grid-spaced">
+        <div class="plain-panel">
+          <h3>What streams</h3>
+          <ul>
+            <li>Run start, provider request start, complete model turns, tool call start/completion, background task start/completion, retry opportunities, limit warnings, run completion, and run failure.</li>
+            <li>Provider calls still return complete model turns. This is workflow progress streaming, not token-delta streaming.</li>
+            <li>The final successful event carries the full <code>HarnessResult</code>, including provider responses, tool records, usage, stop reason, output, and resume state.</li>
+          </ul>
+        </div>
+        <div class="plain-panel">
+          <h3>Payload policy</h3>
+          <ul>
+            <li>Stream events include high-level prompt, tool argument, and model-visible tool result payloads for app-facing workflow visibility.</li>
+            <li>Raw provider response JSON is not included in stream events. Use the terminal <code>HarnessResult.responses</code> after completion when provider raw responses are needed.</li>
+            <li><code>StreamOptions</code> can hide model text or child subagent events, but it does not expose raw provider payloads.</li>
+            <li>Nested work is correlated with <code>run_id</code>, <code>parent_run_id</code>, <code>parent_tool_call_id</code>, <code>agent_name</code>, and per-stream <code>sequence</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout">
+        <p>
+          <code>stream()</code> starts eagerly when called and owns an in-process event queue. If a caller may stop
+          before the terminal event, use the stream as an async context manager or call <code>aclose()</code>; closing
+          the stream cancels the underlying run task and lets the harness be reused cleanly.
+        </p>
       </div>
     </section>
 
@@ -177,16 +214,6 @@
         </div>
       </div>
 
-      <details open>
-        <summary><code>RunContext</code> ownership</summary>
-        <div class="inside">
-          <p>
-            <code>Harness</code> is reusable setup. <code>RunContext</code> is the run-local coordinator used by
-            <code>Harness.run(...)</code>; it keeps provider responses, usage, retry state, notices, tracing, and
-            finalization together while <code>Harness</code> remains reusable setup.
-          </p>
-        </div>
-      </details>
     </section>
 
     <section id="tools">
@@ -224,9 +251,8 @@
           <p>
             <code>sequential=True</code> means calls involving that tool force the current model-emitted
             tool-call batch to run serially instead of concurrently. The flag is used only inside ThinHarness,
-            not sent to the model as part of the tool JSON schema. In <code>tool_execution="auto"</code>,
-            one sequential tool makes the whole batch run in model order; <code>tool_execution="sequential"</code>
-            forces this behavior for every batch.
+            not sent to the model as part of the tool JSON schema. With the default batch policy, one sequential
+            tool makes the whole batch run in model order.
           </p>
         </div>
         <div class="plain-panel">
@@ -239,25 +265,34 @@
         </div>
       </div>
 
-      <table>
-        <thead>
-          <tr><th>Surface</th><th>Class or owner</th><th>How it enters the harness</th><th>Important behavior</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Filesystem</td>
-            <td><code>FileTools</code></td>
-            <td><code>builtin_tools(root, ...)</code> returns <code>FileTools(root).specs()</code>.</td>
-            <td>Default exposed set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>. Mutating tools are marked <code>sequential=True</code>.</td>
-          </tr>
-          <tr>
-            <td>Custom</td>
-            <td>Caller-provided <code>ToolSpec</code></td>
-            <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
-            <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-block">
+        <h3>Tool surfaces</h3>
+        <table>
+          <thead>
+            <tr><th>Surface</th><th>Class or owner</th><th>How it enters the harness</th><th>Important behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Filesystem</td>
+              <td><code>FileTools</code></td>
+              <td><code>builtin_tools(root, ...)</code> returns <code>FileTools(root).specs()</code>.</td>
+              <td>Default exposed set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>. Mutating tools are marked <code>sequential=True</code>.</td>
+            </tr>
+            <tr>
+              <td>Framework-provided</td>
+              <td>Varies: skills, subagents, MCP adapters, JSONL search, and <code>ParallelLlmTool</code></td>
+              <td>Built-in candidates, configured extras, or discovered MCP tools are converted into <code>ToolSpec</code> objects and added to the same runtime tool map.</td>
+              <td>Optional surfaces still use normal tool execution. The <a href="#extras">Extras</a> section covers feature-specific ownership and constraints.</td>
+            </tr>
+            <tr>
+              <td>Custom</td>
+              <td>Caller-provided <code>ToolSpec</code></td>
+              <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
+              <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div class="grid cols-2 grid-spaced">
         <div class="plain-panel">
@@ -281,13 +316,53 @@
             <li><code>after_tool_call</code> hooks can rewrite output text, but retry control flow is captured before that mutation.</li>
           </ul>
         </div>
+      </div>
+    </section>
+
+    <section id="background-mode">
+      <h2>Background Mode</h2>
+      <p>
+        Background mode lets a long-running tool call return a start notice immediately while its handler keeps
+        running inside the same harness run. It is a tool-execution policy, not a detached queue or host-level job
+        system.
+      </p>
+      <table>
+        <thead><tr><th>Mode</th><th>Model-facing behavior</th><th>Runtime behavior</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>background="never"</code></td>
+            <td>No background argument is exposed.</td>
+            <td>The default: the handler result is returned before the next provider request.</td>
+          </tr>
+          <tr>
+            <td><code>background="model"</code></td>
+            <td>The model can opt into background execution with <code>_background: true</code>, except when all tool-call batches are configured to run serially.</td>
+            <td>In serial batch execution, the private switch is hidden so a batch cannot advance before the handler completes.</td>
+          </tr>
+          <tr>
+            <td><code>background="always"</code></td>
+            <td>No switch is exposed to the model.</td>
+            <td>Every call starts as background work. This mode is rejected when all tool-call batches are configured to run serially.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="grid cols-2 grid-spaced">
         <div class="plain-panel">
-          <h3>Background execution</h3>
+          <h3>Execution ownership</h3>
           <ul>
-            <li><code>ToolSpec.background="model"</code> exposes a private <code>_background</code> boolean when the harness is not in sequential mode.</li>
-            <li><code>ToolSpec.background="always"</code> starts the tool in the background without exposing a model-facing switch.</li>
-            <li>The original call returns a start notice immediately; the real handler result is delivered later as a background completion message.</li>
-            <li>Background tasks are owned by the current <code>Harness.run(...)</code>, not by a detached job queue.</li>
+            <li><code>ToolCallExecutor</code> prepares the start notice and <code>BackgroundToolManager</code> owns the pending task.</li>
+            <li>The start notice is recorded as the original tool output, and streaming emits <code>background_task_started</code>.</li>
+            <li>The real handler still runs with tool context, tracing, and normalized <code>ToolResult</code> envelope behavior.</li>
+            <li>Pending tasks are cancelled and drained if the run is cancelled or fails before completion.</li>
+          </ul>
+        </div>
+        <div class="plain-panel">
+          <h3>Completion handoff</h3>
+          <ul>
+            <li>When a background task completes, streaming emits <code>background_task_completed</code>.</li>
+            <li>The completion is injected into a later provider turn as a synthetic background-completion message.</li>
+            <li>If a structured-output <code>final_result</code> tool call was waiting, the completion is sent as a tool output so the provider transcript is repaired before finalization.</li>
+            <li>The agent can continue independent work, but the run cannot finish while owned background work still needs to be delivered.</li>
           </ul>
         </div>
       </div>
@@ -582,12 +657,11 @@
             <li>Tracing records one tool span per call, while <code>tool_call_records</code> and provider-facing <code>ToolOutput</code> values preserve the original model order.</li>
           </ul>
           <p>
-            Background-capable tools are a special case inside that same path. When the model requests
-            <code>_background: true</code>, or the tool is configured with <code>background="always"</code>,
-            the provider-facing output for the original call is only a start notice. The real handler runs under
-            <code>BackgroundToolManager</code>, and its completion is later sent back through either
-            <code>continue_with_user_message(...)</code> or <code>continue_with_tools(...)</code> when a pending
-            <code>final_result</code> tool call must be answered.
+            Background-capable tools use the same execution path with one extra ownership layer. The top-level
+            <a href="#background-mode">Background Mode</a> section covers the public contract; internally,
+            <code>ToolCallExecutor</code> returns a start notice, <code>BackgroundToolManager</code> owns the pending task,
+            and the completion later re-enters the provider conversation as either a user message or a tool output
+            when a pending <code>final_result</code> call must be answered.
           </p>
           <p>
             These are the main branches after a model asks for a tool call. They determine whether ThinHarness asks the

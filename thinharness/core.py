@@ -11,6 +11,15 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .defaults import DEFAULT_SYSTEM_PROMPT
+from .events import (
+    HarnessStream,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
+    StreamEmitter,
+    StreamOptions,
+    create_stream_context,
+)
 from .hooks import (
     Hook,
     HookRegistry,
@@ -232,39 +241,111 @@ class Harness:
 
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
-        from .runtime import RunContext
-        from .tool_execution import BackgroundToolManager, ToolBatchExecutor
+        result: HarnessResult | None = None
+        stream = self.stream(prompt, resume_from=resume_from, metadata=metadata)
+        async with stream as events:
+            async for event in events:
+                if isinstance(event, RunCompletedEvent) and event.run_id == stream.run_id:
+                    result = event.result
+        if result is None:
+            raise HarnessError("stream ended without a result")
+        return result
 
+    def stream(
+        self,
+        prompt: str,
+        *,
+        resume_from: dict[str, Any] | None = None,
+        metadata: Json | None = None,
+        stream_options: StreamOptions | None = None,
+        _parent_run_id: str | None = None,
+        _parent_tool_call_id: str | None = None,
+        _agent_name: str | None = None,
+    ) -> HarnessStream:
+        """Stream coarse run lifecycle events for one prompt."""
         if self._closed:
             raise HarnessError("harness is closed")
         if self._running:
-            raise HarnessError("Harness.run is not re-entrant")
-
-        session: ModelSession | None
-        model_supports_resume = hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
-        if resume_from is None:
-            session = None
-            first_turn_kind = "start"
-        else:
-            if not model_supports_resume:
-                raise HarnessError(f"model {type(self.model).__name__} does not support resume")
-            session = cast(ResumableModel, self.model).resume_session(resume_from)
-            first_turn_kind = "resume"
-
-        run_tracer = RunTracer(self.tracing)
-        run_metadata = dict(metadata or {})
-        run_ctx = RunContext(
-            harness=self,
-            prompt=prompt,
-            metadata=run_metadata,
-            usage=RunUsage(),
-            tracer=run_tracer,
+            raise HarnessError("Harness is not re-entrant")
+        stream_context = create_stream_context(
+            parent_run_id=_parent_run_id,
+            parent_tool_call_id=_parent_tool_call_id,
+            agent_name=_agent_name,
+            options=stream_options,
         )
-        run_ctx.background = BackgroundToolManager(run_tracer=run_tracer)
+        emitter = StreamEmitter(stream_context)
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(self._run_streaming(
+            prompt,
+            resume_from=resume_from,
+            metadata=metadata,
+            emitter=emitter,
+            stream_context=stream_context,
+        ))
         self._running = True
+        return HarnessStream(task, emitter)
+
+    async def _run_streaming(
+        self,
+        prompt: str,
+        *,
+        resume_from: dict[str, Any] | None,
+        metadata: Json | None,
+        emitter: StreamEmitter,
+        stream_context: Any,
+    ) -> HarnessResult:
+        """Run one prompt while emitting stream events."""
+        from .runtime import RunContext
+        from .tool_execution import BackgroundToolManager, ToolBatchExecutor
+
+        try:
+            run_tracer = RunTracer(self.tracing)
+            run_metadata = dict(metadata or {})
+            run_ctx = RunContext(
+                harness=self,
+                prompt=prompt,
+                metadata=run_metadata,
+                usage=RunUsage(),
+                tracer=run_tracer,
+                stream=stream_context,
+                emitter=emitter,
+            )
+            run_ctx.background = BackgroundToolManager(run_tracer=run_tracer, emitter=emitter, stream=stream_context)
+            run_ctx.emit(RunStartedEvent(
+                **run_ctx.stream_base(),
+                prompt=prompt,
+                root=str(self.root),
+                max_model_requests=self.config.max_model_requests,
+                max_tool_calls=self.config.max_tool_calls,
+            ))
+        except Exception as exc:
+            self._running = False
+            emitter.emit(RunFailedEvent(
+                run_id=stream_context.run_id,
+                sequence=0,
+                parent_run_id=stream_context.parent_run_id,
+                parent_tool_call_id=stream_context.parent_tool_call_id,
+                agent_name=stream_context.agent_name,
+                stop_reason="error",
+                error_type=type(exc).__name__,
+                message=str(exc),
+            ))
+            emitter.finish()
+            raise
 
         try:
             try:
+                session: ModelSession | None
+                model_supports_resume = hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
+                if resume_from is None:
+                    session = None
+                    first_turn_kind = "start"
+                else:
+                    if not model_supports_resume:
+                        run_ctx.terminal_error = HarnessError(f"model {type(self.model).__name__} does not support resume")
+                        raise run_ctx.terminal_error
+                    session = cast(ResumableModel, self.model).resume_session(resume_from)
+                    first_turn_kind = "resume"
                 conversation_id = str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     run_ctx.agent_span = agent_span
@@ -307,6 +388,7 @@ class Harness:
                                 final_id = decision.retry_call_id
                                 assert final_id, "tool-mode final_result retry requires a tool call id"
                                 retry_message = decision.retry_message
+                                run_ctx.emit_retry_event("structured_output", retry_message, final_id)
                                 turn, decision = await driver.send_tool_outputs(
                                     [ToolOutput(final_id, retry_message)],
                                     kind="output_retry_tool",
@@ -316,6 +398,7 @@ class Harness:
                             if decision.kind == "retry_user_message":
                                 run_ctx.retry_or_fail()
                                 retry_message = decision.retry_message
+                                run_ctx.emit_retry_event("structured_output", retry_message, decision.retry_call_id)
                                 turn, decision = await driver.send_user_message(
                                     retry_message,
                                     kind="correction",
@@ -350,8 +433,21 @@ class Harness:
                     for completion in await run_ctx.background.cancel_and_drain():
                         run_ctx.record_background_completion(completion)
                 run_ctx.fire_run_end_once()
+        except Exception as exc:
+            if run_ctx.terminal_error is None:
+                run_ctx.terminal_error = exc
+                if run_ctx.stop_reason == "end_turn":
+                    run_ctx.stop_reason = "error"
+            run_ctx.emit(RunFailedEvent(
+                **run_ctx.stream_base(),
+                stop_reason=run_ctx.stop_reason,
+                error_type=type(exc).__name__,
+                message=str(exc),
+            ))
+            raise
         finally:
             self._running = False
+            emitter.finish()
 
     async def _prepare_run_start(
         self,

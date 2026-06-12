@@ -40,6 +40,43 @@ asyncio.run(main())
 
 A `Harness` instance is reusable, but one instance cannot run two prompts concurrently. Use separate harness instances for parallel branches.
 
+## Streaming Progress
+
+Use `Harness.stream(...)` when a host app needs live workflow progress and the final `HarnessResult`:
+
+```python
+from thinharness import RunCompletedEvent
+
+
+async for event in harness.stream("Process these records."):
+    if event.kind == "model_message":
+        print(event.text)
+    if isinstance(event, RunCompletedEvent):
+        result = event.result
+```
+
+Streaming is coarse turn/tool/run streaming, not token-delta streaming. Provider calls still return complete model turns. Events cover run start/end, provider request starts, complete model messages, tool call start/completion, background task start/completion, structured-output and tool retries, limit warnings, and child subagent runs.
+
+Stream events are high-level workflow events intended for app consumption:
+
+- `RunStartedEvent.prompt` includes the submitted prompt.
+- `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
+- `ToolCallCompletedEvent.output` and `BackgroundTaskCompletedEvent.output` include model-visible tool output.
+- Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
+- `ModelMessageEvent.text` is included by default; set `include_model_text=False` to hide it.
+- Child subagent events are flattened by default; set `include_subagents=False` to keep only the parent `subagent` tool lifecycle.
+
+Workflow UIs should group nested work with `kind`, `run_id`, `parent_run_id`, and `parent_tool_call_id`. The final successful `RunCompletedEvent` carries the same full `HarnessResult` returned by `run()`, including `responses`, `tool_call_records`, and `resume_state`; treat that terminal result as completion data rather than a progress update.
+
+`stream()` starts the run eagerly when called and uses an unbounded in-process event queue. If you might stop before the terminal event, close the stream so the run task is cancelled and cleaned up:
+
+```python
+async with harness.stream("Process records.") as events:
+    async for event in events:
+        if should_stop(event):
+            break
+```
+
 ## Configuration Shape
 
 Most behavior is configured with `HarnessConfig`:
