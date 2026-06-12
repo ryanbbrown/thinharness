@@ -136,6 +136,22 @@ def lookup_account(args: LookupArgs) -> dict[str, str]:
 
 Tool retry budgets are per tool name per run. Ordinary handler exceptions become failed tool results, but they are not retryable unless the tool result says so.
 
+### Bash Prototype Tool
+
+`BashTool` is an opt-in custom tool for exploratory agent runs. It is not part of the default built-ins, and `builtin_tools=["bash"]` is intentionally rejected.
+
+```python
+from thinharness import BashTool, Harness, HarnessConfig
+
+
+harness = Harness(
+    HarnessConfig(root="."),
+    tools=[BashTool(root=".").spec()],
+)
+```
+
+The tool runs one `bash -c` command from a workspace-contained cwd and marks itself sequential because commands may mutate state. The cwd check is not a sandbox: commands can still access absolute paths, network tools, environment variables, and anything the host process can access. `max_chars` caps stdout and stderr independently and is clamped to the tool's `max_tool_chars`. Background descendants left by a command are cleaned up when the shell exits; this is not a persistent job runner. Use it to prototype workflow shape, then promote repeated shell logic into typed tools.
+
 ## Tool Execution Policy
 
 By default, same-turn tool calls run concurrently when all called tools are parallel-safe. The provider-facing outputs and `tool_call_records` still preserve the model's original tool-call order.

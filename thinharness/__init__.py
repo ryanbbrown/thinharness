@@ -41,6 +41,8 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
+    BashArgs,
+    BashTool,
     FilePromptSource,
     FileTools,
     InlinePromptSource,
@@ -75,6 +77,8 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
+    "BashArgs",
+    "BashTool",
     "FileTools",
     "FilePromptSource",
     "InlinePromptSource",

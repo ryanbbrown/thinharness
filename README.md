@@ -215,13 +215,30 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
 
 See [docs/table.md](docs/table.md) for per-cell rationale and how the LOC numbers are measured.
 
+## Secondary features
+
+Larger agent frameworks often include additional platform or runtime features beyond the core model/tool loop. Not every framework has every item, but these are common sources of extra surface area:
+
+- **Large provider suite:** adapters for many model APIs, provider-specific capabilities, auth patterns, request formats, and response formats.
+- **Broad external integration catalog:** built-in connectors for web search, vector databases, SQL/data warehouses, Slack, Notion, GitHub, browser/computer use, hosted code execution, and SaaS APIs.
+- **Sessions, storage, memory, and knowledge:** framework-owned state for conversations, summaries, long-term memory, retrieval, run history, user state, and backing stores such as Postgres, Redis, Mongo, SQLite, or vector databases.
+- **Workflow orchestration patterns:** deterministic sequencing, routing, loops, handoffs, fan-out/fan-in, team coordination, and graph-style composition around agents.
+- **Durable execution integrations:** checkpointing, replay, crash recovery, long waits, approval pauses, and integration with runtimes such as Temporal, DBOS, Restate, Dapr, or platform-specific workflow engines.
+- **Human-in-the-loop approvals:** framework primitives for pausing tool calls or runs, requesting review, recording decisions, and resuming with approved inputs.
+- **Event and message protocol:** normalized internal types for messages, content parts, tool calls, tool results, stream events, approvals, provider conversions, serialization, replay, and UI synchronization.
+- **Sandbox, code execution, and computer use:** local or hosted runtimes for Python/bash execution, remote sandboxes, browser automation, computer-use actions, and code-interpreter-style tools.
+- **UI, CLI, and wire protocols:** command-line runners, local dev UIs, AG-UI/A2A adapters, declarative agent specs, and server/client protocols for exposing agents outside direct SDK calls.
+- **Team, reasoning, and learning modules:** higher-level multi-agent team abstractions, explicit reasoning managers, learned preferences, run-derived memory, and self-improving knowledge stores.
+- **Realtime, voice, and modalities:** live bidirectional streams, audio input/output, voice pipelines, realtime sessions, and modality-specific runtime support.
+- **Eval and observability ecosystem:** datasets, graders, experiment runners, trace viewers, dashboards, regression tests, and integrations with external eval or tracing systems.
+
 ## Opinions
 
 ThinHarness has opinions. They are the reason it stays small.
 
 **Purpose-built agents, not universal agents.** ThinHarness is for bounded agent loops inside software you control, not open-ended interactive assistants. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.
 
-**No bash.** Business agents don't need a shell. Bash is a giant security surface, and agents mess up when writing shell commands more often than you'd initially expect. Cut it and most of those failures stop being possible.
+**No bash by default.** Business agents usually don't need a shell. Bash is a giant security surface, and agents mess up when writing shell commands more often than you'd initially expect. ThinHarness keeps bash out of the default and built-in tool sets, but exposes an opt-in `BashTool` for exploratory runs to give the agent more flexibility before the optimal workflow is hardened with typed tools.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
 
@@ -264,6 +281,7 @@ There's a synchronous wrapper (`Harness(...).run_sync(...)`), Pydantic-typed str
 ## Features
 
 - **Filesystem tools:** `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search` with root-scoped path policies.
+- **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
@@ -285,6 +303,8 @@ Set `local_tracing=False` or `THINHARNESS_DISABLE_LOCAL_TRACING=1` to disable lo
 ## Status
 
 Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap. Each major feature (MCP, subagents, jsonl_search, parallel_llm, background tools, skills) lives in its own file with no hidden dependencies. If you don't use one, that's even less code to worry about. If you want to delete it entirely, that's a one-shot 10-word prompt to a coding agent.
+
+ThinHarness was built with coding agents, but isn't vibe-coded. I have used it, iterated on it, and reviewed its design + behavior. The [docs site](https://ryanbbrown.com/thinharness/) includes a [codebase explainer](https://ryanbbrown.com/thinharness/explainer.html) that I iterated on to understand the library, and the [web research example](https://ryanbbrown.com/thinharness/examples.html) has the transcript from a non-trivial agent run to show that it works effectively.
 
 ## License
 

@@ -11,6 +11,7 @@ from .base import (
     call_tool,
     contained_path,
 )
+from .bash import BashArgs, BashTool
 from .filesystem import FileTools, builtin_tools
 from .jsonl import JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
 from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
@@ -19,6 +20,8 @@ from .skills import Skill, SkillRegistry
 
 __all__ = [
     "FileTools",
+    "BashArgs",
+    "BashTool",
     "Json",
     "JsonlSearch",
     "JsonlSearchArgs",

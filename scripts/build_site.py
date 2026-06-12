@@ -45,7 +45,7 @@ def paragraphs(markdown: str) -> list[str]:
 def slug_for_opinion(title: str) -> str:
     known_tags = {
         "Purpose-built agents, not universal agents": "purpose_built",
-        "No bash": "no_bash",
+        "No bash by default": "no_bash",
         "Skills are tools, not auto-discovery": "skills",
         "Search is a top priority": "search",
         "Parallel LLM calls, built in": "parallel_llm",
