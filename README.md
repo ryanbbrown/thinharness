@@ -215,23 +215,6 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
 
 See [docs/table.md](docs/table.md) for per-cell rationale and how the LOC numbers are measured.
 
-## Secondary features
-
-Larger agent frameworks often include additional platform or runtime features beyond the core model/tool loop. Not every framework has every item, but these are common sources of extra surface area:
-
-- **Large provider suite:** adapters for many model APIs, provider-specific capabilities, auth patterns, request formats, and response formats.
-- **Broad external integration catalog:** built-in connectors for web search, vector databases, SQL/data warehouses, Slack, Notion, GitHub, browser/computer use, hosted code execution, and SaaS APIs.
-- **Sessions, storage, memory, and knowledge:** framework-owned state for conversations, summaries, long-term memory, retrieval, run history, user state, and backing stores such as Postgres, Redis, Mongo, SQLite, or vector databases.
-- **Workflow orchestration patterns:** deterministic sequencing, routing, loops, handoffs, fan-out/fan-in, team coordination, and graph-style composition around agents.
-- **Durable execution integrations:** checkpointing, replay, crash recovery, long waits, approval pauses, and integration with runtimes such as Temporal, DBOS, Restate, Dapr, or platform-specific workflow engines.
-- **Human-in-the-loop approvals:** framework primitives for pausing tool calls or runs, requesting review, recording decisions, and resuming with approved inputs.
-- **Event and message protocol:** normalized internal types for messages, content parts, tool calls, tool results, stream events, approvals, provider conversions, serialization, replay, and UI synchronization.
-- **Sandbox, code execution, and computer use:** local or hosted runtimes for Python/bash execution, remote sandboxes, browser automation, computer-use actions, and code-interpreter-style tools.
-- **UI, CLI, and wire protocols:** command-line runners, local dev UIs, AG-UI/A2A adapters, declarative agent specs, and server/client protocols for exposing agents outside direct SDK calls.
-- **Team, reasoning, and learning modules:** higher-level multi-agent team abstractions, explicit reasoning managers, learned preferences, run-derived memory, and self-improving knowledge stores.
-- **Realtime, voice, and modalities:** live bidirectional streams, audio input/output, voice pipelines, realtime sessions, and modality-specific runtime support.
-- **Eval and observability ecosystem:** datasets, graders, experiment runners, trace viewers, dashboards, regression tests, and integrations with external eval or tracing systems.
-
 ## Opinions
 
 ThinHarness has opinions. They are the reason it stays small.
