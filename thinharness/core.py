@@ -522,7 +522,7 @@ class Harness:
                             run_ctx.responses.append(turn.raw)
                             if decision.kind == "final":
                                 assert run_ctx.background is not None
-                                if run_ctx.background.has_pending():
+                                if run_ctx.background.has_pending_or_ready():
                                     turn, decision = await self._defer_final_for_background(decision, driver, run_ctx)
                                     continue
                                 return run_ctx.finalize(
@@ -561,7 +561,7 @@ class Harness:
                             if (
                                 max_tool_calls is not None
                                 and run_ctx.usage.tool_calls + len(turn.tool_calls) > max_tool_calls
-                                and run_ctx.background.has_pending()
+                                and run_ctx.background.has_pending_or_ready()
                             ):
                                 turn, decision = await self._reject_batch_for_background(turn, driver, run_ctx)
                                 continue
@@ -584,7 +584,7 @@ class Harness:
                             raise
                         raise failure from exc
             finally:
-                if run_ctx.background is not None and run_ctx.background.has_pending():
+                if run_ctx.background is not None and run_ctx.background.has_pending_or_ready():
                     for completion in await run_ctx.background.cancel_and_drain():
                         run_ctx.record_background_completion(completion)
                 run_ctx.fire_run_end_once()
@@ -767,7 +767,10 @@ class Harness:
             ordered_records.append(record)
             ordered_outputs.append(output)
         run_ctx.record_tool_batch(ordered_records)
-        notices = self._approval_resume_notices(approval_pause.cancelled_background_task_ids)
+        notices = self._approval_resume_notices(
+            approval_pause.cancelled_background_task_ids,
+            approval_pause.ready_background_completion_messages,
+        )
         return await driver.send_tool_outputs(ordered_outputs, kind="approval_resume", extra_notices=notices)
 
     def _reject_approval_call(
@@ -816,16 +819,20 @@ class Harness:
             ToolOutput(call.id, output),
         )
 
-    def _approval_resume_notices(self, cancelled_ids: list[str]) -> list[ModelNotice]:
+    def _approval_resume_notices(self, cancelled_ids: list[str], completion_messages: list[str]) -> list[ModelNotice]:
         """Return model notices for background tasks cancelled by an approval pause."""
-        if not cancelled_ids:
-            return []
-        joined = ", ".join(cancelled_ids)
-        plural = "task was" if len(cancelled_ids) == 1 else "tasks were"
-        return [ModelNotice(
-            kind="background_cancelled",
-            content=f"Background {plural} cancelled when the run paused for human approval: {joined}.",
-        )]
+        notices = [
+            ModelNotice(kind="background_completion", content=message)
+            for message in completion_messages
+        ]
+        if cancelled_ids:
+            joined = ", ".join(cancelled_ids)
+            plural = "task was" if len(cancelled_ids) == 1 else "tasks were"
+            notices.append(ModelNotice(
+                kind="background_cancelled",
+                content=f"Background {plural} cancelled when the run paused for human approval: {joined}.",
+            ))
+        return notices
 
     def _validate_approval_resume_tools(self, approval_pause: ApprovalPause) -> None:
         """Require approval-required tools to still be configured before execution."""
@@ -863,8 +870,10 @@ class Harness:
         recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
         run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
         run_ctx.record_tool_batch(recorded)
+        _completions, completion_message = run_ctx.drain_ready_background()
         run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
-        return await driver.send_tool_outputs(outputs)
+        notices = [ModelNotice(kind="background_completion", content=completion_message)] if completion_message is not None else None
+        return await driver.send_tool_outputs(outputs, extra_notices=notices)
 
     async def _defer_final_for_background(
         self,
@@ -873,7 +882,7 @@ class Harness:
         run_ctx: Any,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Send a pending background completion before accepting a final answer."""
-        _, message = await run_ctx.drain_next_background()
+        _, message = await run_ctx.drain_next_background_batch()
         if decision.finalized_via_output_tool:
             final_id = decision.final_tool_call_id
             assert final_id is not None
@@ -897,22 +906,22 @@ class Harness:
         """Reject over-budget tool calls while delivering a background completion."""
         max_tool_calls = self.config.max_tool_calls
         assert max_tool_calls is not None
-        _, message = await run_ctx.drain_next_background()
+        _, message = await run_ctx.drain_next_background_batch()
         tool_outputs = [
             ToolOutput(
                 call.id,
                 ToolResult(
                     False,
-                    (
-                        f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted. "
-                        f"A pending background completion is available instead.\n\n{message}"
-                    ),
+                    f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted.",
                     {"error_type": "ToolCallsExceeded"},
                 ).as_json(),
             )
             for call in turn.tool_calls
         ]
-        return await driver.send_tool_outputs(tool_outputs, kind="background_completion")
+        return await driver.send_tool_outputs(
+            tool_outputs,
+            extra_notices=[ModelNotice(kind="background_completion", content=message)],
+        )
 
     def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""
@@ -996,7 +1005,9 @@ class Harness:
         if self.config.tool_execution != "sequential" and any(tool.background == "model" for tool in self.tools):
             parts.append(
                 "Some long-running tools support an optional `_background: true` argument. "
-                "Use it only for independent long work; normal short tool calls should stay synchronous."
+                "Use background execution only for long-running work that can proceed independently. "
+                "After starting background work, continue only with tool calls that remain useful regardless of that background result. "
+                "If the next action depends on the background result, stop and let the harness notify you when it completes."
             )
         if self._skills_enabled:
             skill_summary = self.skills.prompt_summary()

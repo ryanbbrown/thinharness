@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
 
 ModelRequest = Callable[[list[ModelNotice]], Awaitable[ModelTurn]]
+BACKGROUND_COMPLETION_SEPARATOR = "\n\n---\n\n"
 
 
 class TurnDriver:
@@ -295,6 +296,7 @@ class RunContext:
     background: BackgroundToolManager | None = None
     stream: RunStreamContext | None = None
     emitter: StreamEmitter | None = None
+    ready_background_completion_messages: list[str] = field(default_factory=list)
 
     def stream_base(self) -> dict[str, Any]:
         """Return common event metadata for this run."""
@@ -458,7 +460,10 @@ class RunContext:
         cancelled_ids: list[str] = []
         for completion in await self.background.cancel_and_drain():
             self.record_background_completion(completion)
-            cancelled_ids.append(completion.task_id)
+            if completion.event == "cancelled":
+                cancelled_ids.append(completion.task_id)
+            else:
+                self.ready_background_completion_messages.append(background_completion_message(completion))
         return cancelled_ids
 
     def pause_for_approval(
@@ -480,6 +485,7 @@ class RunContext:
             batch=turn.tool_calls,
             approval_required_ids=approval_ids,
             cancelled_background_task_ids=cancelled_background_task_ids,
+            ready_background_completion_messages=self.ready_background_completion_messages,
             usage=self.usage,
             responses=self.responses,
             tool_call_records=self.tool_call_records,
@@ -584,9 +590,27 @@ class RunContext:
         """Append a background completion record to this run."""
         self.tool_call_records.append(completion.record())
 
-    async def drain_next_background(self) -> tuple[BackgroundToolCompletion, str]:
-        """Wait for, record, and format the next background completion."""
+    def drain_ready_background(self) -> tuple[list[BackgroundToolCompletion], str | None]:
+        """Record and format all ready background completions."""
         assert self.background is not None
-        completion = await self.background.wait_next()
-        self.record_background_completion(completion)
-        return completion, background_completion_message(completion)
+        completions = self.background.drain_ready()
+        if not completions:
+            return [], None
+        for completion in completions:
+            self.record_background_completion(completion)
+        return completions, _join_background_messages(completions)
+
+    async def drain_next_background_batch(self) -> tuple[list[BackgroundToolCompletion], str]:
+        """Wait for one background completion, then record every ready completion."""
+        assert self.background is not None
+        first = await self.background.wait_next_ready()
+        remaining = self.background.drain_ready()
+        completions = [first, *remaining]
+        for completion in completions:
+            self.record_background_completion(completion)
+        return completions, _join_background_messages(completions)
+
+
+def _join_background_messages(completions: Sequence[BackgroundToolCompletion]) -> str:
+    """Join background completion messages for one model delivery."""
+    return BACKGROUND_COMPLETION_SEPARATOR.join(background_completion_message(completion) for completion in completions)

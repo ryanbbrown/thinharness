@@ -55,7 +55,7 @@
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>7,718</strong>
+          <strong>7,791</strong>
           <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
         </div>
         <div class="panel kpi">
@@ -85,7 +85,7 @@
       <figure class="diagram-frame">
         <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, approval pause, retries, and HarnessResult construction.">
         <figcaption>
-          Background-capable tools are omitted from the diagram for clarity. They still enter through the tool-execution path: a background start notice is returned immediately, and the completion is delivered later as provider input before the run can finish.
+          Background-capable tools use the same tool-execution path: the original call returns a short start notice while the handler continues under run ownership. When completion is ready, the harness delivers it at the next legal provider request, often coalesced with foreground tool outputs. If the model tries to finalize while background work is still pending or ready but undelivered, the harness waits if needed, sends the completion back to the provider, and requires the final answer again.
         </figcaption>
       </figure>
 
@@ -361,7 +361,8 @@
           <h3>Completion handoff</h3>
           <ul>
             <li>When a background task completes, streaming emits <code>background_task_completed</code>.</li>
-            <li>The completion is injected into a later provider turn as a synthetic background-completion message.</li>
+            <li>The completion is delivered at the next legal provider request, usually as a <code>background_completion</code> notice on the same continuation as foreground tool outputs.</li>
+            <li>If the model reaches the final branch before the task is done, the harness waits for completion, sends it back to the provider, and asks the model to produce the final answer again.</li>
             <li>If a structured-output <code>final_result</code> tool call was waiting, the completion is sent as a tool output so the provider transcript is repaired before finalization.</li>
             <li>The agent can continue independent work, but the run cannot finish while owned background work still needs to be delivered.</li>
           </ul>
@@ -705,8 +706,9 @@
             Background-capable tools use the same execution path with one extra ownership layer. The top-level
             <a href="#background-mode">Background Mode</a> section covers the public contract; internally,
             <code>ToolCallExecutor</code> returns a start notice, <code>BackgroundToolManager</code> owns the pending task,
-            and the completion later re-enters the provider conversation as either a user message or a tool output
-            when a pending <code>final_result</code> call must be answered.
+            and the completion later re-enters the provider conversation at the next legal request. Ready completions
+            are coalesced with foreground tool outputs when possible; if the model tries to finalize first, the harness
+            waits if needed, delivers the completion, and requires the final answer again.
           </p>
           <p>
             These are the main branches after a model asks for a tool call. They determine whether ThinHarness asks the
@@ -742,7 +744,7 @@
               </tr>
               <tr>
                 <td>Tool runs in background</td>
-                <td>The original call returns a start notice, the handler keeps running, and completion is injected into a later model turn.</td>
+                <td>The original call returns a start notice, the handler keeps running, and completion is delivered at the next legal provider request.</td>
                 <td>The agent can keep using independent tools without losing the eventual result or leaving detached work behind.</td>
               </tr>
             </tbody>

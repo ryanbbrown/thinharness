@@ -1,6 +1,6 @@
 <mxfile host="Electron" agent="Codex">
   <diagram id="thinharness-run-loop" name="ThinHarness run loop">
-    <mxGraphModel dx="1571" dy="901" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1640" pageHeight="960" math="0" shadow="0">
+    <mxGraphModel dx="1768" dy="1014" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1640" pageHeight="960" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -56,7 +56,7 @@
           <mxGeometry height="18" width="72" x="894" y="28" as="geometry" />
         </mxCell>
         <mxCell id="stream-callout" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#eff6ff;strokeColor=#60a5fa;strokeWidth=1.5;dashed=1;fontFamily=Helvetica;fontSize=12;fontColor=#334155;align=center;verticalAlign=middle;spacing=0;" value="&lt;div style=&quot;font-weight:700;color:#172033&quot;&gt;Typed event stream&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-family:Menlo,Monaco,Consolas,monospace&quot;&gt;StreamEvent&lt;/span&gt; emitted at each blue dot; contains kind, run_id, and event number&lt;/div&gt;" vertex="1">
-          <mxGeometry height="42" width="440" x="1140" y="16" as="geometry" />
+          <mxGeometry height="42" width="454" x="1126" y="16" as="geometry" />
         </mxCell>
         <mxCell id="lane-setup" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=6;fillColor=#f8fafc;strokeColor=#cbd5e1;strokeWidth=1.2;" value="" vertex="1">
           <mxGeometry height="250" width="682" x="36" y="76" as="geometry" />
@@ -152,6 +152,15 @@
             </Array>
           </mxGeometry>
         </mxCell>
+        <mxCell id="e-final-background-advance" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;endArrow=block;html=1;strokeColor=#999999;strokeWidth=1.9;endFill=1;dashed=1;dashPattern=7 5;entryX=0.5085;entryY=1;" target="advance" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="995" y="427" />
+              <mxPoint x="911" y="427" />
+            </Array>
+            <mxPoint x="995" y="650" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
         <mxCell id="e-decide-approval-gate" edge="1" parent="1" source="decide" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;endArrow=block;html=1;strokeColor=#ea580c;strokeWidth=1.9;endFill=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="approvalGate" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
@@ -214,6 +223,12 @@
         </mxCell>
         <mxCell id="label-final" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=45;fillColor=#ffffff;strokeColor=#cbd5e1;opacity=96;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#334155;align=center;verticalAlign=middle;spacing=0;" value="final" vertex="1">
           <mxGeometry height="18" width="50" x="856" y="643" as="geometry" />
+        </mxCell>
+        <mxCell id="label-background-pending" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=45;fillColor=#ffffff;strokeColor=#999999;opacity=96;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#334155;align=center;verticalAlign=middle;spacing=0;" value="background pending: wait + deliver completion" vertex="1">
+          <mxGeometry height="18" width="285" x="852.5" y="441" as="geometry" />
+        </mxCell>
+        <mxCell id="label-no-background" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=45;fillColor=#ffffff;strokeColor=#cbd5e1;opacity=96;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#334155;align=center;verticalAlign=middle;spacing=0;" value="none pending" vertex="1">
+          <mxGeometry height="18" width="100" x="943.5" y="669" as="geometry" />
         </mxCell>
         <mxCell id="label-ordinary-tools" parent="1" style="rounded=1;whiteSpace=wrap;html=1;arcSize=45;fillColor=#ffffff;strokeColor=#86efac;opacity=96;fontFamily=Helvetica;fontSize=12;fontStyle=1;fontColor=#334155;align=center;verticalAlign=middle;spacing=0;" value="no approval" vertex="1">
           <mxGeometry height="18" width="96" x="247" y="584" as="geometry" />

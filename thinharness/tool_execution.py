@@ -100,6 +100,8 @@ class BackgroundToolManager:
         self.stream = stream
         self._next_id = 1
         self._pending: dict[asyncio.Task[BackgroundToolCompletion], BackgroundToolTask] = {}
+        self._ready: list[BackgroundToolCompletion] = []
+        self._ready_event = asyncio.Event()
 
     def allocate_id(self) -> str:
         """Return the next stable per-run background task id."""
@@ -107,9 +109,10 @@ class BackgroundToolManager:
         self._next_id += 1
         return task_id
 
-    def has_pending(self) -> bool:
-        """Return whether any background tasks are still running."""
-        return bool(self._pending)
+    def has_pending_or_ready(self) -> bool:
+        """Return whether background work is pending or ready for delivery."""
+        self._harvest_done()
+        return bool(self._pending or self._ready)
 
     def start_many(self, starts: list[BackgroundToolStart]) -> None:
         """Start prepared background tasks under the current agent span."""
@@ -119,12 +122,13 @@ class BackgroundToolManager:
     def start(self, start: BackgroundToolStart) -> None:
         """Start one prepared background task."""
         started_at = time.perf_counter()
-        self._emit(BackgroundTaskStartedEvent(
-            **self._base(),
-            background_task_id=start.task_id,
-            tool_call_id=start.tool_call_id,
-            tool_name=start.tool_name,
-        ))
+        if self.emitter is not None and self.stream is not None:
+            self._emit(BackgroundTaskStartedEvent(
+                **self._base(),
+                background_task_id=start.task_id,
+                tool_call_id=start.tool_call_id,
+                tool_name=start.tool_name,
+            ))
         task = asyncio.create_task(self._run(start, started_at))
         self._pending[task] = BackgroundToolTask(
             task_id=start.task_id,
@@ -134,47 +138,82 @@ class BackgroundToolManager:
             task=task,
             started_at=started_at,
         )
+        task.add_done_callback(self._collect_task_completion)
 
-    async def wait_next(self) -> BackgroundToolCompletion:
-        """Wait for and return the next background completion."""
-        if not self._pending:
-            raise RuntimeError("no pending background tasks")
-        done, _pending = await asyncio.wait(set(self._pending), return_when=asyncio.FIRST_COMPLETED)
-        task = next(iter(done))
-        self._pending.pop(task, None)
-        return task.result()
+    def drain_ready(self) -> list[BackgroundToolCompletion]:
+        """Return all completed background results that have not been delivered."""
+        self._harvest_done()
+        ready = self._ready
+        self._ready = []
+        self._ready_event.clear()
+        return ready
+
+    async def wait_next_ready(self) -> BackgroundToolCompletion:
+        """Wait for and return the next ready background completion."""
+        while True:
+            self._ready_event.clear()
+            self._harvest_done()
+            if self._ready:
+                completion = self._ready.pop(0)
+                return completion
+            if not self._pending:
+                raise RuntimeError("no pending background tasks")
+            await self._ready_event.wait()
 
     async def cancel_and_drain(self) -> list[BackgroundToolCompletion]:
         """Cancel all pending tasks and return any terminal completion records."""
+        completions = self.drain_ready()
         tasks = list(self._pending)
         if not tasks:
-            return []
+            return completions
         for task in tasks:
             task.cancel()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        completions: list[BackgroundToolCompletion] = []
-        for task, result in zip(tasks, results, strict=True):
-            meta = self._pending.pop(task, None)
-            if isinstance(result, BackgroundToolCompletion):
-                completions.append(result)
-            elif meta is not None:
-                cancelled = isinstance(result, asyncio.CancelledError)
-                output = ToolResult(
-                    False,
-                    "Background task cancelled" if cancelled else f"{type(result).__name__}: {result}",
-                    {"error_type": "Cancelled" if cancelled else type(result).__name__},
-                ).as_json()
-                completions.append(BackgroundToolCompletion(
-                    task_id=meta.task_id,
-                    tool_call_id=meta.tool_call_id,
-                    tool_name=meta.tool_name,
-                    output=output,
-                    elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
-                    failed=True,
-                    event="cancelled" if cancelled else "failed",
-                ))
-                self._emit_completion(completions[-1])
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._harvest_done()
+        completions.extend(self.drain_ready())
         return completions
+
+    def _harvest_done(self) -> None:
+        """Move completed task results into the ready list."""
+        for task in list(self._pending):
+            if task.done():
+                self._collect_task_completion(task)
+
+    def _collect_task_completion(self, task: asyncio.Task[BackgroundToolCompletion]) -> None:
+        """Record one completed task exactly once."""
+        meta = self._pending.pop(task, None)
+        if meta is None:
+            return
+        try:
+            completion = task.result()
+        except asyncio.CancelledError:
+            # _run normally converts cancellation into a completion; this is a fallback
+            # for cancellation that prevents _run from returning its own record.
+            completion = BackgroundToolCompletion(
+                task_id=meta.task_id,
+                tool_call_id=meta.tool_call_id,
+                tool_name=meta.tool_name,
+                output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).as_json(),
+                elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
+                failed=True,
+                event="cancelled",
+            )
+            self._emit_completion(completion)
+        except Exception as exc:
+            # _run normally converts failures into a completion; keep collection robust
+            # if an exception escapes that normalization path.
+            completion = BackgroundToolCompletion(
+                task_id=meta.task_id,
+                tool_call_id=meta.tool_call_id,
+                tool_name=meta.tool_name,
+                output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json(),
+                elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
+                failed=True,
+                event="failed",
+            )
+            self._emit_completion(completion)
+        self._ready.append(completion)
+        self._ready_event.set()
 
     async def _run(self, start: BackgroundToolStart, started_at: float) -> BackgroundToolCompletion:
         """Invoke one background tool and normalize its completion."""
@@ -256,6 +295,8 @@ class BackgroundToolManager:
 
     def _emit_completion(self, completion: BackgroundToolCompletion) -> None:
         """Emit a public background completion event."""
+        if self.emitter is None or self.stream is None:
+            return
         status: Literal["completed", "failed", "cancelled"]
         if completion.event == "cancelled":
             status = "cancelled"

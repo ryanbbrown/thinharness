@@ -43,6 +43,7 @@ def test_model_refs_require_provider_prefix() -> None:
 def test_model_notice_rendering_is_deterministic() -> None:
     first = ModelNotice(kind="limit_warning", content="Final request.", limit_kind="model_requests", remaining=1)
     second = ModelNotice(kind="limit_warning", content="One tool call remains.", limit_kind="tool_calls", remaining=1)
+    background = ModelNotice(kind="background_completion", content="Background task bg_1 completed.")
 
     assert render_model_notices(None) == ""
     assert append_notices_to_text("hi", None) == "hi"
@@ -53,6 +54,7 @@ def test_model_notice_rendering_is_deterministic() -> None:
         '<harness_notice kind="limit_warning">\nOne tool call remains.\n</harness_notice>'
     )
     assert append_notices_to_text("hi", [first]) == 'hi\n\n<harness_notice kind="limit_warning">\nFinal request.\n</harness_notice>'
+    assert render_model_notices([background]) == '<harness_notice kind="background_completion">\nBackground task bg_1 completed.\n</harness_notice>'
 
 async def test_model_sessions_advance_independently() -> None:
     provider = FakeAnthropicProvider()

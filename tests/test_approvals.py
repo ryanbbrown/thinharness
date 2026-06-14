@@ -30,6 +30,7 @@ from thinharness import (
     ToolSpec,
     TracingOptions,
 )
+from thinharness.approvals import validate_approval_pause_state
 from thinharness.tools.base import ToolResult
 
 
@@ -503,6 +504,64 @@ async def test_background_task_is_cancelled_and_reported_when_later_turn_pauses(
     ]
 
 
+async def test_ready_background_completion_is_preserved_across_approval_pause(tmp_path: Path) -> None:
+    background_finished = asyncio.Event()
+    resumed_notices = []
+
+    class WaitingSession(ScriptedSession):
+        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+            await asyncio.wait_for(background_finished.wait(), timeout=0.5)
+            return await super().continue_with_tools(
+                outputs,
+                instructions=instructions,
+                tools=tools,
+                metadata=metadata,
+                structured_output=structured_output,
+                notices=notices,
+            )
+
+    first = WaitingSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_bg", name="fast", arguments='{"_background":true}')],
+            raw={"id": "start"},
+        ),
+        continue_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_approval", name="deploy", arguments='{"env":"prod"}')],
+            raw={"id": "approval"},
+        ),
+    )
+    resumed = ScriptedSession(
+        start_turn=ModelTurn(raw={"unused": True}),
+        continue_turn=ModelTurn(text="done", raw={"id": "done"}),
+        on_continue=lambda _outputs, _tools, _metadata: resumed_notices.extend(resumed.notice_calls[-1][1]),
+    )
+
+    async def fast(_args) -> str:
+        background_finished.set()
+        return "ready"
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([first, resumed]),
+        tools=[
+            ToolSpec("fast", "Fast", {"type": "object", "properties": {}, "additionalProperties": False}, fast, background="model"),
+            approval_tool([]),
+        ],
+    )
+
+    paused = await harness.run("go")
+
+    assert paused.stop_reason == "approval_required"
+    assert paused.resume_state["cancelled_background_task_ids"] == []
+    assert len(paused.resume_state["ready_background_completion_messages"]) == 1
+    assert paused.tool_call_records[-1]["background"]["event"] == "completed"
+
+    result = await harness.resume_approvals(paused.resume_state, [ApprovalDecision(call_id="call_approval", approved=True)])
+
+    assert result.text == "done"
+    assert [(notice.kind, "Tool: fast" in notice.content) for notice in resumed_notices] == [("background_completion", True)]
+
+
 async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) -> None:
     called: list[dict] = []
     client = FakeClient()
@@ -820,3 +879,25 @@ def test_directed_resume_api_errors(tmp_path: Path) -> None:
     }
     with pytest.raises(HarnessError, match="approval pause state must be resumed with resume_approvals"):
         Harness(HarnessConfig(root=tmp_path / "other", builtin_tools=[]), model=ScriptedModel([])).run_sync("next", resume_from=approval_state)
+
+
+def test_approval_pause_state_accepts_old_envelopes_without_ready_messages(tmp_path: Path) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="ready", raw={"id": "first"}))
+    provider_state = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session])).run_sync("first").resume_state
+    approval_state = {
+        "kind": "approval_pause",
+        "version": 1,
+        "provider_state": provider_state,
+        "batch": [{"id": "call_1", "name": "deploy", "arguments": "{}"}],
+        "approval_required_ids": ["call_1"],
+        "cancelled_background_task_ids": [],
+        "usage": {"model_requests": 1, "tool_calls": 1, "cancelled_tool_calls": 0, "output_retries": 0, "tool_retries": {}},
+        "responses": [],
+        "tool_call_records": [],
+        "emitted_limit_warnings": [],
+        "metadata": {},
+    }
+
+    pause = validate_approval_pause_state(approval_state)
+
+    assert pause.ready_background_completion_messages == []

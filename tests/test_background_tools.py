@@ -24,6 +24,8 @@ from thinharness import (
 )
 from thinharness.hooks import current_tool_call_context, current_tool_runtime_context
 from thinharness.providers import ModelToolCall, ModelTurn
+from thinharness.tool_execution import BackgroundToolManager, BackgroundToolStart
+from thinharness.tracing import RunTracer
 
 
 class SequenceSession:
@@ -35,21 +37,25 @@ class SequenceSession:
         self.tool_outputs = []
         self.user_messages = []
         self.continuation_tools = []
+        self.notice_calls = []
 
     async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
         """Return the scripted first turn."""
         self.start_tools = tools
+        self.notice_calls.append(("start", list(notices or [])))
         return self.start_turn
 
     async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Record tool outputs and return the next scripted turn."""
         self.tool_outputs.append(outputs)
         self.continuation_tools.append(tools)
+        self.notice_calls.append(("continue_with_tools", list(notices or [])))
         return self._next_turn()
 
     async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
         """Record user-message continuations and return the next scripted turn."""
         self.user_messages.append(message)
+        self.notice_calls.append(("continue_with_user_message", list(notices or [])))
         return self._next_turn()
 
     async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
@@ -73,6 +79,64 @@ class Person(BaseModel):
 def _call(name: str, args: str, call_id: str = "call_1") -> ModelToolCall:
     """Build a normalized model tool call."""
     return ModelToolCall(id=call_id, name=name, arguments=args)
+
+
+async def test_drain_ready_harvests_completed_tasks_in_completion_order() -> None:
+    async def delayed(label: str, delay: float):
+        await asyncio.sleep(delay)
+        return label
+
+    manager = BackgroundToolManager(run_tracer=RunTracer([]))
+    starts = [
+        BackgroundToolStart("bg_1", "call_1", "slow", "{}", ToolSpec("slow", "Slow", {}, lambda _args: delayed("slow", 0.03)), {}),
+        BackgroundToolStart("bg_2", "call_2", "fast", "{}", ToolSpec("fast", "Fast", {}, lambda _args: delayed("fast", 0.01)), {}),
+        BackgroundToolStart("bg_3", "call_3", "mid", "{}", ToolSpec("mid", "Mid", {}, lambda _args: delayed("mid", 0.02)), {}),
+    ]
+
+    manager.start_many(starts)
+    await asyncio.sleep(0.06)
+
+    assert [completion.task_id for completion in manager.drain_ready()] == ["bg_2", "bg_3", "bg_1"]
+
+
+async def test_wait_next_ready_returns_ready_completion_without_waiting() -> None:
+    manager = BackgroundToolManager(run_tracer=RunTracer([]))
+    manager.start(BackgroundToolStart("bg_1", "call_1", "fast", "{}", ToolSpec("fast", "Fast", {}, lambda _args: "fast"), {}))
+    await asyncio.sleep(0)
+
+    completion = await asyncio.wait_for(manager.wait_next_ready(), timeout=0.01)
+
+    assert completion.task_id == "bg_1"
+
+
+async def test_cancel_and_drain_returns_ready_completion_before_cancelling_pending() -> None:
+    fast_done = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fast(_args):
+        fast_done.set()
+        return "ready"
+
+    async def slow(_args):
+        await release.wait()
+        return "late"
+
+    manager = BackgroundToolManager(run_tracer=RunTracer([]))
+    manager.start(BackgroundToolStart("bg_1", "call_1", "fast", "{}", ToolSpec("fast", "Fast", {}, fast), {}))
+    manager.start(BackgroundToolStart(
+        "bg_2",
+        "call_2",
+        "slow",
+        "{}",
+        ToolSpec("slow", "Slow", {}, slow),
+        {},
+    ))
+    await asyncio.wait_for(fast_done.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+
+    completions = await manager.cancel_and_drain()
+
+    assert [(completion.task_id, completion.event) for completion in completions] == [("bg_1", "completed"), ("bg_2", "cancelled")]
 
 
 def test_tool_spec_background_schema_and_validation() -> None:
@@ -239,6 +303,136 @@ def test_final_result_tool_is_paired_when_background_completion_defers_final(tmp
     assert deferred_output.call_id == "final_1"
     assert "Final answer deferred" in deferred_output.output
     assert "Produce the final answer again now." in deferred_output.output
+
+
+async def test_ready_background_completion_is_coalesced_with_foreground_tool_outputs(tmp_path: Path) -> None:
+    background_finished = asyncio.Event()
+
+    async def background(_args):
+        background_finished.set()
+        return "background"
+
+    async def foreground(_args):
+        await asyncio.wait_for(background_finished.wait(), timeout=0.5)
+        await asyncio.sleep(0.01)
+        return "foreground"
+
+    session = SequenceSession(
+        ModelTurn(tool_calls=[
+            _call("background", '{"_background":true}', "call_1"),
+            _call("foreground", "{}", "call_2"),
+        ], raw={"id": "start"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=2), model=ScriptedModel([session]), tools=[
+        ToolSpec("background", "Background", {"type": "object", "properties": {}}, background, background="model"),
+        ToolSpec("foreground", "Foreground", {"type": "object", "properties": {}}, foreground),
+    ])
+
+    result = await harness.run("go")
+
+    assert result.text == "done"
+    assert result.usage.tool_calls == 2
+    assert session.user_messages == []
+    assert [[output.call_id for output in batch] for batch in session.tool_outputs] == [["call_1", "call_2"]]
+    notices = [notice for notice in session.notice_calls[1][1] if notice.kind == "background_completion"]
+    assert [(notice.kind, "Tool: background" in notice.content) for notice in notices] == [("background_completion", True)]
+
+
+async def test_background_completion_during_provider_turn_waits_until_next_tool_outputs(tmp_path: Path) -> None:
+    background_finished = asyncio.Event()
+
+    async def background(_args):
+        background_finished.set()
+        return "background"
+
+    class WaitingSession(SequenceSession):
+        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+            if not self.tool_outputs:
+                await asyncio.wait_for(background_finished.wait(), timeout=0.5)
+            return await super().continue_with_tools(
+                outputs,
+                instructions=instructions,
+                tools=tools,
+                metadata=metadata,
+                structured_output=structured_output,
+                notices=notices,
+            )
+
+    session = WaitingSession(
+        ModelTurn(tool_calls=[_call("background", '{"_background":true}', "call_1")], raw={"id": "start"}),
+        ModelTurn(tool_calls=[_call("foreground", "{}", "call_2")], raw={"id": "foreground"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
+        ToolSpec("background", "Background", {"type": "object", "properties": {}}, background, background="model"),
+        ToolSpec("foreground", "Foreground", {"type": "object", "properties": {}}, lambda _args: "foreground"),
+    ])
+
+    result = await harness.run("go")
+
+    assert result.text == "done"
+    assert session.notice_calls[1][1] == []
+    notices = session.notice_calls[2][1]
+    assert [(notice.kind, "Tool: background" in notice.content) for notice in notices] == [("background_completion", True)]
+
+
+def test_final_text_drains_multiple_ready_background_completions(tmp_path: Path) -> None:
+    session = SequenceSession(
+        ModelTurn(tool_calls=[
+            _call("one", '{"_background":true}', "call_1"),
+            _call("two", '{"_background":true}', "call_2"),
+        ], raw={"id": "start"}),
+        ModelTurn(text="too early", raw={"id": "early"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
+        ToolSpec("one", "One", {"type": "object", "properties": {}}, lambda _args: "one", background="model"),
+        ToolSpec("two", "Two", {"type": "object", "properties": {}}, lambda _args: "two", background="model"),
+    ])
+
+    result = harness.run_sync("go")
+
+    assert result.text == "done"
+    assert len(session.user_messages) == 1
+    assert "Tool: one" in session.user_messages[0]
+    assert "Tool: two" in session.user_messages[0]
+    assert "\n\n---\n\n" in session.user_messages[0]
+
+
+async def test_final_answer_defers_when_completion_is_ready_but_not_pending(tmp_path: Path) -> None:
+    background_finished = asyncio.Event()
+
+    async def background(_args):
+        background_finished.set()
+        return "ready"
+
+    class WaitingSession(SequenceSession):
+        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+            await asyncio.wait_for(background_finished.wait(), timeout=0.5)
+            return await super().continue_with_tools(
+                outputs,
+                instructions=instructions,
+                tools=tools,
+                metadata=metadata,
+                structured_output=structured_output,
+                notices=notices,
+            )
+
+    session = WaitingSession(
+        ModelTurn(tool_calls=[_call("background", '{"_background":true}', "call_1")], raw={"id": "start"}),
+        ModelTurn(text="too early", raw={"id": "early"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
+        ToolSpec("background", "Background", {"type": "object", "properties": {}}, background, background="model"),
+    ])
+
+    result = await harness.run("go")
+
+    assert result.text == "done"
+    assert len(session.user_messages) == 1
+    assert "Background task bg_1 completed." in session.user_messages[0]
 
 
 def test_multiple_background_completions_are_delivered_in_completion_order(tmp_path: Path) -> None:
@@ -503,7 +697,54 @@ def test_max_tool_calls_does_not_block_pending_background_completion(tmp_path: P
     assert result.usage.tool_calls == 1
     deferred = tool_output(session.tool_outputs[1][0].output)
     assert deferred["metadata"]["error_type"] == "ToolCallsExceeded"
-    assert "Background task bg_1 completed." in deferred["content"]
+    notices = session.notice_calls[2][1]
+    assert deferred["content"] == "Tool call was not executed because max_tool_calls=1 is exhausted."
+    assert [(notice.kind, "Background task bg_1 completed." in notice.content) for notice in notices] == [("background_completion", True)]
+
+
+def test_background_completion_notice_tracing_is_coalesced(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+    background_finished = asyncio.Event()
+
+    async def background(_args):
+        background_finished.set()
+        return "background"
+
+    async def foreground(_args):
+        await asyncio.wait_for(background_finished.wait(), timeout=0.5)
+        await asyncio.sleep(0.01)
+        return "foreground"
+
+    session = SequenceSession(
+        ModelTurn(tool_calls=[
+            _call("background", '{"_background":true}', "call_1"),
+            _call("foreground", "{}", "call_2"),
+        ], raw={"id": "start"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([session]),
+        tools=[
+            ToolSpec("background", "Background", {"type": "object", "properties": {}}, background, background="model"),
+            ToolSpec("foreground", "Foreground", {"type": "object", "properties": {}}, foreground),
+        ],
+        tracing=[TracingOptions(tracer=tracer, capture_messages=True, capture_tool_results=True)],
+    )
+
+    harness.run_sync("go")
+
+    coalesced_chat = next(
+        span
+        for span in tracer.spans
+        if span.name == "chat scripted-model" and span.attributes.get("thinharness.model.request.kind") == "tool_outputs"
+    )
+    input_messages = json.loads(coalesced_chat.attributes["gen_ai.input.messages"])
+    notices = json.loads(coalesced_chat.attributes["thinharness.model.notices"])
+    contents = [part["content"] for message in input_messages for part in message["parts"]]
+    assert contents == [session.tool_outputs[0][0].output, session.tool_outputs[0][1].output]
+    assert notices[0]["kind"] == "background_completion"
+    assert "Tool: background" in notices[0]["content"]
 
 
 async def test_background_task_starts_before_slow_sibling_finishes(tmp_path: Path) -> None:
@@ -532,4 +773,4 @@ async def test_background_task_starts_before_slow_sibling_finishes(tmp_path: Pat
 
     result = await harness.run("go")
 
-    assert result.text == "done"
+    assert result.text == "early"

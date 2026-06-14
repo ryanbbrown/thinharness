@@ -50,7 +50,7 @@ class ToolOutput:
 class ModelNotice:
     """Provider-neutral notice appended to model input."""
 
-    kind: Literal["limit_warning", "background_cancelled"]
+    kind: Literal["limit_warning", "background_cancelled", "background_completion"]
     content: str
     limit_kind: Literal["model_requests", "tool_calls"] | None = None
     remaining: int | None = None
