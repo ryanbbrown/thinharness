@@ -49,7 +49,6 @@ from .output import (
 )
 from .providers import (
     Model,
-    ModelCapabilities,
     ModelNotice,
     ModelSession,
     ModelToolCall,
@@ -59,6 +58,7 @@ from .providers import (
     StructuredOutputRequest,
     ToolOutput,
     infer_model,
+    model_capabilities,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools.base import ToolResult, ToolSpec
@@ -151,8 +151,8 @@ class HarnessConfig(BaseModel):
     mcp_servers: list[MCPServer] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_skills(self) -> HarnessConfig:
-        """Validate explicit skill discovery settings."""
+    def validate_config(self) -> HarnessConfig:
+        """Validate cross-field configuration settings."""
         if self.selected_skills is not None and self.skills_dir is None:
             raise ValueError("selected_skills requires skills_dir")
         if self.tool_execution == "sequential":
@@ -194,8 +194,9 @@ class Harness:
             extra_body=self.config.extra_body,
         )
         self._owns_model = _owns_model if _owns_model is not None else model is None
-        self.model_capabilities = getattr(self.model, "capabilities", ModelCapabilities())
+        self.model_capabilities = model_capabilities(self.model)
         self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
+        output_schema = resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
         filesystem_tools = make_builtin_tools(
             self.root,
             output_dir=self.config.output_dir,
@@ -215,24 +216,28 @@ class Harness:
             create_parallel_llm_tool(self),
         ]
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
-        self.tools: list[ToolSpec] = builtin
-        self._validate_unique_tools(self.tools)
-        for tool in self.tools:
-            self._validate_tool_background_policy(tool)
-        self._tool_map = {tool.name: tool for tool in self.tools}
-        raw_hooks = hooks
-        self.hooks = HookRegistry([], strict_hooks=self.config.strict_hooks)
+        configured_tools = [*builtin, *(tools or [])]
+        self._validate_tool_list(
+            configured_tools,
+            output_schema=output_schema,
+            tool_execution=self.config.tool_execution,
+            model_supports_approval_resume=self._model_supports_approval_resume(),
+            is_child_run=self._is_child_run,
+        )
+        tool_map = {tool.name: tool for tool in configured_tools}
+        hook_registry = hooks if isinstance(hooks, HookRegistry) else HookRegistry(hooks, strict_hooks=self.config.strict_hooks)
+        self._validate_hook_registry(hook_registry, self.config.subagents)
+        self._validate_skill_tool_selection_for(self.skills, configured_tools)
+
+        self.tools = configured_tools
+        self._tool_map = tool_map
+        self.output_schema = output_schema
+        self.hooks = hook_registry
         self.subagent_hooks = subagent_hooks or {}
-        for tool in tools or []:
-            self.add_tool(tool)
-        self.output_schema = self._build_output_schema()
-        self._validate_final_result_collision()
         self._mcp_servers = list(self.config.mcp_servers)
         self._resolve_mcp_server_ids()
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
-        self.hooks = raw_hooks if isinstance(raw_hooks, HookRegistry) else HookRegistry(raw_hooks, strict_hooks=self.config.strict_hooks)
-        self._validate_skill_tool_selection()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
@@ -251,7 +256,6 @@ class Harness:
             self.tracing = external_tracing
         self._running = False
         self._closed = False
-        self._validate_hook_filters()
 
     async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
@@ -784,7 +788,7 @@ class Harness:
         message = "Tool call was rejected by a human reviewer."
         if decision.reason:
             message = f"{message}\nReason: {decision.reason}"
-        output = ToolResult(False, message, {"error_type": "ApprovalRejected"}).as_json()
+        output = ToolResult(False, message, {"error_type": "ApprovalRejected"}).to_json()
         start = time.perf_counter()
         with run_ctx.tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
             run_ctx.emit(ToolCallStartedEvent(
@@ -914,7 +918,7 @@ class Harness:
                     False,
                     f"Tool call was not executed because max_tool_calls={max_tool_calls} is exhausted.",
                     {"error_type": "ToolCallsExceeded"},
-                ).as_json(),
+                ).to_json(),
             )
             for call in turn.tool_calls
         ]
@@ -970,20 +974,15 @@ class Harness:
     def add_tool(self, tool: ToolSpec) -> None:
         """Register a custom tool using a ToolSpec."""
         spec = tool
-        if not callable(spec.handler):
-            raise TypeError(f"handler for tool {spec.name!r} is not callable")
-        if spec.name == "subagent" and spec.metadata.get("framework_tool") != "subagent":
-            raise ValueError("subagent is a reserved tool name")
-        output_schema = getattr(self, "output_schema", None)
-        if (
-            spec.name == FINAL_RESULT_TOOL_NAME
-            and output_schema is not None
-            and output_schema.mode != "text"
-        ):
-            raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
+        self._validate_tool_spec(
+            spec,
+            output_schema=self.output_schema,
+            tool_execution=self.config.tool_execution,
+            model_supports_approval_resume=self._model_supports_approval_resume(),
+            is_child_run=self._is_child_run,
+        )
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
-        self._validate_tool_background_policy(spec)
         self.tools.append(spec)
         self._tool_map[spec.name] = spec
         self._validate_hook_filters()
@@ -1039,27 +1038,97 @@ class Harness:
                 raise ValueError(f"duplicate tool name: {tool.name}")
             seen.add(tool.name)
 
+    @classmethod
+    def _validate_tool_list(
+        cls,
+        tools: list[ToolSpec],
+        *,
+        output_schema: OutputSchema | None,
+        tool_execution: Literal["auto", "sequential"],
+        model_supports_approval_resume: bool,
+        is_child_run: bool,
+    ) -> None:
+        """Validate a complete tool list before assigning it to a harness."""
+        cls._validate_unique_tools(tools)
+        for tool in tools:
+            cls._validate_tool_spec(
+                tool,
+                output_schema=output_schema,
+                tool_execution=tool_execution,
+                model_supports_approval_resume=model_supports_approval_resume,
+                is_child_run=is_child_run,
+            )
+
+    @staticmethod
+    def _validate_tool_spec(
+        spec: ToolSpec,
+        *,
+        output_schema: OutputSchema | None,
+        tool_execution: Literal["auto", "sequential"],
+        model_supports_approval_resume: bool,
+        is_child_run: bool,
+    ) -> None:
+        """Validate one tool against explicit harness state."""
+        if not callable(spec.handler):
+            raise TypeError(f"handler for tool {spec.name!r} is not callable")
+        if spec.name == "subagent" and spec.kind != "subagent":
+            raise ValueError("subagent is a reserved tool name")
+        if (
+            spec.name == FINAL_RESULT_TOOL_NAME
+            and output_schema is not None
+            and output_schema.mode != "text"
+        ):
+            raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
+        Harness._validate_tool_background_policy_for(
+            spec,
+            tool_execution=tool_execution,
+            model_supports_approval_resume=model_supports_approval_resume,
+            is_child_run=is_child_run,
+        )
+
     def _validate_tool_background_policy(self, tool: ToolSpec) -> None:
         """Reject background policies incompatible with this harness configuration."""
-        if self.config.tool_execution == "sequential" and tool.background == "always":
+        self._validate_tool_background_policy_for(
+            tool,
+            tool_execution=self.config.tool_execution,
+            model_supports_approval_resume=self._model_supports_approval_resume(),
+            is_child_run=self._is_child_run,
+        )
+
+    @staticmethod
+    def _validate_tool_background_policy_for(
+        tool: ToolSpec,
+        *,
+        tool_execution: Literal["auto", "sequential"],
+        model_supports_approval_resume: bool,
+        is_child_run: bool,
+    ) -> None:
+        """Reject background policies incompatible with explicit harness state."""
+        if tool_execution == "sequential" and tool.background == "always":
             raise ValueError("background='always' tools cannot be used with tool_execution='sequential'")
-        if tool.requires_approval and not self._model_supports_approval_resume():
+        if tool.requires_approval and not model_supports_approval_resume:
             raise ValueError("approval-required tools require a resumable model")
-        if tool.requires_approval and self._is_child_run:
+        if tool.requires_approval and is_child_run:
             raise ValueError("approval-required tools are not supported inside subagents")
 
-    def _validate_skill_tool_selection(self) -> None:
-        """Require explicit skill tool selection when skills are explicitly configured."""
-        if not self.skills.skills:
+    @staticmethod
+    def _validate_skill_tool_selection_for(skills: SkillRegistry, tools: list[ToolSpec]) -> None:
+        """Require explicit skill tool selection for explicit skills and tool state."""
+        if not skills.skills:
             return
-        tool_names = {tool.name for tool in self.tools}
+        tool_names = {tool.name for tool in tools}
         if not tool_names.intersection({"skill_read", "skill_run"}):
             raise ValueError("configured skills require exposing skill_read or skill_run")
 
     def _validate_hook_filters(self) -> None:
         """Validate hook filters against registered subagents."""
-        agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in self.config.subagents)}
-        self.hooks.validate_filters(agent_names=agent_names)
+        self._validate_hook_registry(self.hooks, self.config.subagents)
+
+    @staticmethod
+    def _validate_hook_registry(hooks: HookRegistry, subagents: list[SubAgentConfig]) -> None:
+        """Validate hook filters against explicit subagent configuration."""
+        agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in subagents)}
+        hooks.validate_filters(agent_names=agent_names)
 
     def _model_supports_approval_resume(self) -> bool:
         """Return whether this harness model can resume provider sessions."""
@@ -1069,10 +1138,7 @@ class Harness:
         """Assign stable suffixes to duplicate MCP server ids."""
         counts: dict[str, int] = {}
         for server in self._mcp_servers:
-            base_id = server.id
-            counts[base_id] = counts.get(base_id, 0) + 1
-            resolved = base_id if counts[base_id] == 1 else f"{base_id}-{counts[base_id]}"
-            server._resolved_id = resolved
+            server.resolve_id(counts)
 
     async def connect(self) -> None:
         """Open MCP server connections and discover their tools."""
@@ -1110,17 +1176,6 @@ class Harness:
         except BaseException:
             await stack.aclose()
             raise
-
-    def _build_output_schema(self) -> OutputSchema | None:
-        """Build structured-output validation if configured."""
-        return resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
-
-    def _validate_final_result_collision(self) -> None:
-        """Reserve final_result for synthetic structured output."""
-        if self.output_schema is None or self.output_schema.mode == "text":
-            return
-        if FINAL_RESULT_TOOL_NAME in self._tool_map:
-            raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
 
     def _structured_output_request(self) -> StructuredOutputRequest | None:
         """Return native structured-output request metadata."""

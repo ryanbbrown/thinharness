@@ -27,6 +27,7 @@ from thinharness import (
     LimitReachedContext,
     RunEndContext,
     RunStartContext,
+    ToolResult,
     ToolSpec,
     UserPromptSubmitContext,
     create_subagent_tool,
@@ -293,7 +294,7 @@ def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: P
         ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
     ]
 
-def test_after_tool_hooks_see_refreshed_parsed_output(tmp_path: Path) -> None:
+def test_after_tool_hooks_see_refreshed_envelope(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
     seen = []
 
@@ -302,7 +303,7 @@ def test_after_tool_hooks_see_refreshed_parsed_output(tmp_path: Path) -> None:
 
     def observe(ctx):
         assert isinstance(ctx, AfterToolCallContext)
-        seen.append(ctx.parsed_output)
+        seen.append(ctx.envelope)
 
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
@@ -313,7 +314,32 @@ def test_after_tool_hooks_see_refreshed_parsed_output(tmp_path: Path) -> None:
 
     harness.run_sync("go")
 
-    assert seen == [{"ok": True, "content": "changed", "metadata": {"stage": 1}}]
+    assert seen == [ToolResult(True, "changed", {"stage": 1})]
+
+
+def test_after_tool_hook_in_place_envelope_mutation_updates_output(tmp_path: Path) -> None:
+    client = MultiCallClient([("ok", "{}")])
+
+    def rewrite(ctx):
+        assert isinstance(ctx, AfterToolCallContext)
+        ctx.envelope.content = "changed"
+        ctx.envelope.metadata["stage"] = 1
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        model=_fake_openai(client),
+        tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original")],
+        hooks=[Hook("after_tool_call", rewrite)],
+    )
+
+    harness.run_sync("go")
+
+    assert tool_output(client.payloads[1]["input"][0]["output"]) == {
+        "ok": True,
+        "content": "changed",
+        "metadata": {"stage": 1},
+    }
+
 
 def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
@@ -331,10 +357,10 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
     with pytest.raises(RuntimeError, match="after failed"):
         harness.run_sync("go")
 
-def test_after_tool_hook_parsed_output_uses_normalized_invalid_output() -> None:
+def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
     seen = []
     registry = HookRegistry([
-        Hook("after_tool_call", lambda ctx: seen.append(ctx.parsed_output)),
+        Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope)),
     ])
     ctx = AfterToolCallContext(
         harness=None,  # type: ignore[arg-type]
@@ -343,12 +369,13 @@ def test_after_tool_hook_parsed_output_uses_normalized_invalid_output() -> None:
         arguments="{}",
         original_output="not json",
         output="not json",
+        envelope=ToolResult.from_json("not json"),
         duration_ms=0,
     )
 
     registry.fire_after_tool_call(ctx)
 
-    assert seen == [{"ok": False, "content": "not json", "metadata": {"error_type": "InvalidToolOutput"}}]
+    assert seen == [ToolResult(False, "not json", {"error_type": "InvalidToolOutput"})]
 
 def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}")])

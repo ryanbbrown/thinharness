@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from ..defaults import DEFAULT_PARALLEL_LLM_DESCRIPTION, DEFAULT_PARALLEL_LLM_INSTRUCTIONS
+from .. import defaults as _defaults
 from ..output import (
     OUTPUT_MODES,
     OutputMode,
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 PROMPTS_FILE_ERROR = "source.path must point to a non-empty JSON array of strings"
+DEFAULT_PARALLEL_LLM_DESCRIPTION = _defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION
+DEFAULT_PARALLEL_LLM_INSTRUCTIONS = _defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS
 
 
 class InlinePromptSource(StrictArgs):
@@ -142,9 +144,9 @@ class ParallelLlmTool:
             self.description,
             ParallelLlmArgs,
             handler,
-            metadata={"framework_tool": "parallel_llm"},
             instructions=self.instructions,
             background="model",
+            kind="parallel_llm",
         )
 
     async def run(self, args: ParallelLlmArgs) -> ToolResult:
@@ -262,29 +264,19 @@ class ParallelLlmTool:
 
 def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
     """Create the built-in parallel LLM tool from a parent harness."""
-    from ..providers import parse_model_ref, provider_prefix
+    from ..providers import same_provider_model_ref
 
     model: Model | str = parent.config.builtin_parallel_llm_model or parent.model
     model_ref = parent.config.builtin_parallel_llm_model or parent.model_ref
     api_key = parent.config.api_key
     base_url = parent.config.base_url
     if parent.config.builtin_parallel_llm_model is not None:
-        builtin_provider, _ = parse_model_ref(parent.config.builtin_parallel_llm_model)
-        parent_provider = provider_prefix(getattr(getattr(parent.model, "provider", None), "name", ""))
-        if builtin_provider != parent_provider:
+        if not same_provider_model_ref(parent.model, parent.config.builtin_parallel_llm_model):
             api_key = None
             base_url = None
-    description = DEFAULT_PARALLEL_LLM_DESCRIPTION
-    instructions = DEFAULT_PARALLEL_LLM_INSTRUCTIONS
-    if parent.config.tool_execution == "sequential":
-        description = description.replace(
-            " For large independent batches, `_background: true` is available when it lets other work continue.",
-            "",
-        )
-        instructions = instructions.replace(
-            "\n- For large independent batches, background mode is available; default to synchronous unless it is clearly useful.",
-            "",
-        )
+    background_available = parent.config.tool_execution != "sequential"
+    description = _parallel_llm_description(background_available=background_available)
+    instructions = _parallel_llm_instructions(background_available=background_available)
     return ParallelLlmTool(
         model=model,
         model_ref=model_ref,
@@ -303,6 +295,20 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         else parent.config.temperature,
         extra_body=parent.config.extra_body,
     ).spec()
+
+
+def _parallel_llm_description(*, background_available: bool) -> str:
+    """Return the built-in description with optional background guidance."""
+    if not background_available:
+        return _defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE
+    return f"{_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE} {_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BACKGROUND}"
+
+
+def _parallel_llm_instructions(*, background_available: bool) -> str:
+    """Return built-in instructions with optional background guidance."""
+    if not background_available:
+        return _defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE
+    return f"{_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE}\n{_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BACKGROUND}"
 
 
 def _load_prompts(args: ParallelLlmArgs, read_policy: PathPolicy) -> list[str]:

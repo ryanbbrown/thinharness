@@ -540,6 +540,10 @@ def test_background_subagent_preserves_parent_context_and_named_policy(tmp_path:
         )
     ]
 
+    named_parent = SequenceSession(
+        ModelTurn(tool_calls=[_call("subagent", '{"task":"x","agent":"sync","_background":true}')], raw={"id": "start"}),
+        ModelTurn(text="done", raw={"id": "done"}),
+    )
     named = Harness(
         HarnessConfig(
             root=tmp_path,
@@ -552,16 +556,14 @@ def test_background_subagent_preserves_parent_context_and_named_policy(tmp_path:
                 )
             ],
         ),
-        model=ScriptedModel([
-            SequenceSession(
-                ModelTurn(tool_calls=[_call("subagent", '{"task":"x","agent":"sync","_background":true}')], raw={"id": "start"}),
-                ModelTurn(text="done", raw={"id": "done"}),
-            )
-        ]),
+        model=ScriptedModel([named_parent]),
     )
 
     result = named.run_sync("delegate")
     assert result.usage.tool_retries == {"subagent": 1}
+    output = tool_output(named_parent.tool_outputs[0][0].output)
+    assert output["content"] == "selected subagent does not support background execution"
+    assert output["metadata"] == {"error_type": "InvalidArguments", "retry": True}
 
 
 def test_named_subagent_always_background_strips_private_argument(tmp_path: Path) -> None:

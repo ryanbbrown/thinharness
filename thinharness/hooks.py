@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import contextvars
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from .tools.base import Json, ToolSpec
+from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec
 from .types import HarnessResult, RunUsage, StopReason
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
@@ -139,7 +138,7 @@ class AfterToolCallContext(HookContext):
     arguments: str
     original_output: str
     output: str
-    parsed_output: Json | None = None
+    envelope: ToolEnvelope
     duration_ms: float
 
 
@@ -218,11 +217,12 @@ class HookRegistry:
                 return
 
     def fire_after_tool_call(self, ctx: AfterToolCallContext) -> None:
-        """Dispatch after-tool hooks while keeping parsed output current."""
+        """Dispatch after-tool hooks while keeping the structured envelope current."""
         for hook in self.hooks:
             if not self._matches(hook, ctx):
                 continue
-            ctx.parsed_output = _parse_hook_output(ctx.output)
+            before_output = ctx.output
+            before_envelope = ctx.envelope.to_json()
             try:
                 hook.handler(ctx)
             except Exception as exc:
@@ -232,6 +232,10 @@ class HookRegistry:
                 if self.strict_hooks:
                     _mark_strict_hook_exception(exc)
                     raise
+            if ctx.output != before_output:
+                ctx.envelope = ToolResult.from_json(ctx.output)
+            elif ctx.envelope.to_json() != before_envelope:
+                ctx.output = ctx.envelope.to_json()
 
     def validate_filters(self, *, agent_names: set[str]) -> None:
         """Raise for agent filters that do not match registered names."""
@@ -265,15 +269,6 @@ def _handler_name(handler: HookHandler) -> str:
     module = getattr(handler, "__module__", "")
     qualname = getattr(handler, "__qualname__", repr(handler))
     return f"{module}.{qualname}" if module else qualname
-
-
-def _parse_hook_output(output: str) -> Json | None:
-    """Parse current hook output for later after-tool handlers."""
-    try:
-        parsed = json.loads(output)
-    except json.JSONDecodeError:
-        return {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
-    return parsed if isinstance(parsed, dict) else {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
 
 
 def _mark_strict_hook_exception(exc: BaseException) -> None:

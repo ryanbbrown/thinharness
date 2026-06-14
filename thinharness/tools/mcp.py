@@ -13,7 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .base import Json, ToolResult, ToolSpec
+from .base import Json, McpToolInfo, ToolResult, ToolSpec
 
 _SHUTDOWN_GRACE_SECONDS = 3
 _INSTALL_HINT = "Install MCP support with: pip install thinharness[mcp]"
@@ -84,6 +84,12 @@ class MCPServer(ABC):
     def id(self) -> str:
         """Stable readable identifier; falls back to a derived default."""
         return self._resolved_id or self._id or self._default_id()
+
+    def resolve_id(self, existing_counts: dict[str, int]) -> None:
+        """Resolve this server's final id using duplicate counts owned by the caller."""
+        base_id = self._id or self._default_id()
+        existing_counts[base_id] = existing_counts.get(base_id, 0) + 1
+        self._resolved_id = base_id if existing_counts[base_id] == 1 else f"{base_id}-{existing_counts[base_id]}"
 
     @abstractmethod
     def _default_id(self) -> str:
@@ -169,7 +175,8 @@ class MCPServer(ABC):
                 _clean_mcp_schema(tool.inputSchema, original_name),
                 _make_tool_handler(self, original_name),
                 sequential=False,
-                metadata={"source": "mcp", "mcp_server_id": self.id, "mcp_tool_name": original_name},
+                kind="mcp",
+                mcp=McpToolInfo(server_id=self.id, tool_name=original_name),
                 max_retries=None,
             ))
         return specs

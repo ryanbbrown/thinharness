@@ -62,7 +62,7 @@ async def _run_provider(provider: str, model: str) -> None:
             "output_file": "outputs/results.json",
             "max_concurrency": 2,
         })
-        envelope = json.loads(output)
+        envelope = json.loads(output.to_json())
         assert envelope["ok"] is True, envelope
         summary = json.loads(envelope["content"])
         assert summary["total"] == 2, summary

@@ -449,7 +449,7 @@ def test_after_tool_call_fires_for_handler_exception(tmp_path: Path) -> None:
 
     def after(ctx):
         assert isinstance(ctx, AfterToolCallContext)
-        seen.append(ctx.parsed_output["metadata"]["error_type"])
+        seen.append(ctx.envelope.metadata["error_type"])
 
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),

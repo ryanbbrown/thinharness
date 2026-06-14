@@ -895,6 +895,18 @@ def provider_prefix(name: str) -> str:
     }.get(normalized, normalized)
 
 
+def model_capabilities(model: Model) -> ModelCapabilities:
+    """Return declared model capabilities with the custom-model default."""
+    return getattr(model, "capabilities", ModelCapabilities())
+
+
+def same_provider_model_ref(model: Model, model_ref: str) -> bool:
+    """Return whether a model reference uses the same provider as a model instance."""
+    child_provider, _ = parse_model_ref(model_ref)
+    parent_provider = provider_prefix(getattr(getattr(model, "provider", None), "name", ""))
+    return child_provider == parent_provider
+
+
 # =============================================================================
 # Provider format helpers
 # =============================================================================

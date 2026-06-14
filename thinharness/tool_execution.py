@@ -19,7 +19,7 @@ from .events import (
 )
 from .hooks import _CURRENT_TOOL_CALL, _CURRENT_TOOL_RUNTIME, AfterToolCallContext, BeforeToolCallContext
 from .providers import ModelToolCall, ToolOutput
-from .tools.base import Json, ToolResult, ToolSpec, _invoke_tool
+from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec, _invoke_tool
 from .tracing import RunTracer, serialize_attribute_value
 
 if TYPE_CHECKING:
@@ -35,6 +35,7 @@ MAX_PARALLEL_TOOL_WORKERS = 16
 class ToolCallExecution:
     """Internal per-call execution data with control-flow signals."""
 
+    envelope: ToolEnvelope
     output: str
     cancelled: bool
     retry_kind: str | None = None
@@ -72,6 +73,7 @@ class BackgroundToolCompletion:
     task_id: str
     tool_call_id: str
     tool_name: str
+    envelope: ToolEnvelope
     output: str
     elapsed_ms: float
     failed: bool
@@ -193,7 +195,8 @@ class BackgroundToolManager:
                 task_id=meta.task_id,
                 tool_call_id=meta.tool_call_id,
                 tool_name=meta.tool_name,
-                output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).as_json(),
+                envelope=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}),
+                output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).to_json(),
                 elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
                 failed=True,
                 event="cancelled",
@@ -206,7 +209,8 @@ class BackgroundToolManager:
                 task_id=meta.task_id,
                 tool_call_id=meta.tool_call_id,
                 tool_name=meta.tool_name,
-                output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json(),
+                envelope=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}),
+                output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).to_json(),
                 elapsed_ms=(time.perf_counter() - meta.started_at) * 1000,
                 failed=True,
                 event="failed",
@@ -228,20 +232,21 @@ class BackgroundToolManager:
                         "thinharness.background.phase": "execution",
                         "thinharness.background.original_tool_call_id": start.tool_call_id,
                     })
-                    output = await _invoke_tool(start.spec, start.arguments)
-                    parsed = _parse_tool_output(output)
-                    failed = parsed.get("ok") is False
+                    envelope = await _invoke_tool(start.spec, start.arguments)
+                    output = envelope.to_json()
+                    failed = not envelope.ok
                     span.set_attribute_where(
                         lambda option: option.capture_tool_results,
                         "gen_ai.tool.call.result",
                         serialize_attribute_value(output),
                     )
                     if failed:
-                        span.set_error(f'Background tool "{start.tool_name}" failed', str(_background_error_type(parsed)))
+                        span.set_error(f'Background tool "{start.tool_name}" failed', envelope.error_type() or "ToolExecutionError")
                     completion = BackgroundToolCompletion(
                         task_id=start.task_id,
                         tool_call_id=start.tool_call_id,
                         tool_name=start.tool_name,
+                        envelope=envelope,
                         output=output,
                         elapsed_ms=(time.perf_counter() - started_at) * 1000,
                         failed=failed,
@@ -253,7 +258,8 @@ class BackgroundToolManager:
                     task_id=start.task_id,
                     tool_call_id=start.tool_call_id,
                     tool_name=start.tool_name,
-                    output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).as_json(),
+                    envelope=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}),
+                    output=ToolResult(False, "Background task cancelled", {"error_type": "Cancelled"}).to_json(),
                     elapsed_ms=(time.perf_counter() - started_at) * 1000,
                     failed=True,
                     event="cancelled",
@@ -265,7 +271,8 @@ class BackgroundToolManager:
                     task_id=start.task_id,
                     tool_call_id=start.tool_call_id,
                     tool_name=start.tool_name,
-                    output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json(),
+                    envelope=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}),
+                    output=ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).to_json(),
                     elapsed_ms=(time.perf_counter() - started_at) * 1000,
                     failed=True,
                     event="failed",
@@ -460,6 +467,7 @@ class ToolCallExecutor:
             background_start: BackgroundToolStart | None = None
             start = time.perf_counter()
             completed_emitted = False
+            envelope: ToolEnvelope | None = None
             output: str | None = None
             retry_kind: str | None = None
             try:
@@ -484,22 +492,18 @@ class ToolCallExecutor:
                 if before.cancelled:
                     cancelled = True
                     reason = before.cancel_reason or "unspecified"
-                    output = json.dumps({
-                        "ok": False,
-                        "content": f"Tool execution blocked by hook: {reason}",
-                        "metadata": {"error_type": "ToolCallCancelled"},
-                    }, ensure_ascii=False)
+                    envelope = ToolResult(False, f"Tool execution blocked by hook: {reason}", {"error_type": "ToolCallCancelled"})
                 else:
                     decision = self._background_decision(call, spec)
                     if decision.error_output is not None:
-                        output = decision.error_output
+                        envelope = decision.error_output
                     elif decision.start is not None:
                         background_start = decision.start
-                        output = _background_start_output(decision.start)
+                        envelope = _background_start_output(decision.start)
                     else:
-                        output = await self._call_output(call.name, decision.arguments)
-                parsed = _parse_tool_output(output)
-                retry_kind = None if cancelled else _tool_retry_kind(parsed)
+                        envelope = await self._call_output(call.name, decision.arguments)
+                output = envelope.to_json()
+                retry_kind = None if cancelled else envelope.retry_kind()
                 after = AfterToolCallContext(
                     harness=self.harness,
                     metadata=dict(self.run_context.metadata),
@@ -508,13 +512,13 @@ class ToolCallExecutor:
                     arguments=call.arguments,
                     original_output=output,
                     output=output,
-                    parsed_output=parsed,
+                    envelope=envelope,
                     duration_ms=(time.perf_counter() - start) * 1000,
                 )
                 self.harness.hooks.fire_after_tool_call(after)
                 output = after.output
-                parsed = _parse_tool_output(output)
-                self._annotate_special_tool(span, call.name, parsed)
+                envelope = after.envelope
+                self._annotate_special_tool(span, call.name, envelope)
                 span.set_attribute_where(
                     lambda option: option.capture_tool_results,
                     "gen_ai.tool.call.result",
@@ -522,19 +526,19 @@ class ToolCallExecutor:
                 )
                 if retry_kind is not None:
                     span.set_error(f'Tool "{call.name}" failed', retry_kind)
-                elif parsed.get("ok") is False:
+                elif not envelope.ok:
                     span.set_error(f'Tool "{call.name}" failed', "ToolExecutionError")
                 self._emit_completed(
                     call=call,
                     output=output,
-                    parsed=parsed,
+                    envelope=envelope,
                     cancelled=cancelled,
                     retry_kind=retry_kind,
                     duration_ms=(time.perf_counter() - start) * 1000,
                     background_start=background_start,
                 )
                 completed_emitted = True
-                return ToolCallExecution(output=output, cancelled=cancelled, retry_kind=retry_kind, background_start=background_start)
+                return ToolCallExecution(envelope=envelope, output=output, cancelled=cancelled, retry_kind=retry_kind, background_start=background_start)
             except Exception as exc:
                 if not completed_emitted:
                     self.run_context.emit(ToolCallCompletedEvent(
@@ -560,37 +564,33 @@ class ToolCallExecutor:
         *,
         call: ModelToolCall,
         output: str,
-        parsed: Json,
+        envelope: ToolEnvelope,
         cancelled: bool,
         retry_kind: str | None,
         duration_ms: float,
         background_start: BackgroundToolStart | None,
     ) -> None:
         """Emit a public tool completion event."""
-        ok_value = parsed.get("ok")
-        metadata_value = parsed.get("metadata")
-        metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-        content = parsed.get("content")
         self.run_context.emit(ToolCallCompletedEvent(
             **self.run_context.stream_base(),
             call_id=call.id,
             tool_name=call.name,
-            ok=ok_value if isinstance(ok_value, bool) else None,
+            ok=envelope.ok,
             cancelled=cancelled,
             retry_kind=retry_kind,
-            error_type=metadata.get("error_type") if isinstance(metadata.get("error_type"), str) else None,
-            message=content if isinstance(content, str) and ok_value is False else None,
+            error_type=envelope.error_type(),
+            message=envelope.content if not envelope.ok else None,
             duration_ms=duration_ms,
             output=output,
             background_task_id=background_start.task_id if background_start is not None else None,
             background_status="running" if background_start is not None else None,
         ))
 
-    async def _call_output(self, name: str, arguments: str) -> str:
+    async def _call_output(self, name: str, arguments: str) -> ToolEnvelope:
         """Execute one model tool call and format its output."""
         spec = self.tool_map.get(str(name))
         if not spec:
-            return json.dumps({"ok": False, "content": f"unknown tool {name}", "metadata": {"tool": name}}, ensure_ascii=False)
+            return ToolResult(False, f"unknown tool {name}", {"tool": name})
         return await _invoke_tool(spec, arguments)
 
     def _background_decision(self, call: ModelToolCall, spec: ToolSpec | None) -> _BackgroundDecision:
@@ -599,8 +599,15 @@ class ToolCallExecutor:
             return _BackgroundDecision(arguments=call.arguments)
         parsed = _parse_background_args(call.arguments)
         mode = spec.background
-        if spec.metadata.get("framework_tool") == "subagent" and parsed.args is not None:
-            mode = _subagent_background_mode(spec, parsed.args)
+        known_target = True
+        strip_private_arg = False
+        unsupported_message: str | None = None
+        if spec.background_policy is not None and parsed.args is not None:
+            policy = spec.background_policy(parsed.args)
+            mode = policy.mode
+            known_target = policy.known_target
+            strip_private_arg = policy.strip_private_arg
+            unsupported_message = policy.unsupported_message
         if mode == "model":
             if parsed.error is not None:
                 return _BackgroundDecision(arguments=call.arguments, error_output=_retry_output("InvalidArguments", parsed.error))
@@ -611,19 +618,14 @@ class ToolCallExecutor:
         if mode == "always":
             if self.tool_execution == "sequential":
                 return _BackgroundDecision(arguments=call.arguments)
-            arguments = parsed.stripped_arguments if spec.metadata.get("framework_tool") == "subagent" and parsed.present else call.arguments
+            arguments = parsed.stripped_arguments if strip_private_arg and parsed.present else call.arguments
             return _BackgroundDecision(arguments=arguments, start=self._background_start(call, spec, arguments))
-        if (
-            spec.metadata.get("framework_tool") == "subagent"
-            and parsed.present
-            and parsed.requested
-            and _subagent_agent_known(spec, parsed.args)
-        ):
+        if parsed.present and parsed.requested and known_target and unsupported_message is not None:
             return _BackgroundDecision(
                 arguments=parsed.stripped_arguments,
-                error_output=_retry_output("InvalidArguments", "selected subagent does not support background execution"),
+                error_output=_retry_output("InvalidArguments", unsupported_message),
             )
-        if spec.metadata.get("framework_tool") == "subagent" and parsed.present:
+        if strip_private_arg and parsed.present:
             return _BackgroundDecision(arguments=parsed.stripped_arguments)
         return _BackgroundDecision(arguments=call.arguments)
 
@@ -639,42 +641,20 @@ class ToolCallExecutor:
             run_metadata=dict(self.run_context.metadata),
         )
 
-    def _annotate_special_tool(self, span: _TraceSpan, name: str, parsed: Json) -> None:
+    def _annotate_special_tool(self, span: _TraceSpan, name: str, envelope: ToolEnvelope) -> None:
         """Add tool-family trace attributes for framework and MCP tools."""
-        metadata_value = parsed.get("metadata")
-        parsed_metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
         if name == "subagent":
             span.set_attributes({
-                "subagent.name": parsed_metadata.get("agent"),
-                "subagent.tool_mode": parsed_metadata.get("tool_mode"),
-                "subagent.tools": parsed_metadata.get("tools"),
+                "subagent.name": envelope.metadata.get("agent"),
+                "subagent.tool_mode": envelope.metadata.get("tool_mode"),
+                "subagent.tools": envelope.metadata.get("tools"),
             })
         spec = self.tool_map.get(str(name))
-        spec_metadata = spec.metadata if spec is not None else {}
-        if spec_metadata.get("source") == "mcp":
+        if spec is not None and spec.mcp is not None:
             span.set_attributes({
-                "mcp.server.id": spec_metadata.get("mcp_server_id"),
-                "mcp.tool.name": spec_metadata.get("mcp_tool_name"),
+                "mcp.server.id": spec.mcp.server_id,
+                "mcp.tool.name": spec.mcp.tool_name,
             })
-
-
-def _parse_tool_output(output: str) -> Json:
-    """Parse a normalized tool output envelope."""
-    try:
-        parsed = json.loads(output)
-    except json.JSONDecodeError:
-        return {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
-    return parsed if isinstance(parsed, dict) else {"ok": False, "content": output, "metadata": {"error_type": "InvalidToolOutput"}}
-
-
-def _tool_retry_kind(parsed: Json) -> str | None:
-    """Return the retry error type from a parsed tool output envelope."""
-    metadata_value = parsed.get("metadata")
-    metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-    error_type = metadata.get("error_type")
-    if metadata.get("retry") is True and isinstance(error_type, str):
-        return error_type
-    return None
 
 
 @dataclass(frozen=True)
@@ -694,7 +674,7 @@ class _BackgroundDecision:
 
     arguments: str
     start: BackgroundToolStart | None = None
-    error_output: str | None = None
+    error_output: ToolEnvelope | None = None
 
 
 def _parse_background_args(arguments: str) -> _ParsedBackgroundArgs:
@@ -728,31 +708,7 @@ def _parse_background_args(arguments: str) -> _ParsedBackgroundArgs:
     )
 
 
-def _subagent_background_mode(spec: ToolSpec, args: Json) -> str:
-    """Return the effective background policy for a framework subagent call."""
-    agent = args.get("agent")
-    if agent is None:
-        return "model"
-    policies = spec.metadata.get("subagent_background")
-    if isinstance(agent, str) and isinstance(policies, dict):
-        mode = policies.get(agent, "never")
-        if mode in {"never", "always", "model"}:
-            return str(mode)
-    return "never"
-
-
-def _subagent_agent_known(spec: ToolSpec, args: Json | None) -> bool:
-    """Return whether a subagent argument names the default or a configured subagent."""
-    if args is None:
-        return False
-    agent = args.get("agent")
-    if agent is None:
-        return True
-    policies = spec.metadata.get("subagent_background")
-    return isinstance(agent, str) and isinstance(policies, dict) and agent in policies
-
-
-def _background_start_output(start: BackgroundToolStart) -> str:
+def _background_start_output(start: BackgroundToolStart) -> ToolEnvelope:
     """Return the immediate model-visible start notice."""
     return ToolResult(
         True,
@@ -762,17 +718,9 @@ def _background_start_output(start: BackgroundToolStart) -> str:
             "tool_name": start.tool_name,
             "status": "running",
         },
-    ).as_json()
+    )
 
 
-def _retry_output(error_type: str, message: str) -> str:
+def _retry_output(error_type: str, message: str) -> ToolEnvelope:
     """Return a retryable argument error output."""
-    return ToolResult(False, message, {"error_type": error_type, "retry": True}).as_json()
-
-
-def _background_error_type(parsed: Json) -> str:
-    """Return a compact background error type for tracing."""
-    metadata = parsed.get("metadata")
-    if isinstance(metadata, dict) and isinstance(metadata.get("error_type"), str):
-        return metadata["error_type"]
-    return "ToolExecutionError"
+    return ToolResult(False, message, {"error_type": error_type, "retry": True})

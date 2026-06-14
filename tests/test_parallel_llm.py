@@ -167,7 +167,7 @@ async def _call_parallel(parent: Harness, args: dict[str, Any]) -> dict[str, Any
     """Invoke parallel_llm through the normal tool envelope."""
     spec = create_parallel_llm_tool(parent)
     output = await _invoke_tool(spec, args)
-    parsed = json.loads(output)
+    parsed = json.loads(output.to_json())
     if parsed["ok"]:
         parsed["payload"] = json.loads(parsed["content"])
     return parsed
@@ -176,7 +176,7 @@ async def _call_parallel(parent: Harness, args: dict[str, Any]) -> dict[str, Any
 async def _call_custom_tool(tool: ParallelLlmTool, args: dict[str, Any]) -> dict[str, Any]:
     """Invoke a custom ParallelLlmTool through the normal tool envelope."""
     output = await _invoke_tool(tool.spec(), args)
-    parsed = json.loads(output)
+    parsed = json.loads(output.to_json())
     if parsed["ok"]:
         parsed["payload"] = json.loads(parsed["content"])
     return parsed
@@ -546,7 +546,7 @@ async def test_custom_parallel_llm_text_mode_rejects_structured_output_type(tmp_
     )
 
     result = await _invoke_tool(tool.spec(), {**_inline(["extract"]), "max_concurrency": 1})
-    envelope = json.loads(result)
+    envelope = json.loads(result.to_json())
 
     assert envelope["ok"] is False
     assert envelope["content"] == "text output mode requires output_type=str"
@@ -568,7 +568,7 @@ async def test_custom_parallel_llm_closes_owned_model_when_schema_resolution_fai
     )
 
     result = await _invoke_tool(tool.spec(), {**_inline(["extract"]), "max_concurrency": 1})
-    envelope = json.loads(result)
+    envelope = json.loads(result.to_json())
 
     assert envelope["ok"] is False
     assert envelope["content"] == "text output mode requires output_type=str"

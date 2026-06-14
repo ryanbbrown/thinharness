@@ -17,8 +17,28 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ..types import Json
 
 ToolBackgroundMode = Literal["never", "always", "model"]
+ToolKind = Literal["user", "subagent", "parallel_llm", "mcp"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class McpToolInfo:
+    """Framework-owned identity for an MCP-backed tool."""
+
+    server_id: str
+    tool_name: str
+
+
+@dataclass(frozen=True)
+class BackgroundPolicyDecision:
+    """Framework-owned background policy for a parsed tool call."""
+
+    mode: ToolBackgroundMode
+    known_target: bool = True
+    strip_private_arg: bool = True
+    unsupported_message: str | None = None
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -34,11 +54,16 @@ class ToolSpec:
     instructions: str | None = None
     background: ToolBackgroundMode = "never"
     requires_approval: bool = False
+    kind: ToolKind = "user"
+    background_policy: Callable[[Json], BackgroundPolicyDecision] | None = None
+    mcp: McpToolInfo | None = None
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
         if self.background not in {"never", "always", "model"}:
             raise ValueError(f"unknown background mode: {self.background}")
+        if self.kind not in {"user", "subagent", "parallel_llm", "mcp"}:
+            raise ValueError(f"unknown tool kind: {self.kind}")
         if self.sequential and self.background != "never":
             raise ValueError("sequential tools cannot run in background")
         if self.requires_approval and self.background != "never":
@@ -67,19 +92,56 @@ class ToolSpec:
 
 @dataclass
 class ToolResult:
-    """Structured result returned by built-in tools."""
+    """Structured internal tool output envelope."""
 
     ok: bool
     content: str
     metadata: Json = field(default_factory=dict)
 
-    def as_json(self) -> str:
-        """Serialize the tool result for a function_call_output item."""
+    @classmethod
+    def from_json(cls, output: str) -> ToolResult:
+        """Parse a provider-facing tool output string into an envelope."""
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            return cls(False, output, {"error_type": "InvalidToolOutput"})
+        if not isinstance(parsed, dict):
+            return cls(False, output, {"error_type": "InvalidToolOutput"})
+        ok = parsed.get("ok")
+        content = parsed.get("content")
+        metadata = parsed.get("metadata")
+        return cls(
+            ok if isinstance(ok, bool) else False,
+            content if isinstance(content, str) else output,
+            metadata if isinstance(metadata, dict) else {},
+        )
+
+    def to_json(self) -> str:
+        """Serialize the envelope for a provider-facing tool output."""
         return json.dumps(
             {"ok": self.ok, "content": self.content, "metadata": self.metadata},
             ensure_ascii=False,
             default=str,
         )
+
+    def as_json(self) -> str:
+        """Serialize the envelope for compatibility with existing callers."""
+        return self.to_json()
+
+    def retry_kind(self) -> str | None:
+        """Return the retry error type if this envelope asks the model to retry."""
+        error_type = self.error_type()
+        if self.metadata.get("retry") is True and error_type is not None:
+            return error_type
+        return None
+
+    def error_type(self) -> str | None:
+        """Return the envelope error type, if present."""
+        error_type = self.metadata.get("error_type")
+        return error_type if isinstance(error_type, str) else None
+
+
+ToolEnvelope = ToolResult
 
 
 class ModelRetry(Exception):
@@ -150,7 +212,7 @@ class StrictArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> str | Any:
+def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope | Any:
     """Parse and validate raw tool arguments."""
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else raw_args
@@ -172,21 +234,21 @@ def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> str | Any:
     return args
 
 
-def _normalize_result(result: Any) -> str:
+def _normalize_result(result: Any) -> ToolEnvelope:
     """Normalize a tool handler result to a structured JSON envelope."""
     if isinstance(result, ToolResult):
-        return result.as_json()
+        return result
     if isinstance(result, str):
-        return ToolResult(True, result).as_json()
-    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str)).as_json()
+        return ToolResult(True, result)
+    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
-def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> str:
+def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> ToolEnvelope:
     """Return a failed tool envelope that asks the model to retry."""
     metadata: Json = {"error_type": error_type, "retry": True}
     if errors is not None:
         metadata["errors"] = errors
-    return ToolResult(False, message, metadata).as_json()
+    return ToolResult(False, message, metadata)
 
 
 def _format_validation_errors(error: ValidationError) -> str:
@@ -220,16 +282,16 @@ def _format_error_input(value: Any) -> str:
 def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     """Invoke a sync tool handler and normalize the result to structured JSON."""
     args = _prepare_args(spec, raw_args)
-    if isinstance(args, str):
-        return args
+    if isinstance(args, ToolResult):
+        return args.to_json()
     try:
         result = spec.handler(args)
     except ModelRetry as exc:
-        return _retry_envelope("ModelRetry", exc.message)
+        return _retry_envelope("ModelRetry", exc.message).to_json()
     except Exception as exc:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
-        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
+        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).to_json()
     if inspect.isawaitable(result):
         close = getattr(result, "close", None)
         if close is not None:
@@ -238,14 +300,14 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
             False,
             "async handler requires harness execution",
             {"error_type": "AsyncHandlerInSyncContext"},
-        ).as_json()
-    return _normalize_result(result)
+        ).to_json()
+    return _normalize_result(result).to_json()
 
 
-async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> str:
+async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope:
     """Invoke a tool handler without blocking the event loop."""
     args = _prepare_args(spec, raw_args)
-    if isinstance(args, str):
+    if isinstance(args, ToolResult):
         return args
     try:
         if _is_async_callable(spec.handler):
@@ -264,7 +326,7 @@ async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> str:
     except Exception as exc:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
-        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__}).as_json()
+        return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__})
     return _normalize_result(result)
 
 

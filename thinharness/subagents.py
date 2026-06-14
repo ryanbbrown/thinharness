@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -10,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
-from .providers import infer_model, parse_model_ref, provider_prefix
-from .tools.base import Json, ToolBackgroundMode, ToolResult, ToolSpec
+from .providers import infer_model, same_provider_model_ref
+from .tools.base import BackgroundPolicyDecision, Json, ToolBackgroundMode, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
 from .tracing import TracingOptions
 
@@ -91,11 +92,9 @@ def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> Tool
         _subagent_tool_description(configs, background_available=parent.config.tool_execution != "sequential"),
         SubAgentArgs,
         handler,
-        metadata={
-            "framework_tool": "subagent",
-            "subagent_background": {config.name: config.background for config in configs},
-        },
         background="model",
+        kind="subagent",
+        background_policy=_subagent_background_policy(configs),
     )
 
 
@@ -306,7 +305,7 @@ def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> l
     if config is None or config.inherit_parent_tools:
         return [
             tool for tool in parent.tools
-            if tool.name != "subagent" and tool.metadata.get("source") != "mcp" and not tool.requires_approval
+            if tool.name != "subagent" and tool.kind != "mcp" and not tool.requires_approval
         ]
     return list(config.tools)
 
@@ -354,9 +353,26 @@ def _child_hooks(parent: Harness, config: SubAgentConfig | None) -> HookRegistry
 
 def _same_provider(parent: Harness, child_model_ref: str) -> bool:
     """Return whether a child model ref uses the same provider as the parent model."""
-    child_provider, _ = parse_model_ref(child_model_ref)
-    parent_provider = provider_prefix(getattr(getattr(parent.model, "provider", None), "name", ""))
-    return child_provider == parent_provider
+    return same_provider_model_ref(parent.model, child_model_ref)
+
+
+def _subagent_background_policy(configs: list[SubAgentConfig]) -> Callable[[Json], BackgroundPolicyDecision]:
+    """Return a typed background policy for subagent delegation calls."""
+    policies: dict[str, ToolBackgroundMode] = {config.name: config.background for config in configs}
+
+    def decide(args: Json) -> BackgroundPolicyDecision:
+        agent = args.get("agent")
+        if agent is None:
+            return BackgroundPolicyDecision(mode="model")
+        if isinstance(agent, str) and agent in policies:
+            mode = policies[agent]
+            return BackgroundPolicyDecision(
+                mode=mode,
+                unsupported_message="selected subagent does not support background execution" if mode == "never" else None,
+            )
+        return BackgroundPolicyDecision(mode="never", known_target=False)
+
+    return decide
 
 
 def _subagent_tool_description(configs: list[SubAgentConfig], *, background_available: bool) -> str:

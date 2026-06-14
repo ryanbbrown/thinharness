@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
-from .providers import Model, ModelCapabilities, ModelTurn, StructuredOutputRequest
+from .providers import Model, ModelTurn, StructuredOutputRequest, model_capabilities
 from .tools.base import Json, _clean_schema, _inline_schema_refs
 
 OutputMode = Literal["auto", "native", "tool", "prompted", "text"]
@@ -197,7 +197,7 @@ def resolve_output_schema_for_model(
         return None
     if output_mode not in OUTPUT_MODES:
         raise ValueError(f"unknown output_mode: {output_mode}")
-    capabilities = getattr(model, "capabilities", ModelCapabilities())
+    capabilities = model_capabilities(model)
     resolved_output_type, mode = resolve_output_spec(output_type, output_mode)
     if mode == "auto":
         mode = capabilities.default_structured_output_mode

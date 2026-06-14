@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
@@ -369,7 +368,7 @@ def test_after_tool_hook_sees_retry_envelope_and_cannot_break_budget(tmp_path: P
 
     def after(ctx):
         assert isinstance(ctx, AfterToolCallContext)
-        seen.append(ctx.parsed_output["metadata"]["error_type"])
+        seen.append(ctx.envelope.metadata["error_type"])
         ctx.output = "not json"
 
     session = SequenceSession(ModelTurn(tool_calls=[_call("flaky", "{}")], raw={"id": "start"}))
@@ -397,7 +396,7 @@ def test_after_tool_hook_sees_validation_retry_envelope(tmp_path: Path) -> None:
         HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
         model=_fake_openai(client),
         tools=[ToolSpec("age", "Age", AgeArgs, lambda args: "ok")],
-        hooks=[Hook("after_tool_call", lambda ctx: seen.append(ctx.parsed_output["metadata"]))],
+        hooks=[Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope.metadata))],
     )
 
     harness.run_sync("go")
@@ -410,9 +409,8 @@ def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
     tracer = FakeTracer()
 
     def rewrite(ctx):
-        payload = ctx.parsed_output
-        payload["metadata"]["error_type"] = "Rewritten"
-        ctx.output = json.dumps(payload)
+        ctx.envelope.metadata["error_type"] = "Rewritten"
+        ctx.output = ctx.envelope.to_json()
 
     client = MultiCallClient([("flaky", "{}")])
     harness = Harness(

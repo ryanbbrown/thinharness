@@ -5,6 +5,7 @@ import copy
 import json
 import threading
 import time
+from typing import Any
 
 from thinharness import (
     AnthropicProvider,
@@ -270,8 +271,10 @@ def echo_tool() -> ToolSpec:
         lambda args: args["value"],
     )
 
-def tool_output(output: str) -> dict:
+def tool_output(output: str | Any) -> dict:
     """Parse a normalized tool output envelope."""
+    if hasattr(output, "to_json"):
+        output = output.to_json()
     return json.loads(output)
 
 class MultiCallClient(OpenAIProvider):

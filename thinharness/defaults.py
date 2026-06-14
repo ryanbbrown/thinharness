@@ -64,19 +64,25 @@ DEFAULT_JSONL_SEARCH_INSTRUCTIONS = """jsonl_search usage:
 - Pass query for an optional ripgrep prefilter before field and where filtering.
 - Use fields to return only the keys needed for the next decision."""
 
-DEFAULT_PARALLEL_LLM_DESCRIPTION = (
+DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE = (
     "Run N independent prompts as one-shot LLM completions in parallel. Each call is stateless: no tools, no memory, no continuation "
     "- only the model's text response is returned. Use this when you have a batch of independent prompts (classify, summarize, translate). "
     "Choose one prompt source with source.kind: inline uses source.prompts, file uses source.path. For multi-step work, use the "
     "subagent tool instead. For large batches, pass output_file and read it back rather than receiving full results inline. If you need the parent "
     "harness system prompt, include the relevant instructions in system; it is not inherited automatically. The tool's model is host-configured "
-    "and cannot be changed by tool arguments. For large independent batches, `_background: true` is available when it lets other work continue."
+    "and cannot be changed by tool arguments."
 )
-DEFAULT_PARALLEL_LLM_INSTRUCTIONS = """parallel_llm usage:
+DEFAULT_PARALLEL_LLM_DESCRIPTION_BACKGROUND = "For large independent batches, `_background: true` is available when it lets other work continue."
+DEFAULT_PARALLEL_LLM_DESCRIPTION = f"{DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE} {DEFAULT_PARALLEL_LLM_DESCRIPTION_BACKGROUND}"
+
+DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE = """parallel_llm usage:
 - Use only for independent one-shot prompts, not multi-step work.
 - It does not inherit the parent system prompt; put shared instructions in system when needed.
 - For inline prompts, pass source={"kind":"inline","prompts":[...]}.
 - For a prompt file, pass source={"kind":"file","path":"prompts.json"}.
 - Do not add unused prompt source fields or placeholder values.
-- For large or structured batches, set output_file and read that file afterward.
-- For large independent batches, background mode is available; default to synchronous unless it is clearly useful."""
+- For large or structured batches, set output_file and read that file afterward."""
+DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BACKGROUND = (
+    "- For large independent batches, background mode is available; default to synchronous unless it is clearly useful."
+)
+DEFAULT_PARALLEL_LLM_INSTRUCTIONS = f"{DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE}\n{DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BACKGROUND}"

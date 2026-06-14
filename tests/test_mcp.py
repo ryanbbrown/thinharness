@@ -441,7 +441,7 @@ async def test_duplicate_derived_id_disambiguated(tmp_path) -> None:
 
     await harness.connect()
 
-    metadata = {tool.name: tool.metadata["mcp_server_id"] for tool in harness.tools}
+    metadata = {tool.name: tool.mcp.server_id for tool in harness.tools if tool.mcp is not None}
     assert metadata == {"one": "same", "two": "same-2"}
 
 

@@ -61,6 +61,7 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
+    BackgroundPolicyDecision,
     BashArgs,
     BashTool,
     FilePromptSource,
@@ -72,6 +73,7 @@ from .tools import (
     MCPServerSSE,
     MCPServerStdio,
     MCPServerStreamableHTTP,
+    McpToolInfo,
     ModelRetry,
     ParallelLlmArgs,
     ParallelLlmTool,
@@ -80,6 +82,7 @@ from .tools import (
     Skill,
     SkillRegistry,
     ToolBackgroundMode,
+    ToolEnvelope,
     ToolResult,
     ToolSpec,
     builtin_tools,
@@ -174,7 +177,10 @@ __all__ = [
     "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
+    "BackgroundPolicyDecision",
+    "McpToolInfo",
     "ToolBackgroundMode",
+    "ToolEnvelope",
     "ParallelLlmArgs",
     "ParallelLlmTool",
     "ToolResult",
