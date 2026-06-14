@@ -7,6 +7,7 @@
 - Run `uv run pyright` after Python changes so type checking passes.
 - Keep running the relevant pytest and ruff checks for the files you touched.
 - Export draw.io SVGs with `--svg-theme light` so rendered diagrams are always light mode, regardless of viewer color scheme.
+- After pushing to `main`, check deployment status after about 30 seconds and confirm the deploy succeeded.
 
 ## Project Learnings
 Agents should capture durable project learnings when they discover a non-obvious pattern, pitfall, user preference, architecture constraint, tool behavior, or workflow fix that would save future agents time.

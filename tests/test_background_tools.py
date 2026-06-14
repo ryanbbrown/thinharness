@@ -377,8 +377,39 @@ async def test_background_completion_during_provider_turn_waits_until_next_tool_
     assert [(notice.kind, "Tool: background" in notice.content) for notice in notices] == [("background_completion", True)]
 
 
-def test_final_text_drains_multiple_ready_background_completions(tmp_path: Path) -> None:
-    session = SequenceSession(
+async def test_final_text_drains_multiple_ready_background_completions(tmp_path: Path) -> None:
+    release_background = asyncio.Event()
+    completed: set[str] = set()
+    all_background_finished = asyncio.Event()
+
+    async def finish(label: str) -> str:
+        await release_background.wait()
+        completed.add(label)
+        if len(completed) == 2:
+            all_background_finished.set()
+        return label
+
+    async def one(_args):
+        return await finish("one")
+
+    async def two(_args):
+        return await finish("two")
+
+    class WaitingSession(SequenceSession):
+        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+            release_background.set()
+            await asyncio.wait_for(all_background_finished.wait(), timeout=0.5)
+            await asyncio.sleep(0)
+            return await super().continue_with_tools(
+                outputs,
+                instructions=instructions,
+                tools=tools,
+                metadata=metadata,
+                structured_output=structured_output,
+                notices=notices,
+            )
+
+    session = WaitingSession(
         ModelTurn(tool_calls=[
             _call("one", '{"_background":true}', "call_1"),
             _call("two", '{"_background":true}', "call_2"),
@@ -387,11 +418,11 @@ def test_final_text_drains_multiple_ready_background_completions(tmp_path: Path)
         ModelTurn(text="done", raw={"id": "done"}),
     )
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
-        ToolSpec("one", "One", {"type": "object", "properties": {}}, lambda _args: "one", background="model"),
-        ToolSpec("two", "Two", {"type": "object", "properties": {}}, lambda _args: "two", background="model"),
+        ToolSpec("one", "One", {"type": "object", "properties": {}}, one, background="model"),
+        ToolSpec("two", "Two", {"type": "object", "properties": {}}, two, background="model"),
     ])
 
-    result = harness.run_sync("go")
+    result = await harness.run("go")
 
     assert result.text == "done"
     assert len(session.user_messages) == 1
