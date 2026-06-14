@@ -124,7 +124,17 @@ harness = Harness(HarnessConfig(
 ))
 ```
 
-Filesystem tools enforce the configured read and write policies. Paths are resolved under `root`; absolute paths and `..` escape attempts are rejected.
+Filesystem tools enforce the configured read and write policies. Paths must resolve under `root`; escape attempts through absolute paths outside `root`, `..`, or symlinks are rejected.
+
+```python
+harness = Harness(HarnessConfig(
+    root="/repo",
+    read_paths=["src", "tests"],
+    write_paths=["outputs"],
+))
+```
+
+With this configuration, `read` can access `src/app.py` and `tests/test_app.py`, but not `docs/notes.md`. `write` can create or update `outputs/report.md`, but not `src/generated.py`. Omit `read_paths` or `write_paths` to allow that operation anywhere under `root`.
 
 ## Custom Tools
 
@@ -173,6 +183,19 @@ def lookup_account(args: LookupArgs) -> dict[str, str]:
 
 Tool retry budgets are per tool name per run. Ordinary handler exceptions become failed tool results, but they are not retryable unless the tool result says so.
 
+### Approval-Required Tools
+
+Set `requires_approval=True` on a custom `ToolSpec` when the host application must review a model-requested action before the handler runs. Approval is loop control flow, not structured output: if any call in a model-emitted batch requires approval, ThinHarness pauses before executing the whole batch and returns a normal `HarnessResult` with `stop_reason="approval_required"`.
+
+The paused result includes:
+
+- `pending_approvals`: call id, tool name, and raw JSON arguments for each approval-required call.
+- `resume_state`: one JSON-serializable approval envelope that wraps provider resume state, the full paused tool batch, run history, usage, metadata, and accounting needed to continue the same logical run.
+
+Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
+
+Approval-required tools need a resumable model because the harness must continue the exact provider session after the paused assistant tool-call turn. They cannot use background execution, and they are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
+
 ### Bash Prototype Tool
 
 `BashTool` is an opt-in custom tool for exploratory agent runs. It is not part of the default built-ins, and `builtin_tools=["bash"]` is intentionally rejected.
@@ -187,7 +210,7 @@ harness = Harness(
 )
 ```
 
-The tool runs one `bash -c` command from a workspace-contained cwd and marks itself sequential because commands may mutate state. The cwd check is not a sandbox: commands can still access absolute paths, network tools, environment variables, and anything the host process can access. `max_chars` caps stdout and stderr independently and is clamped to the tool's `max_tool_chars`. Background descendants left by a command are cleaned up when the shell exits; this is not a persistent job runner. Use it to prototype workflow shape, then promote repeated shell logic into typed tools.
+The tool runs one `bash -c` command from a workspace-contained cwd and marks itself sequential because commands may mutate state. The cwd check is not a sandbox: commands can still access absolute paths, network tools, environment variables, and anything the host process can access. The tool has a configured `max_tool_chars` output cap; the model can pass `max_chars` on an individual call only to request a lower cap. The final limit is `min(max_chars, max_tool_chars)`, applied independently to stdout and stderr. Background descendants left by a command are cleaned up when the shell exits; this is not a persistent job runner. Use it to prototype workflow shape, then promote repeated shell logic into typed tools.
 
 ## Tool Execution Policy
 
@@ -283,6 +306,8 @@ summary: Summary = result.output
 - `tool`: expose a synthetic `final_result` tool.
 - `prompted`: ask for JSON in prompt instructions and validate the text.
 - `text`: copy final text into `result.output`.
+
+ThinHarness resolves structured output when the harness is constructed and eagerly checks the requested mode against the model provider's declared capabilities. For example, `output_mode="native"` raises immediately for a provider that does not support native JSON-schema output. `output_mode="auto"` chooses a supported default for the provider.
 
 Tool-mode structured output uses a harness-created `final_result` tool. It is not a normal registered tool, does not fire tool hooks, and clean exits through it are not resumable because the provider transcript would contain an unanswered synthetic tool call.
 
@@ -485,6 +510,10 @@ The contract:
 
 `resume_from` is a new-turn API. The prior run completed, and the next call appends a new user message. It is not a retry mechanism, interrupted-tool-call recovery, or a way to continue the assistant's previous response.
 
+Approval pauses use a separate resume path. When `stop_reason == "approval_required"`, persist the returned `resume_state` envelope and call `resume_approvals(...)` with approval decisions instead of passing that envelope to `run(..., resume_from=...)`. The post-resume result carries the full logical run history: pre-pause responses, tool records, usage counters, and metadata are restored before the approved or rejected batch is processed.
+
+Budgets span the pause. The paused batch counts against `usage.tool_calls` exactly once at pause time, and a resumed run can immediately hit `limit_reached` if the logical run was already at its configured model-request or tool-call limit. The approval envelope also includes raw provider responses, so its stored size grows with run length.
+
 Provider behavior differs internally:
 
 - OpenAI Responses stores conversation state server-side. `resume_state` contains the previous response id.
@@ -572,5 +601,6 @@ Each tracing sink owns its capture policy. External spans can exist without reco
 - `usage`: model request counts, tool call counts, cancellations, and retry counters.
 - `stop_reason`: terminal reason.
 - `resume_state`: opaque continuation state when the run is cleanly resumable.
+- `pending_approvals`: pending human approval records when `stop_reason == "approval_required"`.
 
 Most applications should read `text`, `output`, `usage`, and `resume_state`; the raw provider responses and tool records are mainly for debugging, auditing, and tests.

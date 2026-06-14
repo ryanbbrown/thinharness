@@ -16,6 +16,7 @@
 - **Over-budget retry batches are not continued.** When any tool exceeds its retry budget, the harness records local execution, fires `limit_reached`, and ends the run without sending that batch's outputs back to the provider.
 - **Hooks can rewrite tool output but not retry control flow.** The retry signal is captured before `after_tool_call` hooks run, so hooks own the message while the harness owns the budget.
 - **Requested tool calls count against `max_tool_calls`.** A tool blocked by `before_tool_call` still consumed a model-requested call slot. Cancelled calls are tracked separately in `RunUsage.cancelled_tool_calls`.
+- **Human approval is tool execution control flow.** `requires_approval=True` pauses before executing any call in the model-emitted batch and returns `stop_reason="approval_required"` with pending approval details. Rejection is represented as a normal failed tool result sent back to the model, not as a caller exception or retry-budget event.
 - **Skill scripts use extension-based runners.** `skill_run` keeps the simple `script` plus `args` interface, but treats Python and shell as first-class skill helper languages: `.py` runs through `uv run`, and `.sh`/`.bash` runs through `bash`, so CLI subcommands and flags work without executable bits. JavaScript and Go get basic file-runner support through `node` and `go run`, but richer package-manager flows such as npm scripts, Go module setup, or Python installed console commands are deferred until real skills need them.
 - **Parallel LLM model settings are host-owned.** The model-facing `parallel_llm` arguments cannot override model, temperature, or output schema. The built-in exposes `builtin_parallel_llm_model` and `builtin_parallel_llm_temperature` on `HarnessConfig`; custom `ParallelLlmTool` instances take model settings and optional structured-output settings at construction. Provider/model-specific temperature support is not registry-validated by ThinHarness; unsupported settings surface as provider errors.
 - **Parallel LLM prompt source is structurally discriminated.** `parallel_llm` uses one `source` object with `kind="inline"` plus `prompts` or `kind="file"` plus `path`, instead of optional sibling fields. This makes invalid mixed prompt sources structurally harder for models to produce.
@@ -38,7 +39,7 @@
 - **Parent hooks do not automatically enter child runs.** A parent observes the parent run and the `subagent` tool boundary. Child run hooks are supplied explicitly through `subagent_hooks`.
 - **`run_end` fires once.** The run loop uses a guard so success, errors, limit exits, hook cancellation, and external cancellation all produce at most one `run_end` event.
 - **Near-limit guidance is deterministic model input.** Hard limits remain authoritative, but the harness now emits provider-facing `ModelNotice` input shortly before configured model-request and tool-call limits are exhausted. These notices are not hook events, are deduped per `Harness.run(...)`, and are computed from each parent or child run's own local budget.
-- **Model notice categories may grow.** `ModelNotice.kind` is currently the public literal union `Literal["limit_warning"]`; future releases may add notice categories without exposing raw provider payload structures. `tool_retries` near-limit guidance remains deferred and retry exhaustion is still only a hard failure.
+- **Model notice categories may grow.** `ModelNotice.kind` includes budget warnings plus harness notices such as background-task cancellation. Future releases may add notice categories without exposing raw provider payload structures. `tool_retries` near-limit guidance remains deferred and retry exhaustion is still only a hard failure.
 
 ## Structured Output
 
@@ -63,6 +64,9 @@
 - **Limit notices are part of provider history.** Model-facing notices are real provider input, so stateless provider resume state may include prior notice text and a resumed run may emit fresh notices for its own budget.
 - **No transcript repair in v1.** The harness does not synthesize missing tool results, drop unpaired calls, or reshape provider history to make a non-clean exit resumable.
 - **Config compatibility beyond provider and model is caller-owned.** Resume validation checks kind, version, model, and state shape; it does not verify that tools, system prompt, or other harness settings match the original run.
+- **Approval resume is not `resume_from`.** Approval pauses are interrupted logical runs, so their `approval_pause` envelope is resumed only through `resume_approvals(...)` / `stream_approvals(...)`. The envelope wraps provider state, the full pending tool batch, run history, metadata, usage, retry counters, and emitted limit-warning keys.
+- **Approval budgets span the interruption.** The paused batch counts toward `usage.tool_calls` at pause time exactly once. Resuming restores usage and prior history before processing decisions, so model-request and tool-call budgets continue from the original run rather than resetting.
+- **Approval envelope size is run-size dependent.** The envelope stores prior raw provider responses to produce a post-resume result with the whole logical history, so hosts should size approval-state storage for long runs.
 
 ## Subagents
 
@@ -73,6 +77,7 @@
 - **No call-time tool narrowing.** A named subagent's tool surface comes from its config, and inherited child tool copying drops the parent `subagent` tool plus MCP-sourced tools.
 - **Recursion is structurally disabled for built-in and explicit tools.** Child harness configs always set `subagents=[]`, and `SubAgentConfig` rejects built-in or explicit custom `subagent` tools.
 - **Inherited tools are passed as live `ToolSpec` objects.** This preserves bound filesystem, skill, and custom handlers rather than reconstructing tools from names.
+- **Approval tools do not enter child harnesses.** Explicit approval-required subagent tools are rejected, and inherited parent tool copying filters approval-required tools out because a paused child run cannot be surfaced coherently through one `subagent` tool result.
 - **MCP tools are not inherited as ordinary custom tools.** Named subagents can opt into MCP with `inherit_mcp_servers=True` or explicit `mcp_servers`; inherited parent tool copying filters out MCP-sourced tools.
 - **Subagent model overrides are credential-light.** Omitted models reuse the parent model object. Same-provider overrides may reuse parent API settings; different-provider overrides fall back to that provider's normal environment/config path.
 - **Child output directories are shared with the parent.** The current implementation keeps artifact handling simple instead of creating per-child output subdirectories.

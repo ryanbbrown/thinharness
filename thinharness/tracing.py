@@ -77,7 +77,7 @@ class LocalTracing:
 class ModelTraceSnapshot:
     """Canonical input for one model span."""
 
-    kind: Literal["start", "resume", "tool_outputs", "correction", "output_retry_tool", "background_completion"]
+    kind: Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool", "background_completion"]
     prompt: str | None = None
     tool_outputs: list[Json] | None = None
     notices: list[Json] | None = None
@@ -575,7 +575,9 @@ def _model_request_input(snapshot: ModelTraceSnapshot) -> Json | None:
     """Return the backend-compatible logical request payload."""
     if snapshot.kind in {"start", "resume"}:
         return {"prompt": snapshot.prompt}
-    if snapshot.kind in {"tool_outputs", "output_retry_tool"} or (snapshot.kind == "background_completion" and snapshot.tool_outputs is not None):
+    if snapshot.kind in {"tool_outputs", "approval_resume", "output_retry_tool"} or (
+        snapshot.kind == "background_completion" and snapshot.tool_outputs is not None
+    ):
         return {"tool_outputs": snapshot.tool_outputs or []}
     if snapshot.kind == "background_completion":
         return {"background_completion": snapshot.prompt}
@@ -602,7 +604,7 @@ def _otel_input_messages(snapshot: ModelTraceSnapshot) -> list[Json] | None:
         ]
     if snapshot.kind in {"start", "resume", "correction"} and snapshot.prompt is not None:
         return [{"role": "user", "parts": [{"type": "text", "content": snapshot.prompt}]}]
-    if snapshot.kind in {"tool_outputs", "output_retry_tool"}:
+    if snapshot.kind in {"tool_outputs", "approval_resume", "output_retry_tool"}:
         return [
             {
                 "role": "tool",

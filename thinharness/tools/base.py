@@ -33,6 +33,7 @@ class ToolSpec:
     max_retries: int | None = None
     instructions: str | None = None
     background: ToolBackgroundMode = "never"
+    requires_approval: bool = False
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
@@ -40,6 +41,8 @@ class ToolSpec:
             raise ValueError(f"unknown background mode: {self.background}")
         if self.sequential and self.background != "never":
             raise ValueError("sequential tools cannot run in background")
+        if self.requires_approval and self.background != "never":
+            raise ValueError("approval-required tools cannot use background execution")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
 

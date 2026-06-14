@@ -10,6 +10,7 @@ StopReason = Literal[
     "end_turn",
     "provider_error",
     "limit_reached",
+    "approval_required",
     "error",
     "cancelled_by_hook",
     "cancelled",
@@ -18,6 +19,24 @@ StopReason = Literal[
     "unexpected_model_behavior",
 ]
 LimitNoticeKey = tuple[Literal["limit_warning"], Literal["model_requests", "tool_calls"], int]
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    """One model-requested tool call awaiting a host decision."""
+
+    call_id: str
+    tool_name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """One host decision for a pending approval."""
+
+    call_id: str
+    approved: bool
+    reason: str | None = None
 
 
 @dataclass
@@ -31,6 +50,7 @@ class HarnessResult:
     usage: RunUsage = field(default_factory=lambda: RunUsage())
     stop_reason: StopReason = "end_turn"
     resume_state: dict[str, Any] | None = None
+    pending_approvals: list[PendingApproval] = field(default_factory=list)
 
 
 @dataclass

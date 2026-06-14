@@ -56,6 +56,8 @@ class SubAgentConfig(BaseModel):
         )
         if exposes_subagent:
             raise ValueError("subagent cannot be exposed inside a child subagent")
+        if any(tool.requires_approval for tool in self.tools):
+            raise ValueError("approval-required tools are not supported inside subagents")
         if self.inherit_parent_tools and (self.builtin_tools or self.tools):
             raise ValueError("inherit_parent_tools cannot be combined with builtin_tools or tools")
         if not (
@@ -302,7 +304,10 @@ def _select_config(configs: list[SubAgentConfig], agent: str | None) -> SubAgent
 def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> list[ToolSpec]:
     """Return custom tools to register on the child harness."""
     if config is None or config.inherit_parent_tools:
-        return [tool for tool in parent.tools if tool.name != "subagent" and tool.metadata.get("source") != "mcp"]
+        return [
+            tool for tool in parent.tools
+            if tool.name != "subagent" and tool.metadata.get("source") != "mcp" and not tool.requires_approval
+        ]
     return list(config.tools)
 
 

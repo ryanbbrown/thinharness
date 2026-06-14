@@ -4,20 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .approvals import (
+    ApprovalPause,
+    copy_restored_run_state,
+    is_approval_pause_state,
+    validate_approval_decisions,
+    validate_approval_pause_state,
+)
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import (
+    ApprovalResumedEvent,
     HarnessStream,
     RunCompletedEvent,
     RunFailedEvent,
     RunStartedEvent,
     StreamEmitter,
     StreamOptions,
+    ToolCallCompletedEvent,
+    ToolCallStartedEvent,
     create_stream_context,
 )
 from .hooks import (
@@ -39,7 +50,9 @@ from .output import (
 from .providers import (
     Model,
     ModelCapabilities,
+    ModelNotice,
     ModelSession,
+    ModelToolCall,
     ModelTurn,
     ProviderError,
     ResumableModel,
@@ -59,8 +72,9 @@ from .tracing import (
     TracingOptions,
     annotate_agent_start,
     create_local_tracing,
+    serialize_attribute_value,
 )
-from .types import HarnessError, HarnessResult, Json, RunUsage, UnexpectedModelBehavior
+from .types import ApprovalDecision, HarnessError, HarnessResult, Json, PendingApproval, RunUsage, UnexpectedModelBehavior
 
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
 
@@ -165,6 +179,7 @@ class Harness:
         _is_child_run: bool = False,
     ) -> None:
         self.config = config or HarnessConfig()
+        self._is_child_run = _is_child_run
         if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
             raise ValueError("skills cannot be combined with skills_dir or selected_skills")
         self.root = Path(self.config.root).expanduser().resolve()
@@ -234,7 +249,6 @@ class Harness:
             ]
         else:
             self.tracing = external_tracing
-        self._is_child_run = _is_child_run
         self._running = False
         self._closed = False
         self._validate_hook_filters()
@@ -250,6 +264,50 @@ class Harness:
         if result is None:
             raise HarnessError("stream ended without a result")
         return result
+
+    async def resume_approvals(
+        self,
+        state: dict[str, Any],
+        decisions: list[ApprovalDecision],
+        *,
+        metadata: Json | None = None,
+    ) -> HarnessResult:
+        """Resume a paused approval run with host decisions."""
+        result: HarnessResult | None = None
+        stream = self.stream_approvals(state, decisions, metadata=metadata)
+        async with stream as events:
+            async for event in events:
+                if isinstance(event, RunCompletedEvent) and event.run_id == stream.run_id:
+                    result = event.result
+        if result is None:
+            raise HarnessError("stream ended without a result")
+        return result
+
+    def resume_approvals_sync(
+        self,
+        state: dict[str, Any],
+        decisions: list[ApprovalDecision],
+        *,
+        metadata: Json | None = None,
+    ) -> HarnessResult:
+        """Synchronous wrapper around resume_approvals."""
+        if self._running:
+            raise HarnessError("Harness.run is not re-entrant")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise HarnessError("resume_approvals_sync cannot be called from inside a running event loop; await resume_approvals() instead")
+
+        async def _run_and_close() -> HarnessResult:
+            """Resume and close owned async resources in the same loop."""
+            try:
+                return await self.resume_approvals(state, decisions, metadata=metadata)
+            finally:
+                await self.aclose()
+
+        return asyncio.run(_run_and_close())
 
     def stream(
         self,
@@ -267,6 +325,8 @@ class Harness:
             raise HarnessError("harness is closed")
         if self._running:
             raise HarnessError("Harness is not re-entrant")
+        if is_approval_pause_state(resume_from):
+            raise HarnessError("approval pause state must be resumed with resume_approvals()")
         stream_context = create_stream_context(
             parent_run_id=_parent_run_id,
             parent_tool_call_id=_parent_tool_call_id,
@@ -278,6 +338,36 @@ class Harness:
         task = loop.create_task(self._run_streaming(
             prompt,
             resume_from=resume_from,
+            approval_state=None,
+            approval_decisions=None,
+            metadata=metadata,
+            emitter=emitter,
+            stream_context=stream_context,
+        ))
+        self._running = True
+        return HarnessStream(task, emitter)
+
+    def stream_approvals(
+        self,
+        state: dict[str, Any],
+        decisions: list[ApprovalDecision],
+        *,
+        metadata: Json | None = None,
+        stream_options: StreamOptions | None = None,
+    ) -> HarnessStream:
+        """Stream an approval-pause resume."""
+        if self._closed:
+            raise HarnessError("harness is closed")
+        if self._running:
+            raise HarnessError("Harness is not re-entrant")
+        stream_context = create_stream_context(options=stream_options)
+        emitter = StreamEmitter(stream_context)
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(self._run_streaming(
+            "",
+            resume_from=None,
+            approval_state=state,
+            approval_decisions=decisions,
             metadata=metadata,
             emitter=emitter,
             stream_context=stream_context,
@@ -290,6 +380,8 @@ class Harness:
         prompt: str,
         *,
         resume_from: dict[str, Any] | None,
+        approval_state: dict[str, Any] | None,
+        approval_decisions: list[ApprovalDecision] | None,
         metadata: Json | None,
         emitter: StreamEmitter,
         stream_context: Any,
@@ -300,24 +392,49 @@ class Harness:
 
         try:
             run_tracer = RunTracer(self.tracing)
-            run_metadata = dict(metadata or {})
+            approval_pause: ApprovalPause | None = None
+            approval_decision_map: dict[str, ApprovalDecision] | None = None
+            restored_responses: list[Json] = []
+            restored_records: list[Json] = []
+            restored_warnings: set[Any] = set()
+            if approval_state is not None:
+                approval_pause = validate_approval_pause_state(approval_state)
+                approval_decision_map = validate_approval_decisions(approval_decisions or [], approval_pause.approval_required_ids)
+                restored_metadata, restored_usage, restored_responses, restored_records, restored_warnings = copy_restored_run_state(
+                    approval_pause,
+                    metadata,
+                )
+                run_metadata = restored_metadata
+                usage = restored_usage
+            else:
+                run_metadata = dict(metadata or {})
+                usage = RunUsage()
             run_ctx = RunContext(
                 harness=self,
                 prompt=prompt,
                 metadata=run_metadata,
-                usage=RunUsage(),
+                usage=usage,
                 tracer=run_tracer,
                 stream=stream_context,
                 emitter=emitter,
             )
+            if approval_pause is not None:
+                run_ctx.responses = restored_responses
+                run_ctx.tool_call_records = restored_records
+                run_ctx.emitted_limit_warnings = restored_warnings
             run_ctx.background = BackgroundToolManager(run_tracer=run_tracer, emitter=emitter, stream=stream_context)
             run_ctx.emit(RunStartedEvent(
                 **run_ctx.stream_base(),
-                prompt=prompt,
+                prompt=None if approval_pause is not None else prompt,
                 root=str(self.root),
                 max_model_requests=self.config.max_model_requests,
                 max_tool_calls=self.config.max_tool_calls,
             ))
+            if approval_pause is not None:
+                run_ctx.emit(ApprovalResumedEvent(
+                    **run_ctx.stream_base(),
+                    decisions=tuple(approval_decisions or []),
+                ))
         except Exception as exc:
             self._running = False
             emitter.emit(RunFailedEvent(
@@ -337,7 +454,13 @@ class Harness:
             try:
                 session: ModelSession | None
                 model_supports_resume = hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
-                if resume_from is None:
+                if approval_pause is not None:
+                    if not model_supports_resume:
+                        run_ctx.terminal_error = HarnessError(f"model {type(self.model).__name__} does not support approval resume")
+                        raise run_ctx.terminal_error
+                    session = self._resume_approval_session(approval_pause.provider_state)
+                    first_turn_kind = "approval_resume"
+                elif resume_from is None:
                     session = None
                     first_turn_kind = "start"
                 else:
@@ -346,7 +469,7 @@ class Harness:
                         raise run_ctx.terminal_error
                     session = cast(ResumableModel, self.model).resume_session(resume_from)
                     first_turn_kind = "resume"
-                conversation_id = str(metadata.get("conversation_id")) if metadata and metadata.get("conversation_id") else None
+                conversation_id = str(run_metadata.get("conversation_id")) if run_metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     run_ctx.agent_span = agent_span
                     tool_executor = ToolBatchExecutor(
@@ -357,18 +480,44 @@ class Harness:
                         tool_execution=self.config.tool_execution,
                     )
                     try:
-                        effective_prompt, instructions = await self._prepare_run_start(prompt, run_metadata, run_ctx, agent_span)
-                        structured_output = self._structured_output_request()
-                        active_session, driver, turn, decision = await self._start_or_resume_turn(
-                            first_turn_kind=first_turn_kind,
-                            session=session,
-                            effective_prompt=effective_prompt,
-                            instructions=instructions,
-                            metadata=metadata,
-                            structured_output=structured_output,
-                            run_ctx=run_ctx,
-                            agent_span=agent_span,
+                        effective_prompt, instructions = await self._prepare_run_start(
+                            prompt,
+                            run_metadata,
+                            run_ctx,
+                            agent_span,
+                            skip_user_prompt=approval_pause is not None,
                         )
+                        structured_output = self._structured_output_request()
+                        if first_turn_kind == "approval_resume":
+                            assert approval_pause is not None
+                            assert approval_decision_map is not None
+                            assert session is not None
+                            driver = self._turn_driver(
+                                session=session,
+                                instructions=instructions,
+                                metadata=run_metadata,
+                                structured_output=structured_output,
+                                run_ctx=run_ctx,
+                            )
+                            active_session = session
+                            turn, decision = await self._resume_approval_batch(
+                                approval_pause,
+                                approval_decision_map,
+                                driver,
+                                run_ctx,
+                                tool_executor,
+                            )
+                        else:
+                            active_session, driver, turn, decision = await self._start_or_resume_turn(
+                                first_turn_kind=cast(Literal["start", "resume"], first_turn_kind),
+                                session=session,
+                                effective_prompt=effective_prompt,
+                                instructions=instructions,
+                                metadata=metadata,
+                                structured_output=structured_output,
+                                run_ctx=run_ctx,
+                                agent_span=agent_span,
+                            )
                         while True:
                             run_ctx.responses.append(turn.raw)
                             if decision.kind == "final":
@@ -416,6 +565,12 @@ class Harness:
                             ):
                                 turn, decision = await self._reject_batch_for_background(turn, driver, run_ctx)
                                 continue
+                            approval_calls = self._approval_required_calls(turn.tool_calls)
+                            if approval_calls:
+                                run_ctx.check_tool_limit(len(turn.tool_calls))
+                                run_ctx.usage.tool_calls += len(turn.tool_calls)
+                                cancelled_ids = await run_ctx.cancel_pending_background()
+                                return run_ctx.pause_for_approval(turn, approval_calls, active_session, cancelled_ids)
                             turn, decision = await self._execute_tool_turn(turn, driver, run_ctx, tool_executor)
                     except asyncio.CancelledError as exc:
                         run_ctx.stop_reason = "cancelled"
@@ -455,6 +610,8 @@ class Harness:
         run_metadata: Json,
         run_ctx: Any,
         agent_span: Any,
+        *,
+        skip_user_prompt: bool = False,
     ) -> tuple[str, str]:
         """Fire start hooks and return the effective prompt plus instructions."""
         self.hooks.fire(RunStartContext(
@@ -466,14 +623,16 @@ class Harness:
             max_tool_calls=self.config.max_tool_calls,
         ))
         await self._ensure_mcp_connected()
-        prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
-        self.hooks.fire(prompt_ctx)
-        if prompt_ctx.cancelled:
-            reason = prompt_ctx.cancel_reason or "unspecified"
-            run_ctx.stop_reason = "cancelled_by_hook"
-            run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
-            raise run_ctx.terminal_error
-        effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
+        effective_prompt = prompt
+        if not skip_user_prompt:
+            prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
+            self.hooks.fire(prompt_ctx)
+            if prompt_ctx.cancelled:
+                reason = prompt_ctx.cancel_reason or "unspecified"
+                run_ctx.stop_reason = "cancelled_by_hook"
+                run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
+                raise run_ctx.terminal_error
+            effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
         instructions = structured_instructions(self.system_instructions(), self.output_schema)
         agent_span.for_each(
             lambda span, option: annotate_agent_start(
@@ -532,6 +691,164 @@ class Harness:
         )
         turn, decision = await driver.resume(effective_prompt)
         return session, driver, turn, decision
+
+    def _turn_driver(
+        self,
+        *,
+        session: ModelSession,
+        instructions: str,
+        metadata: Json | None,
+        structured_output: StructuredOutputRequest | None,
+        run_ctx: Any,
+    ) -> Any:
+        """Create a TurnDriver for an already prepared session."""
+        from .runtime import TurnDriver
+
+        return TurnDriver(
+            session=session,
+            run_ctx=run_ctx,
+            harness=self,
+            instructions=instructions,
+            metadata=metadata,
+            structured_output=structured_output,
+        )
+
+    def _resume_approval_session(self, provider_state: Json) -> ModelSession:
+        """Resume a provider session for an approval envelope with approval-specific errors."""
+        try:
+            return cast(ResumableModel, self.model).resume_session(provider_state)
+        except HarnessError as exc:
+            message = str(exc)
+            if message.startswith("resume_from"):
+                message = f"approval state provider_state{message[len('resume_from'):]}"
+            raise HarnessError(message) from exc
+
+    async def _resume_approval_batch(
+        self,
+        approval_pause: ApprovalPause,
+        decisions: dict[str, ApprovalDecision],
+        driver: Any,
+        run_ctx: Any,
+        tool_executor: Any,
+    ) -> tuple[ModelTurn, OutputTurnDecision]:
+        """Execute or reject the paused batch, then continue the model."""
+        self._validate_approval_resume_tools(approval_pause)
+        batch = [
+            ModelToolCall(id=call.id, name=call.name, arguments=call.arguments)
+            for call in approval_pause.batch
+        ]
+        executed: list[tuple[int, ModelToolCall]] = [
+            (index, call)
+            for index, call in enumerate(batch)
+            if call.id not in approval_pause.approval_required_ids or decisions[call.id].approved
+        ]
+        executed_indices = [index for index, _call in executed]
+        executed_calls = [call for _index, call in executed]
+        executed_by_id: dict[str, tuple[Json, ToolOutput, Any]] = {}
+        if executed_calls:
+            recorded, outputs, executions = await tool_executor.execute_batch(executed_calls, tool_indices=executed_indices)
+            run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
+            for call, record, output, execution in zip(executed_calls, recorded, outputs, executions, strict=True):
+                if call.id in approval_pause.approval_required_ids:
+                    record["approval"] = {"approved": True}
+                executed_by_id[call.id] = (record, output, execution)
+            run_ctx.check_tool_retry_limits(executed_calls, executions)
+
+        ordered_records: list[Json] = []
+        ordered_outputs: list[ToolOutput] = []
+        for index, call in enumerate(batch):
+            decision = decisions.get(call.id)
+            if decision is not None and not decision.approved:
+                record, output = self._reject_approval_call(call, index, decision, run_ctx)
+                ordered_records.append(record)
+                ordered_outputs.append(output)
+                continue
+            record, output, _execution = executed_by_id[call.id]
+            ordered_records.append(record)
+            ordered_outputs.append(output)
+        run_ctx.record_tool_batch(ordered_records)
+        notices = self._approval_resume_notices(approval_pause.cancelled_background_task_ids)
+        return await driver.send_tool_outputs(ordered_outputs, kind="approval_resume", extra_notices=notices)
+
+    def _reject_approval_call(
+        self,
+        call: ModelToolCall,
+        index: int,
+        decision: ApprovalDecision,
+        run_ctx: Any,
+    ) -> tuple[Json, ToolOutput]:
+        """Create model-visible rejection output without running hooks."""
+        message = "Tool call was rejected by a human reviewer."
+        if decision.reason:
+            message = f"{message}\nReason: {decision.reason}"
+        output = ToolResult(False, message, {"error_type": "ApprovalRejected"}).as_json()
+        start = time.perf_counter()
+        with run_ctx.tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
+            run_ctx.emit(ToolCallStartedEvent(
+                **run_ctx.stream_base(),
+                call_id=call.id,
+                tool_name=call.name,
+                tool_index=index,
+                arguments=call.arguments,
+            ))
+            span.set_attribute_where(
+                lambda option: option.capture_tool_results,
+                "gen_ai.tool.call.result",
+                serialize_attribute_value(output),
+            )
+            span.set_error("Tool call rejected by human reviewer", "ApprovalRejected")
+            run_ctx.emit(ToolCallCompletedEvent(
+                **run_ctx.stream_base(),
+                call_id=call.id,
+                tool_name=call.name,
+                ok=False,
+                error_type="ApprovalRejected",
+                message=message,
+                duration_ms=(time.perf_counter() - start) * 1000,
+                output=output,
+            ))
+        return (
+            {
+                "call": {"id": call.id, "name": call.name, "arguments": call.arguments},
+                "output": output,
+                "approval": {"approved": False, "reason": decision.reason},
+            },
+            ToolOutput(call.id, output),
+        )
+
+    def _approval_resume_notices(self, cancelled_ids: list[str]) -> list[ModelNotice]:
+        """Return model notices for background tasks cancelled by an approval pause."""
+        if not cancelled_ids:
+            return []
+        joined = ", ".join(cancelled_ids)
+        plural = "task was" if len(cancelled_ids) == 1 else "tasks were"
+        return [ModelNotice(
+            kind="background_cancelled",
+            content=f"Background {plural} cancelled when the run paused for human approval: {joined}.",
+        )]
+
+    def _validate_approval_resume_tools(self, approval_pause: ApprovalPause) -> None:
+        """Require approval-required tools to still be configured before execution."""
+        current_required_ids: set[str] = set()
+        for call in approval_pause.batch:
+            spec = self._tool_map.get(str(call.name))
+            if call.id in approval_pause.approval_required_ids and spec is None:
+                raise HarnessError(f"approval-required tool {call.name!r} is not configured")
+            if spec is not None and spec.requires_approval:
+                current_required_ids.add(call.id)
+        if current_required_ids != set(approval_pause.approval_required_ids):
+            raise HarnessError("approval state approval_required_ids do not match configured approval-required tools")
+
+    def _approval_required_calls(self, calls: list[ModelToolCall]) -> list[ModelToolCall]:
+        """Return approval-required calls from a model batch."""
+        return [
+            call for call in calls
+            if (spec := self._tool_map.get(str(call.name))) is not None and spec.requires_approval
+        ]
+
+    def _pending_approval_record(self, call: ModelToolCall) -> PendingApproval:
+        """Return the host-facing pending approval shape for one call."""
+        return PendingApproval(call_id=call.id, tool_name=call.name, arguments=call.arguments)
 
     async def _execute_tool_turn(
         self,
@@ -715,6 +1032,10 @@ class Harness:
         """Reject background policies incompatible with this harness configuration."""
         if self.config.tool_execution == "sequential" and tool.background == "always":
             raise ValueError("background='always' tools cannot be used with tool_execution='sequential'")
+        if tool.requires_approval and not self._model_supports_approval_resume():
+            raise ValueError("approval-required tools require a resumable model")
+        if tool.requires_approval and self._is_child_run:
+            raise ValueError("approval-required tools are not supported inside subagents")
 
     def _validate_skill_tool_selection(self) -> None:
         """Require explicit skill tool selection when skills are explicitly configured."""
@@ -728,6 +1049,10 @@ class Harness:
         """Validate hook filters against registered subagents."""
         agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in self.config.subagents)}
         self.hooks.validate_filters(agent_names=agent_names)
+
+    def _model_supports_approval_resume(self) -> bool:
+        """Return whether this harness model can resume provider sessions."""
+        return hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
 
     def _resolve_mcp_server_ids(self) -> None:
         """Assign stable suffixes to duplicate MCP server ids."""

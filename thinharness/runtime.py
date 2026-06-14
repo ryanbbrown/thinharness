@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from .approvals import build_approval_envelope
 from .events import (
     HarnessStreamEvent,
     LimitWarningEvent,
@@ -94,8 +95,9 @@ class TurnDriver:
         self,
         outputs: list[ToolOutput],
         *,
-        kind: Literal["tool_outputs", "output_retry_tool", "background_completion"] = "tool_outputs",
+        kind: Literal["tool_outputs", "approval_resume", "output_retry_tool", "background_completion"] = "tool_outputs",
         output_retry: bool = False,
+        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue the model run with tool outputs."""
         return await self._run_model_request(
@@ -105,7 +107,7 @@ class TurnDriver:
                 tools=self._harness.tool_schemas(),
                 metadata=self._metadata,
                 structured_output=self._structured_output,
-                notices=notices,
+                notices=[*notices, *(extra_notices or [])],
             ),
             trace_snapshot=ModelTraceSnapshot(
                 kind=kind,
@@ -113,6 +115,7 @@ class TurnDriver:
                 structured_output=self._output_mode,
             ),
             output_retry=output_retry,
+            extra_notices=extra_notices,
         )
 
     async def send_user_message(
@@ -142,17 +145,20 @@ class TurnDriver:
         *,
         trace_snapshot: ModelTraceSnapshot,
         output_retry: bool = False,
+        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Delegate to RunContext model advancement."""
         return await self._run_ctx.advance_model(
             request,
             trace_snapshot=trace_snapshot,
             output_retry=output_retry,
+            extra_notices=extra_notices,
         )
 
 
 def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
     """Return the once-per-run key for a model notice."""
+    assert notice.kind == "limit_warning"
     assert notice.limit_kind is not None and notice.remaining is not None
     return (notice.kind, notice.limit_kind, notice.remaining)
 
@@ -366,6 +372,7 @@ class RunContext:
         *,
         trace_snapshot: ModelTraceSnapshot,
         output_retry: bool = False,
+        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Run one provider request with limit, usage, and tracing ceremony."""
         assert self.tracer is not None
@@ -376,13 +383,16 @@ class RunContext:
             self.emitted_limit_warnings,
             final_result_tool_available=self.harness.output_schema is not None and self.harness.output_schema.mode == "tool",
         )
+        all_notices = [*notices, *(extra_notices or [])]
         self.emit(ModelRequestStartedEvent(
             **self.stream_base(),
             request_kind=trace_snapshot.kind,
             model=self.harness.model_ref,
             provider=getattr(self.harness.model.provider, "name", None),
         ))
-        for notice in notices:
+        for notice in all_notices:
+            if notice.kind != "limit_warning":
+                continue
             assert notice.limit_kind is not None and notice.remaining is not None
             self.emit(LimitWarningEvent(
                 **self.stream_base(),
@@ -393,7 +403,7 @@ class RunContext:
         if output_retry:
             self.usage.output_retries += 1
         with self.tracer.model(self.harness.model) as model_span:
-            snapshot = trace_snapshot.with_notices(notices)
+            snapshot = trace_snapshot.with_notices(all_notices)
             model_span.for_each(
                 lambda span, option: annotate_model_request(
                     span,
@@ -441,6 +451,60 @@ class RunContext:
             usage=self.usage,
             stop_reason=self.stop_reason,
         )
+
+    async def cancel_pending_background(self) -> list[str]:
+        """Cancel and record pending background tasks, returning their ids."""
+        assert self.background is not None
+        cancelled_ids: list[str] = []
+        for completion in await self.background.cancel_and_drain():
+            self.record_background_completion(completion)
+            cancelled_ids.append(completion.task_id)
+        return cancelled_ids
+
+    def pause_for_approval(
+        self,
+        turn: ModelTurn,
+        approval_calls: list[Any],
+        active_session: ModelSession,
+        cancelled_background_task_ids: list[str],
+    ) -> HarnessResult:
+        """Build and emit the terminal approval pause result."""
+        assert self.agent_span is not None
+        self.stop_reason = "approval_required"
+        provider_state = active_session.dump_state()
+        if provider_state is None:
+            raise HarnessError("approval pause requires session resume state")
+        approval_ids = [call.id for call in approval_calls]
+        envelope = build_approval_envelope(
+            provider_state=provider_state,
+            batch=turn.tool_calls,
+            approval_required_ids=approval_ids,
+            cancelled_background_task_ids=cancelled_background_task_ids,
+            usage=self.usage,
+            responses=self.responses,
+            tool_call_records=self.tool_call_records,
+            emitted_limit_warnings=self.emitted_limit_warnings,
+            metadata=self.metadata,
+        )
+        self.result = self.build_terminal_result(turn.text)
+        self.result.resume_state = envelope
+        self.result.pending_approvals = [self.harness._pending_approval_record(call) for call in approval_calls]
+        self.agent_span.set_attributes({
+            "thinharness.approval.paused": True,
+            "thinharness.approval.pending_call_ids": approval_ids,
+        })
+        self.agent_span.for_each(
+            lambda span, option: annotate_agent_result(
+                span,
+                result=self.result,
+                output_schema=self.harness.output_schema,
+                capture_messages=option.capture_messages,
+                top_level=not self.harness._is_child_run,
+            )
+        )
+        self.fire_run_end_once()
+        self.emit(RunCompletedEvent(**self.stream_base(), result=self.result))
+        return self.result
 
     def attach_resume_state(self, session: ModelSession, *, require_dump_state: bool) -> None:
         """Attach final resume state before run_end hooks observe the result."""

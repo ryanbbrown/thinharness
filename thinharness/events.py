@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
-from .types import HarnessResult, Json, StopReason
+from .types import ApprovalDecision, HarnessResult, Json, StopReason
 
 StreamEventKind = Literal[
     "run_started",
@@ -21,6 +21,7 @@ StreamEventKind = Literal[
     "background_task_completed",
     "model_retry",
     "limit_warning",
+    "approval_resumed",
     "run_completed",
     "run_failed",
 ]
@@ -67,11 +68,19 @@ class RunStartedEvent(StreamEvent):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ApprovalResumedEvent(StreamEvent):
+    """An approval pause has resumed with host decisions."""
+
+    kind: Literal["approval_resumed"] = "approval_resumed"
+    decisions: tuple[ApprovalDecision, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModelRequestStartedEvent(StreamEvent):
     """A provider request is about to be made."""
 
     kind: Literal["model_request_started"] = "model_request_started"
-    request_kind: Literal["start", "resume", "tool_outputs", "correction", "output_retry_tool", "background_completion"] = "start"
+    request_kind: Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool", "background_completion"] = "start"
     model: str = ""
     provider: str | None = None
 
@@ -186,6 +195,7 @@ HarnessStreamEvent = (
     | BackgroundTaskCompletedEvent
     | ModelRetryEvent
     | LimitWarningEvent
+    | ApprovalResumedEvent
     | RunCompletedEvent
     | RunFailedEvent
 )

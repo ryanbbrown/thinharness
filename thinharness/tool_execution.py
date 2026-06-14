@@ -315,16 +315,21 @@ class ToolBatchExecutor:
     async def execute_batch(
         self,
         calls: list[ModelToolCall],
+        *,
+        tool_indices: list[int] | None = None,
     ) -> tuple[list[Json], list[ToolOutput], list[ToolCallExecution]]:
         """Run one batch of model tool calls; preserve model order in returned outputs."""
+        indices = tool_indices or list(range(len(calls)))
+        if len(indices) != len(calls):
+            raise ValueError("tool_indices length must match calls length")
         if self._should_run_sequentially(calls):
             results = []
-            for index, call in enumerate(calls):
+            for index, call in zip(indices, calls, strict=True):
                 execution = await self.call_executor.execute_one(call, index)
                 self._start_background(execution)
                 results.append(execution)
         else:
-            results = await self._run_calls_concurrently(calls)
+            results = await self._run_calls_concurrently(calls, indices)
         records = []
         for call, execution in zip(calls, results, strict=True):
             record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": execution.output}
@@ -352,7 +357,7 @@ class ToolBatchExecutor:
             return True
         return any((spec := self.tool_map.get(str(call.name))) is not None and spec.sequential for call in calls)
 
-    async def _run_calls_concurrently(self, calls: list[ModelToolCall]) -> list[ToolCallExecution]:
+    async def _run_calls_concurrently(self, calls: list[ModelToolCall], indices: list[int]) -> list[ToolCallExecution]:
         """Execute calls concurrently while preserving model request order."""
         sem = asyncio.Semaphore(MAX_PARALLEL_TOOL_WORKERS)
 
@@ -363,7 +368,7 @@ class ToolBatchExecutor:
                 self._start_background(execution)
                 return execution
 
-        tasks = [asyncio.create_task(invoke(index, call)) for index, call in enumerate(calls)]
+        tasks = [asyncio.create_task(invoke(index, call)) for index, call in zip(indices, calls, strict=True)]
         task_index = {task: index for index, task in enumerate(tasks)}
         results: list[ToolCallExecution | None] = [None] * len(tasks)
         pending = set(tasks)

@@ -5,6 +5,7 @@ from importlib.metadata import version as _metadata_version
 
 from .core import Harness, HarnessConfig
 from .events import (
+    ApprovalResumedEvent,
     BackgroundTaskCompletedEvent,
     BackgroundTaskStartedEvent,
     HarnessStream,
@@ -87,7 +88,7 @@ from .tools import (
     create_parallel_llm_tool,
 )
 from .tracing import LocalTracing, OtlpTracing, TracingOptions, create_local_tracing, create_local_tracing_options, create_otlp_tracing
-from .types import HarnessError, HarnessResult, RunUsage, UnexpectedModelBehavior
+from .types import ApprovalDecision, HarnessError, HarnessResult, PendingApproval, RunUsage, UnexpectedModelBehavior
 
 try:
     __version__ = _metadata_version("thinharness")
@@ -107,12 +108,15 @@ __all__ = [
     "HarnessStreamEvent",
     "HarnessError",
     "HarnessResult",
+    "PendingApproval",
+    "ApprovalDecision",
     "RunUsage",
     "StreamEvent",
     "StreamEventKind",
     "StreamOptions",
     "StreamToolCall",
     "RunStartedEvent",
+    "ApprovalResumedEvent",
     "ModelRequestStartedEvent",
     "ModelMessageEvent",
     "ToolCallStartedEvent",

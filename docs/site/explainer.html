@@ -51,11 +51,11 @@
       <h2>Snapshot</h2>
       <div class="grid cols-3">
         <div class="panel kpi">
-          <strong>21</strong>
+          <strong>22</strong>
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>7,084</strong>
+          <strong>7,718</strong>
           <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
         </div>
         <div class="panel kpi">
@@ -83,7 +83,7 @@
     <section id="loop">
       <h2>Run Loop</h2>
       <figure class="diagram-frame">
-        <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, retries, and HarnessResult construction.">
+        <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, approval pause, retries, and HarnessResult construction.">
         <figcaption>
           Background-capable tools are omitted from the diagram for clarity. They still enter through the tool-execution path: a background start notice is returned immediately, and the completion is delivered later as provider input before the run can finish.
         </figcaption>
@@ -97,6 +97,7 @@
             <li><code>RunContext.advance_model()</code> makes one provider call with limit checks, notices, usage accounting, and model tracing around it.</li>
             <li>The provider adapter returns a <code>ModelTurn</code>, ThinHarness's common Python object for model text, tool calls, and raw provider JSON.</li>
             <li><code>resolve_turn_output()</code> reads that turn against <code>OutputSchema</code> and chooses the next action: final result, run tools, structured-output retry, or failure.</li>
+            <li>If any requested tool requires approval, the harness pauses before the batch runs and returns <code>stop_reason="approval_required"</code> with pending approval records and an approval resume envelope.</li>
             <li>If the decision is <code>continue</code>, <code>ToolBatchExecutor</code> runs ordinary tool calls and sends ordered <code>ToolOutput</code> values back through <code>continue_with_tools()</code>.</li>
             <li>If the decision is <code>final</code>, <code>RunContext.finalize()</code> builds <code>HarnessResult</code>, attaches resume state when valid, annotates tracing, and fires <code>run_end</code>.</li>
           </ol>
@@ -222,7 +223,7 @@
         Every model-callable tool is represented by <code>ToolSpec</code>, a dataclass that packages
         the tool definition sent to the model with the Python callable that executes it. A spec includes
         a name, description, JSON schema or Pydantic argument model, handler callable, sequential flag,
-        metadata, and optional retry budget.
+        metadata, optional retry budget, background mode, and approval flag.
         The result sent back to the provider is always a JSON envelope with <code>ok</code>, <code>content</code>, and <code>metadata</code>.
       </p>
 
@@ -288,7 +289,7 @@
               <td>Custom</td>
               <td>Caller-provided <code>ToolSpec</code></td>
               <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
-              <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>.</td>
+              <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>; human approval is opt-in through <code>requires_approval=True</code>.</td>
             </tr>
           </tbody>
         </table>
@@ -636,7 +637,51 @@
       </details>
 
       <details>
-        <summary>3. Tool Execution Internals: from model tool call to provider follow-up</summary>
+        <summary>3. Approval Pause Internals: from pending tool call to resumed batch</summary>
+        <div class="inside">
+          <p>
+            Approval-required tools are a loop primitive rather than a special model output format. A custom
+            <code>ToolSpec</code> can set <code>requires_approval=True</code>. When a model turn asks for any such
+            tool, <code>core.py</code> pauses before the batch reaches <code>ToolBatchExecutor</code>, so neither the
+            approval-required call nor any normal sibling call has side effects yet.
+          </p>
+          <table>
+            <thead><tr><th>Piece</th><th>Role in approval flow</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>approvals.py</code></td>
+                <td>Builds and validates the <code>approval_pause</code> envelope, restores usage/history, and validates that host decisions exactly cover approval-required call ids.</td>
+              </tr>
+              <tr>
+                <td><code>RunContext.pause_for_approval()</code></td>
+                <td>Captures provider resume state, pending tool batch, usage, responses, tool records, emitted limit-warning keys, metadata, and any background-task cancellations before emitting <code>RunCompletedEvent</code>.</td>
+              </tr>
+              <tr>
+                <td><code>Harness.resume_approvals()</code></td>
+                <td>Restores the logical run, resumes the provider session, emits <code>ApprovalResumedEvent</code>, validates the approval-required tools still exist, and processes the paused batch.</td>
+              </tr>
+              <tr>
+                <td><code>ToolBatchExecutor</code></td>
+                <td>Runs approved calls and normal sibling calls through the standard hook, tracing, retry, background, and output-ordering machinery.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Rejected calls bypass tool hooks and do not execute. They still produce ordered tool outputs for the provider:
+            a failed <code>ToolResult</code> with <code>error_type="ApprovalRejected"</code>. From the model's perspective,
+            it requested tools and then received tool results on the next turn; it never sees the host pause itself.
+          </p>
+          <p>
+            The paused batch counts against <code>usage.tool_calls</code> at pause time and is not counted again during
+            resume. The post-resume result contains the whole logical run history, not only the second half of the run.
+            This is why approval envelopes are larger than plain provider resume state: they carry prior responses and
+            accounting as well as the provider checkpoint.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>4. Tool Execution Internals: from model tool call to provider follow-up</summary>
         <div class="inside">
           <p>
             A provider returns one <code>ModelTurn</code>. That object has <code>text</code>, a <code>tool_calls</code> list, and raw
@@ -706,7 +751,7 @@
       </details>
 
       <details>
-        <summary>4. Provider and Session Handoff: reusable models, fresh sessions, common turns</summary>
+        <summary>5. Provider and Session Handoff: reusable models, fresh sessions, common turns</summary>
         <div class="inside">
           <p>
             Provider adapters are deliberately layered. Provider transport classes own auth, base URL, timeout, and HTTP
@@ -757,7 +802,7 @@
       </details>
 
       <details>
-        <summary>5. Structured Output: one resolver, several delivery strategies</summary>
+        <summary>6. Structured Output: one resolver, several delivery strategies</summary>
         <div class="inside">
           <p>
             Structured output is not bolted onto every provider separately. The harness builds an <code>OutputSchema</code>
@@ -810,7 +855,7 @@
       </details>
 
       <details>
-        <summary>6. State, limits, retry budgets, and resume</summary>
+        <summary>7. State, limits, retry budgets, and resume</summary>
         <div class="inside">
           <p>
             <code>Harness</code> is reusable setup; <code>RunContext</code> is one invocation's state. That distinction is
@@ -854,6 +899,11 @@
                 <td>Provider-specific resume state copied into <code>HarnessResult.resume_state</code> while building the final result.</td>
                 <td>OpenAI stores a <code>previous_response_id</code>; Anthropic and OpenRouter store their message transcript plus provider metadata. Callers can store and pass it back, but should not edit or construct it.</td>
               </tr>
+              <tr>
+                <td>Approval pause state</td>
+                <td>Harness-level <code>approval_pause</code> envelope copied into <code>HarnessResult.resume_state</code> when <code>stop_reason="approval_required"</code>.</td>
+                <td>Wraps provider state plus pending batch, run history, usage, emitted limit-warning keys, metadata, and background cancellations. It must be resumed with <code>resume_approvals()</code>, not <code>resume_from</code>.</td>
+              </tr>
             </tbody>
           </table>
           <p>
@@ -866,7 +916,7 @@
       </details>
 
       <details>
-        <summary>7. Extras Internals: JSONL search, skills, subagents, MCP, and parallel LLM</summary>
+        <summary>8. Extras Internals: JSONL search, skills, subagents, MCP, and parallel LLM</summary>
         <div class="inside">
           <p>
             Extras are specialized capabilities that an application can ignore unless it uses that feature. They still

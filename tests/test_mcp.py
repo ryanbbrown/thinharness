@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from fakes import FakeTracer, MultiCallClient, ScriptedModel, ScriptedSession, _
 from pydantic import BaseModel
 
 from thinharness import (
+    ApprovalDecision,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -700,6 +702,52 @@ async def test_resume_with_mcp_reuses_connection_and_keeps_state_clean(tmp_path)
     assert "remote" not in str(first.resume_state)
     assert "fake" not in str(first.resume_state)
     assert server.list_calls == 1
+
+
+async def test_approval_resume_connects_mcp_before_validating_and_preserves_unknown_sibling(tmp_path) -> None:
+    """Approval resume waits for MCP discovery and keeps unknown sibling calls model-visible."""
+    server = FakeMCPServer({"remote": _schema()})
+    approval_called: list[Json] = []
+    first_session = SequenceSession(
+        ModelTurn(
+            tool_calls=[
+                ModelToolCall(id="call_approval", name="deploy", arguments='{"env":"prod"}'),
+                ModelToolCall(id="call_remote", name="remote", arguments='{"value":"ok"}'),
+                ModelToolCall(id="call_unknown", name="missing", arguments="{}"),
+            ],
+            raw={"id": "approval"},
+        )
+    )
+    resumed_session = SequenceSession(ModelTurn(raw={"unused": True}), ModelTurn(text="done", raw={"id": "done"}))
+    model = ScriptedModel([first_session, resumed_session])
+    approval_tool = ToolSpec(
+        "deploy",
+        "Deploy something.",
+        {"type": "object", "properties": {"env": {"type": "string"}}, "required": ["env"]},
+        lambda args: approval_called.append(args) or "deployed",
+        requires_approval=True,
+    )
+    paused = await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        model=model,
+        tools=[approval_tool],
+    ).run("go")
+
+    result = await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        model=model,
+        tools=[approval_tool],
+    ).resume_approvals(
+        paused.resume_state,
+        [ApprovalDecision(call_id="call_approval", approved=True)],
+    )
+
+    assert result.text == "done"
+    assert approval_called == [{"env": "prod"}]
+    assert server.call_records == [("remote", {"value": "ok"})]
+    outputs = {output.call_id: json.loads(output.output) for output in resumed_session.tool_outputs[0]}
+    assert outputs["call_remote"]["content"] == "remote:{'value': 'ok'}"
+    assert outputs["call_unknown"] == {"ok": False, "content": "unknown tool missing", "metadata": {"tool": "missing"}}
 
 
 async def test_trace_attribution_survives_after_tool_hook(tmp_path) -> None:
