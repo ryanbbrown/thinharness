@@ -26,7 +26,7 @@
       <div class="eyebrow">// codebase guide</div>
       <h1>A mental model for the whole repository</h1>
       <p class="lede">
-        ThinHarness is a small SDK-only agent harness. The same loop runs no matter which
+        ThinHarness is a focused agent harness with a small runtime surface. The same loop runs no matter which
         provider adapter is used: create a model session, ask the model for a turn, convert
         provider-specific responses into ThinHarness objects, execute local tools, send tool
         results back, and stop when the final-answer code says the run is complete.
@@ -55,8 +55,8 @@
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>7,791</strong>
-          <span>README-stated framework LOC, intentionally small enough to audit and fork.</span>
+          <strong>7,892</strong>
+          <span>README-stated framework LOC, intentionally small enough to inspect, adapt, and fork.</span>
         </div>
         <div class="panel kpi">
           <strong>8</strong>
@@ -516,7 +516,7 @@
     <section id="reading-path">
       <h2>Recommended Reading Path</h2>
       <ol>
-        <li><code>README.md</code> for motivation and constraints: small, filesystem-focused, provider-agnostic, no shell by default.</li>
+        <li><code>README.md</code> for motivation and constraints: reusable loop primitives, small runtime surface, provider-agnostic, no shell by default.</li>
         <li><code>thinharness/tools/base.py</code> to understand <code>ToolSpec</code>, <code>ToolResult</code>, argument validation, retry envelopes, and path policy.</li>
         <li><code>thinharness/providers.py</code> through the common dataclasses/protocols, then skim each provider session.</li>
         <li><code>thinharness/output.py</code> so final-answer decisions make sense before reading the loop.</li>

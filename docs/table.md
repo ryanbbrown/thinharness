@@ -12,21 +12,21 @@ The README is the canonical rendered table. The raw README source comments keep
 the command beside each row. To reproduce locally, clone each upstream repo at
 the pinned commit and run the command shown below.
 
-Measured 2026-05-16 for upstream libraries. ThinHarness was remeasured from the
-current working tree on 2026-06-10.
+Measured 2026-06-15 for upstream libraries. ThinHarness was remeasured from the
+current working tree on 2026-06-15.
 
 ## LOC Commands
 
 - **ThinHarness** — `tokei thinharness/ -t Python`
-- **Claude Agent SDK** — `tokei src/claude_agent_sdk/ -t Python --exclude testing` at `anthropics/claude-agent-sdk-python @ c352a50`
-- **smolagents** — `tokei src/smolagents/ -t Python --exclude cli.py --exclude gradio_ui.py --exclude vision_web_browser.py` at `huggingface/smolagents @ 025b6ad`
-- **deepagents** — `tokei libs/deepagents/deepagents/ -t Python` at `langchain-ai/deepagents @ 7465d77`
-- **AWS Strands** — `tokei src/strands/ -t Python --exclude experimental --exclude vended_plugins --exclude multiagent/a2a` at `strands-agents/sdk-python @ 1232230`
-- **Microsoft Agent Framework** — `tokei python/packages/core/agent_framework/ -t Python --exclude _evaluation.py --exclude a2a --exclude ag_ui --exclude chatkit --exclude declarative --exclude devui --exclude hyperlight --exclude lab --exclude orchestrations --exclude mem0 --exclude redis --exclude microsoft` at `microsoft/agent-framework @ a60e541`
-- **Pydantic AI** — `tokei pydantic_ai_slim/pydantic_ai/ -t Python --exclude _a2a.py --exclude ag_ui.py --exclude ui --exclude durable_exec --exclude embeddings --exclude ext` at `pydantic/pydantic-ai @ ac684b2`
-- **Google ADK** — `tokei src/google/adk/ -t Python --exclude a2a --exclude apps --exclude cli --exclude cloud --exclude code_executors --exclude environment --exclude evaluation --exclude examples --exclude integrations --exclude optimization --exclude platform` at `google/adk-python @ bd062ec`
-- **OpenAI Agents SDK** — `tokei src/agents/ -t Python --exclude realtime --exclude voice --exclude extensions/experimental --exclude extensions/visualization.py` at `openai/openai-agents-python @ 4bd459e`
-- **Agno** — `tokei libs/agno/agno/{agent,agents,approval,compression,factory,guardrails,hooks,memory,models,reasoning,registry,run,session,skills,team,tools,tracing,utils} -t Python` at `agno-agi/agno @ bb7ddb0`
+- **Claude Agent SDK** — `tokei src/claude_agent_sdk/ -t Python --exclude testing` at `anthropics/claude-agent-sdk-python @ 634c2f6`
+- **smolagents** — `tokei src/smolagents/ -t Python --exclude cli.py --exclude gradio_ui.py --exclude vision_web_browser.py` at `huggingface/smolagents @ e8b988d`
+- **deepagents** — `tokei libs/deepagents/deepagents/ -t Python` at `langchain-ai/deepagents @ 5975503`
+- **AWS Strands** — `tokei strands-py/src/strands/ -t Python --exclude experimental --exclude vended_plugins --exclude multiagent/a2a` at `strands-agents/sdk-python @ a92502f`
+- **Microsoft Agent Framework** — `tokei python/packages/core/agent_framework/ -t Python --exclude _evaluation.py --exclude a2a --exclude ag_ui --exclude chatkit --exclude declarative --exclude devui --exclude hyperlight --exclude lab --exclude orchestrations --exclude mem0 --exclude redis --exclude microsoft` at `microsoft/agent-framework @ ed4ff18`
+- **Pydantic AI** — `tokei pydantic_ai_slim/pydantic_ai/ -t Python --exclude _a2a.py --exclude ag_ui.py --exclude ui --exclude durable_exec --exclude embeddings --exclude ext` at `pydantic/pydantic-ai @ fabeacc`
+- **Google ADK** — `tokei src/google/adk/ -t Python --exclude a2a --exclude apps --exclude cli --exclude cloud --exclude code_executors --exclude environment --exclude evaluation --exclude examples --exclude integrations --exclude optimization --exclude platform` at `google/adk-python @ 22adbe1`
+- **OpenAI Agents SDK** — `tokei src/agents/ -t Python --exclude realtime --exclude voice --exclude extensions/experimental --exclude extensions/visualization.py` at `openai/openai-agents-python @ c359c20`
+- **Agno** — `tokei libs/agno/agno/{agent,agents,approval,compression,factory,guardrails,hooks,memory,models,reasoning,registry,run,session,skills,team,tools,tracing,utils} -t Python` at `agno-agi/agno @ 5cf1ed7`
 
 Claude Agent SDK also shells out to the Claude Code CLI binary, which is 200k+
 LOC. The table counts the Python SDK package and footnotes that relationship.
@@ -59,4 +59,4 @@ Per-library exclusions:
 - **Pydantic AI** — `_a2a.py`, `ag_ui.py`, `ui/`, `durable_exec/`, `embeddings/`, `ext/` (A2A, UI, durable execution runtime, embedding models, ext).
 - **Google ADK** — `a2a/`, `apps/`, `cli/`, `cloud/`, `code_executors/`, `environment/`, `evaluation/`, `examples/`, `integrations/`, `optimization/`, `platform/`.
 - **OpenAI Agents SDK** — `realtime/`, `voice/`, `extensions/experimental`, `extensions/visualization.py`.
-- **Agno** — `api/`, `client/`, `cloud/`, `db/`, `integrations/`, `knowledge/`, `learn/`, `os/`, `remote/`, `scheduler/`, `vectordb/`, `context/`, `culture/`, plus boundary cases `workflow/` and `eval/`. As shipped, Agno is 254,377 LOC.
+- **Agno** — `api/`, `client/`, `cloud/`, `db/`, `integrations/`, `knowledge/`, `learn/`, `os/`, `remote/`, `scheduler/`, `vectordb/`, `context/`, `culture/`, plus boundary cases `workflow/` and `eval/`. As shipped, Agno is 262,687 LOC.

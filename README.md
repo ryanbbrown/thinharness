@@ -6,7 +6,7 @@
   <br/>
   A minimal, opinionated agent harness &mdash;
   <br/>
-  focused scope, readable core, easy to fork.
+  focused scope, straightforward code, easy to fork.
   <br/><br/>
 </p>
 
@@ -20,11 +20,13 @@
 
 ## Why this exists
 
-Filesystem-based agent harnesses are simple but powerful: easily auditable, flexible, and they work just as well for non-coding business tasks like research over a corpus, workflow automation, or multi-step analysis. But the harnesses that provide filesystem primitives are either coding agents (Claude Agent SDK) or are massive and highly abstracted (deepagents, Agno). Even if you don't want filesystem tools, the general-purpose agent harness libraries are missing features (see table below) — or large enough that it's a pain when you (inevitably) need to customize.
+Production agents rarely stop at framework configuration. Things like orchestration, permissions, user/session storage, and deployment become specific to the application and its users.
 
-So I built one. The core agent loop isn't that complicated. Provider call, parse tool calls, run them, feed results back, repeat. ThinHarness is **7,791 LOC** across 22 Python files. The whole thing. Small enough to actually read. You can audit it. You can fork it without inheriting a fork-maintenance problem, because there isn't much there to drift.
+ThinHarness exists for the gap between building the agent loop yourself and adopting a large agent runtime where the loop comes bundled with assumptions you don’t need and can’t easily change.
 
-ThinHarness is for purpose-built agents: compliance review, support triage, web research, workflow automation, and any other agent where the developer defines the task, tools, context, and output contract. The goal is usually bounded flexibility: enough room for the model to plan, search, and adapt, with enough structure to make the agent reliable in production. It is not designed for interactive agents that aim to handle every possible task, like Claude Code or OpenClaw.
+It owns a focused set of agent-loop primitives that generalize well and are tedious to rebuild, leaving the rest of the application stack for you to own.
+
+I started building ThinHarness after running into this gap in practice. Filesystem-enabled agents are simple but powerful, yet most frameworks don't include them out of the box, and the ones that do are among the largest and heaviest options (Claude Code -> Claude Agent SDK, LangChain -> deepagents, Agno). I usually needed only a small slice of the functionality, but that slice came with coupled assumptions that didn't match my application. Making it fit meant writing enough wrappers, adapters, and fixes that I ended up owning framework-shaped code anyway.
 
 <!--
   LOC measurement scope: strict framework-only. Each row strips clearly
@@ -33,7 +35,7 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
   tools, A2A/declarative wire protocols, code-executor backends. Provider
   implementations stay IN (they're part of what you import to use the library).
   The exact tokei command + upstream commit hash for each row is in an HTML
-  comment above the row, so the number is reproducible. Measured 2026-05-16
+  comment above the row, so the number is reproducible. Measured 2026-06-15
   against the commit pinned in each row's comment.
 -->
 
@@ -53,10 +55,10 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-14 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-15 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,791</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,892</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -64,13 +66,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
     </tr>
-    <!-- LOC: tokei src/claude_agent_sdk/ -t Python --exclude testing  ·  anthropics/claude-agent-sdk-python @ c352a50 -->
+    <!-- LOC: tokei src/claude_agent_sdk/ -t Python --exclude testing  ·  anthropics/claude-agent-sdk-python @ 634c2f6 -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Claude&nbsp;Agent&nbsp;SDK<sup>3</sup>
       </td>
-      <td align="right" bgcolor="#ffffff">8,202</td>
+      <td align="right" bgcolor="#ffffff">8,263</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
@@ -78,13 +80,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">⚠️</td>
     </tr>
-    <!-- LOC: tokei src/smolagents/ -t Python --exclude cli.py --exclude gradio_ui.py --exclude vision_web_browser.py  ·  huggingface/smolagents @ 025b6ad -->
+    <!-- LOC: tokei src/smolagents/ -t Python --exclude cli.py --exclude gradio_ui.py --exclude vision_web_browser.py  ·  huggingface/smolagents @ e8b988d -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/huggingface.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;smolagents
       </td>
-      <td align="right" bgcolor="#ffffff">10,091</td>
+      <td align="right" bgcolor="#ffffff">9,840</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -92,20 +94,20 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei libs/deepagents/deepagents/ -t Python  ·  langchain-ai/deepagents @ 7465d77 -->
+    <!-- LOC: tokei libs/deepagents/deepagents/ -t Python  ·  langchain-ai/deepagents @ 5975503 -->
     <!-- Substrate (see footnote 4): deepagents is a thin wrapper over LangChain/LangGraph.
-         Effective import surface ≈105k LOC, measured with the same strict filter as the rest of the table:
-           tokei libs/langgraph/langgraph/ libs/prebuilt/langgraph/ -t Python  ·  langchain-ai/langgraph @ 076e2a3  =>  26,144
-           tokei libs/core/langchain_core/ -t Python --exclude document_loaders --exclude documents --exclude embeddings --exclude indexing --exclude retrievers.py --exclude vectorstores --exclude cross_encoders.py  ·  langchain-ai/langchain @ 73d4fd9  =>  54,992
-           tokei libs/langchain_v1/langchain/ -t Python --exclude embeddings  ·  langchain-ai/langchain @ 73d4fd9  =>  ~9,000
-           deepagents itself: 15,369
+         Effective import surface ≈111k LOC, measured with the same strict filter as the rest of the table:
+           tokei libs/langgraph/langgraph/ libs/prebuilt/langgraph/ -t Python  ·  langchain-ai/langgraph @ 9732084  =>  26,987
+           tokei libs/core/langchain_core/ -t Python --exclude document_loaders --exclude documents --exclude embeddings --exclude indexing --exclude retrievers.py --exclude vectorstores --exclude cross_encoders.py  ·  langchain-ai/langchain @ 62f2559  =>  55,442
+           tokei libs/langchain_v1/langchain/ -t Python --exclude embeddings  ·  langchain-ai/langchain @ 62f2559  =>  11,663
+           deepagents itself: 17,039
     -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;deepagents<sup>4</sup>
       </td>
-      <td align="right" bgcolor="#ffffff">15,369</td>
+      <td align="right" bgcolor="#ffffff">17,039</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
@@ -113,13 +115,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
     </tr>
-    <!-- LOC: tokei src/strands/ -t Python --exclude experimental --exclude vended_plugins --exclude multiagent/a2a  ·  strands-agents/sdk-python @ 1232230 -->
+    <!-- LOC: tokei strands-py/src/strands/ -t Python --exclude experimental --exclude vended_plugins --exclude multiagent/a2a  ·  strands-agents/sdk-python @ a92502f -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/amazonwebservices.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;AWS Strands
       </td>
-      <td align="right" bgcolor="#ffffff">25,494</td>
+      <td align="right" bgcolor="#ffffff">28,157</td>
       <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -127,14 +129,14 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei python/packages/core/agent_framework/ -t Python --exclude _evaluation.py --exclude a2a --exclude ag_ui --exclude chatkit --exclude declarative --exclude devui --exclude hyperlight --exclude lab --exclude orchestrations --exclude mem0 --exclude redis --exclude microsoft  ·  microsoft/agent-framework @ a60e541 -->
+    <!-- LOC: tokei python/packages/core/agent_framework/ -t Python --exclude _evaluation.py --exclude a2a --exclude ag_ui --exclude chatkit --exclude declarative --exclude devui --exclude hyperlight --exclude lab --exclude orchestrations --exclude mem0 --exclude redis --exclude microsoft  ·  microsoft/agent-framework @ ed4ff18 -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/microsoft.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Microsoft<br>
         Agent Framework
       </td>
-      <td align="right" bgcolor="#ffffff">34,751</td>
+      <td align="right" bgcolor="#ffffff">40,514</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -142,13 +144,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei pydantic_ai_slim/pydantic_ai/ -t Python --exclude _a2a.py --exclude ag_ui.py --exclude ui --exclude durable_exec --exclude embeddings --exclude ext  ·  pydantic/pydantic-ai @ ac684b2 -->
+    <!-- LOC: tokei pydantic_ai_slim/pydantic_ai/ -t Python --exclude _a2a.py --exclude ag_ui.py --exclude ui --exclude durable_exec --exclude embeddings --exclude ext  ·  pydantic/pydantic-ai @ fabeacc -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/pydantic.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Pydantic AI
       </td>
-      <td align="right" bgcolor="#ffffff">51,231</td>
+      <td align="right" bgcolor="#ffffff">59,034</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -156,13 +158,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei src/google/adk/ -t Python --exclude a2a --exclude apps --exclude cli --exclude cloud --exclude code_executors --exclude environment --exclude evaluation --exclude examples --exclude integrations --exclude optimization --exclude platform  ·  google/adk-python @ bd062ec -->
+    <!-- LOC: tokei src/google/adk/ -t Python --exclude a2a --exclude apps --exclude cli --exclude cloud --exclude code_executors --exclude environment --exclude evaluation --exclude examples --exclude integrations --exclude optimization --exclude platform  ·  google/adk-python @ 22adbe1 -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/google.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Google ADK
       </td>
-      <td align="right" bgcolor="#ffffff">57,392</td>
+      <td align="right" bgcolor="#ffffff">64,890</td>
       <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -170,13 +172,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei src/agents/ -t Python --exclude realtime --exclude voice --exclude extensions/experimental --exclude extensions/visualization.py  ·  openai/openai-agents-python @ 4bd459e -->
+    <!-- LOC: tokei src/agents/ -t Python --exclude realtime --exclude voice --exclude extensions/experimental --exclude extensions/visualization.py  ·  openai/openai-agents-python @ c359c20 -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/openai.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;OpenAI&nbsp;Agents&nbsp;SDK
       </td>
-      <td align="right" bgcolor="#ffffff">72,410</td>
+      <td align="right" bgcolor="#ffffff">73,139</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -184,13 +186,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
       <td align="center" bgcolor="#ffffff">❌</td>
       <td align="center" bgcolor="#ffffff">✅</td>
     </tr>
-    <!-- LOC: tokei libs/agno/agno/{agent,agents,approval,compression,factory,guardrails,hooks,memory,models,reasoning,registry,run,session,skills,team,tools,tracing,utils} -t Python  ·  agno-agi/agno @ bb7ddb0 -->
+    <!-- LOC: tokei libs/agno/agno/{agent,agents,approval,compression,factory,guardrails,hooks,memory,models,reasoning,registry,run,session,skills,team,tools,tracing,utils} -t Python  ·  agno-agi/agno @ 5cf1ed7 -->
     <tr>
       <td align="left" bgcolor="#ffffff">
         <img src="assets/agno-a.svg" width="20" height="20" align="absmiddle" alt="">
         &nbsp;Agno
       </td>
-      <td align="right" bgcolor="#ffffff">106,852</td>
+      <td align="right" bgcolor="#ffffff">111,539</td>
       <td align="center" bgcolor="#ffffff">⚠️</td>
       <td align="center" bgcolor="#ffffff">✅</td>
       <td align="center" bgcolor="#ffffff">✅</td>
@@ -200,13 +202,13 @@ ThinHarness is for purpose-built agents: compliance review, support triage, web 
     </tr>
   </tbody>
 </table>
-<p align="center"><sub><em>* Table focuses on features that differentiate the harnesses. All listed also support MCP, lifecycle hooks, and multi-turn conversations.</em></sub></p>
+<p align="center"><sub><em>* Table focuses on harness-level features that differentiate the libraries. All listed also support MCP, lifecycle hooks, multi-turn conversations, and human-in-the-loop. It intentionally does not compare framework/platform features like vector DB integrations, hosted deployment, memory/session stores, or broad SaaS connectors.</em></sub></p>
 
 <p align="left">
   <sub>1. LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.<br>
   2. Tool retries: a documented primitive (e.g. Pydantic AI's <code>ModelRetry</code>) that lets tools signal "model passed bad args — retry with this feedback," distinct from generic exception propagation.<br>
   3. Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.<br>
-  4. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</sub>
+  4. deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈111k LOC.</sub>
 </p>
 
 </div>
@@ -237,7 +239,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **No compaction.** Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.
 
-**No deployment layer.** Agents still need serving, auth, storage, retries, and observability in production. ThinHarness does not try to own that stack. A bundled deployment layer might work for some teams, but it will miss plenty of real production shapes; instead of adding more code and more options, ThinHarness stays an SDK and lets the host application own deployment.
+**No deployment layer.** Agents still need serving, auth, durable jobs, user/session storage, and deployment in production. ThinHarness does not try to own that stack. A bundled deployment layer might work for some teams, but it will miss plenty of real production shapes; instead of adding more code and more options, ThinHarness leaves that application stack for you to own.
 
 ## Install
 
@@ -279,12 +281,16 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 
 ## Features
 
-- **Filesystem tools:** `read`, `write`, `edit`, `search`, `list`, `glob`, and `jsonl_search` with root-scoped path policies.
+- **Filesystem tools:** `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
+- **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, and `where` filters.
 - **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
+- **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
+- **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/background/approval flags, and per-tool retry settings.
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
 - **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and retry settings.
+- **Skills:** explicit `skill_read` and `skill_run` tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.
 - **Resume:** clean new-turn continuation through opaque provider session state.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
@@ -292,7 +298,7 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 - **Human approvals:** mark custom tools as approval-required so a run pauses before side effects, returns pending call details plus resume state, then continues after an approve/reject decision.
 - **Event streaming:** async coarse-grained run, model, tool, background, retry, limit, and subagent events for workflow visibility.
 - **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
-- **Limit notices:** near-limit guidance can warn the model before configured request or tool-call budgets are exhausted. Notices are harness-owned model input, not hooks or callbacks; parent and child runs compute them from their own local budgets.
+- **Limits and notices:** configured request, tool-call, output-retry, and tool-retry budgets bound each run; near-limit guidance can warn the model before request or tool-call budgets are exhausted.
 - **Tracing:** local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
 
 ## Tracing

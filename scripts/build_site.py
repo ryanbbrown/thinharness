@@ -215,7 +215,11 @@ def render_about(markdown: str) -> str:
         "Framework-only LOC. Each row strips non-framework code (platform/deployment, voice/realtime, eval suites, "
         "UI/CLI, wire protocols) from the upstream package. Provider implementations stay in."
     )
-    table_summary = "Table focuses on features that differentiate the harnesses. All listed also support MCP, lifecycle hooks, and multi-turn conversations."
+    table_summary = (
+        "Table focuses on harness-level features that differentiate the libraries. All listed also support MCP, "
+        "lifecycle hooks, multi-turn conversations, and human-in-the-loop. It intentionally does not compare "
+        "framework/platform features like vector DB integrations, hosted deployment, memory/session stores, or broad SaaS connectors."
+    )
     retry_footnote = (
         'Tool retries: a documented primitive (e.g. Pydantic AI\'s <code>ModelRetry</code>) that lets tools signal "model passed '
         'bad args — retry with this feedback," distinct from generic exception propagation.'
@@ -253,7 +257,7 @@ def render_about(markdown: str) -> str:
     <div class="doc">
       <div class="doc-hero">
         <img class="bigmark" src="assets/ThinHarness.svg" alt="ThinHarness">
-        <p class="tag">A minimal, opinionated agent harness — <b>focused scope, readable core, easy to fork.</b></p>
+        <p class="tag">A minimal, opinionated agent harness — <b>focused scope, straightforward code, easy to fork.</b></p>
         <div class="badges">
           <a class="ci" href="{GITHUB_ROOT}/actions/workflows/ci.yml"><span class="b-dot"></span>CI · passing</a>
           <a class="lic" href="{GITHUB_ROOT}/blob/main/LICENSE"><span class="b-dot"></span>License · MIT</a>
@@ -276,8 +280,7 @@ def render_about(markdown: str) -> str:
       <section id="why">
         <div class="eyebrow">// why this exists</div>
         <h2>Why this exists</h2>
-        <p>{inline_markdown(why[0])}</p>
-        <p>{inline_markdown(why[1])}</p>
+        {"".join(f"<p>{inline_markdown(paragraph)}</p>" for paragraph in why)}
       </section>
 
       <section id="comparison">
@@ -313,7 +316,7 @@ def render_about(markdown: str) -> str:
           <p><strong>1.</strong> LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.</p>
           <p><strong>2.</strong> {retry_footnote}</p>
           <p><strong>3.</strong> Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.</p>
-          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈105k LOC.</p>
+          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈111k LOC.</p>
         </div>
         <p class="source-note"><span class="source-link">See <code>docs/table.md</code> for per-cell rationale and how the LOC numbers are measured.</span></p>
       </section>
