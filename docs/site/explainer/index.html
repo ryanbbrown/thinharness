@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Codebase Explainer — ThinHarness</title>
-  <link rel="stylesheet" href="assets/site.css">
-  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="../assets/site.css">
+  <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+  <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 </head>
 <body class="th page-explainer">
   <header class="site-header">
     <div class="site-header__inner">
-      <a class="site-logo" href="index.html"><img src="assets/ThinHarness.svg" alt="ThinHarness"></a>
+      <a class="site-logo" href="../"><img src="../assets/ThinHarness.svg" alt="ThinHarness"></a>
       <nav class="site-nav">
-        <a href="index.html">~/home</a>
-        <a href="about.html">~/about</a>
-        <a href="explainer.html" class="is-active">~/explainer</a>
-        <a href="examples.html">~/examples</a>
+        <a href="../">~/home</a>
+        <a href="../about/">~/about</a>
+        <a href="../explainer/" class="is-active">~/explainer</a>
+        <a href="../examples/">~/examples</a>
         <a href="https://github.com/ryanbbrown/thinharness" class="ext">github&nbsp;↗</a>
       </nav>
     </div>
@@ -83,7 +83,7 @@
     <section id="loop">
       <h2>Run Loop</h2>
       <figure class="diagram-frame">
-        <img src="assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, approval pause, retries, and HarnessResult construction.">
+        <img src="../assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, approval pause, retries, and HarnessResult construction.">
         <figcaption>
           Background-capable tools use the same tool-execution path: the original call returns a short start notice while the handler continues under run ownership. When completion is ready, the harness delivers it at the next legal provider request, often coalesced with foreground tool outputs. If the model tries to finalize while background work is still pending or ready but undelivered, the harness waits if needed, sends the completion back to the provider, and requires the final answer again.
         </figcaption>
@@ -967,9 +967,9 @@
     <div class="site-footer__inner">
       <div class="mono-mark"><span class="dot"></span>thinharness · codebase explainer</div>
       <div class="links">
-        <a href="index.html">home</a>
-        <a href="about.html">about</a>
-        <a href="examples.html">examples</a>
+        <a href="../">home</a>
+        <a href="../about/">about</a>
+        <a href="../examples/">examples</a>
         <a href="https://github.com/ryanbbrown/thinharness">github</a>
       </div>
     </div>

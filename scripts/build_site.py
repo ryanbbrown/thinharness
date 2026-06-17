@@ -10,7 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 SITE_DIR = REPO_ROOT / "docs" / "site"
-ABOUT = SITE_DIR / "about.html"
+ABOUT = SITE_DIR / "about" / "index.html"
 GITHUB_ROOT = "https://github.com/ryanbbrown/thinharness"
 
 
@@ -147,7 +147,7 @@ def mark(value: str) -> str:
     }[value]
 
 
-def library_cell(cell: dict[str, str]) -> str:
+def library_cell(cell: dict[str, str], asset_prefix: str = "assets/") -> str:
     name = cell["text"]
     superscript = ""
     match = re.search(r"(\d+)$", name)
@@ -156,14 +156,15 @@ def library_cell(cell: dict[str, str]) -> str:
         superscript = f"<sup>{match.group(1)}</sup>"
     display_name = html.escape(name).replace("Claude Agent SDK", "Claude Agent SDK").replace("OpenAI Agents SDK", "OpenAI Agents SDK")
     if name == "ThinHarness":
-        return '<div class="lib-cell"><img class="thinharness-table-logo" src="assets/ThinHarness.svg" alt="">ThinHarness</div>'
+        return f'<div class="lib-cell"><img class="thinharness-table-logo" src="{asset_prefix}ThinHarness.svg" alt="">ThinHarness</div>'
     if name == "Agno":
-        return '<div class="lib-cell"><img src="assets/agno-a.svg" alt="">Agno</div>'
+        return f'<div class="lib-cell"><img src="{asset_prefix}agno-a.svg" alt="">Agno</div>'
     img = cell["img"]
-    return f'<div class="lib-cell"><img src="{html.escape(img, quote=True)}" alt="">{display_name}{superscript}</div>'
+    img_src = img if re.match(r"https?://", img) else f"{asset_prefix}{img}"
+    return f'<div class="lib-cell"><img src="{html.escape(img_src, quote=True)}" alt="">{display_name}{superscript}</div>'
 
 
-def comparison_table(markdown: str) -> str:
+def comparison_table(markdown: str, asset_prefix: str = "assets/") -> str:
     rows = readme_table_rows(markdown)
     body_rows = []
     for row in rows[1:]:
@@ -172,7 +173,7 @@ def comparison_table(markdown: str) -> str:
         marks = "".join(f"<td>{mark(cell['text'])}</td>" for cell in row[2:])
         body_rows.append(
             f"""              <tr{css}>
-                <td class="lib">{library_cell(library)}</td>
+                <td class="lib">{library_cell(library, asset_prefix)}</td>
                 <td class="loc-n">{html.escape(row[1]["text"])}</td>
                 {marks}
               </tr>"""
@@ -195,6 +196,7 @@ def fenced_code(markdown: str, language: str) -> str:
 
 
 def render_about(markdown: str) -> str:
+    asset_prefix = "../assets/"
     why = paragraphs(section(markdown, "Why this exists").split("<!--", 1)[0].strip())
     install = section(markdown, "Install")
     install_line = fenced_code(install, "bash")
@@ -235,19 +237,19 @@ def render_about(markdown: str) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>About — ThinHarness</title>
-<link rel="stylesheet" href="assets/site.css">
-<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/site.css">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 </head>
 <body class="th page-about">
   <header class="site-header">
     <div class="site-header__inner">
-      <a class="site-logo" href="index.html"><img src="assets/ThinHarness.svg" alt="ThinHarness"></a>
+      <a class="site-logo" href="../"><img src="../assets/ThinHarness.svg" alt="ThinHarness"></a>
       <nav class="site-nav">
-        <a href="index.html">~/home</a>
-        <a href="about.html" class="is-active">~/about</a>
-        <a href="explainer.html">~/explainer</a>
-        <a href="examples.html">~/examples</a>
+        <a href="../">~/home</a>
+        <a href="../about/" class="is-active">~/about</a>
+        <a href="../explainer/">~/explainer</a>
+        <a href="../examples/">~/examples</a>
         <a href="{GITHUB_ROOT}" class="ext">github&nbsp;↗</a>
       </nav>
     </div>
@@ -256,7 +258,7 @@ def render_about(markdown: str) -> str:
   <div class="wrap">
     <div class="doc">
       <div class="doc-hero">
-        <img class="bigmark" src="assets/ThinHarness.svg" alt="ThinHarness">
+        <img class="bigmark" src="../assets/ThinHarness.svg" alt="ThinHarness">
         <p class="tag">A minimal, opinionated agent harness — <b>focused scope, straightforward code, easy to fork.</b></p>
         <div class="badges">
           <a class="ci" href="{GITHUB_ROOT}/actions/workflows/ci.yml"><span class="b-dot"></span>CI · passing</a>
@@ -307,7 +309,7 @@ def render_about(markdown: str) -> str:
               </tr>
             </thead>
             <tbody>
-{comparison_table(markdown)}
+{comparison_table(markdown, asset_prefix)}
             </tbody>
           </table>
         </div>
@@ -379,7 +381,7 @@ def render_about(markdown: str) -> str:
       <div class="links">
         <a href="{GITHUB_ROOT}">github</a>
         <a href="https://pypi.org/project/thinharness/">pypi</a>
-        <a href="index.html">home</a>
+        <a href="../">home</a>
       </div>
     </div>
   </footer>
@@ -390,7 +392,7 @@ def render_about(markdown: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate ThinHarness docs pages from repository sources.")
-    parser.add_argument("--check", action="store_true", help="Fail if generated output differs from docs/site/about.html without writing it.")
+    parser.add_argument("--check", action="store_true", help="Fail if generated output differs from docs/site/about/index.html without writing it.")
     args = parser.parse_args()
 
     generated = render_about(README.read_text(encoding="utf-8"))
@@ -401,7 +403,7 @@ def main() -> None:
                 current.splitlines(),
                 generated.splitlines(),
                 fromfile=str(ABOUT),
-                tofile="generated about.html",
+                tofile="generated about/index.html",
                 lineterm="",
             )
             print("\n".join(diff))
@@ -409,6 +411,7 @@ def main() -> None:
         print(f"{ABOUT} is up to date")
         return
 
+    ABOUT.parent.mkdir(parents=True, exist_ok=True)
     ABOUT.write_text(generated, encoding="utf-8")
     print(f"wrote {ABOUT}")
 
