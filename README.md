@@ -223,7 +223,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Purpose-built agents, not universal agents.** ThinHarness is for bounded agent loops inside software you control, not open-ended interactive assistants. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.
 
-**No bash by default.** Business agents usually don't need a shell. Bash is a giant security surface, and agents mess up when writing shell commands more often than you'd initially expect. ThinHarness keeps bash out of the default and built-in tool sets, but exposes an opt-in `BashTool` for exploratory runs to give the agent more flexibility before the optimal workflow is hardened with typed tools.
+**No bash by default.** Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness keeps bash out of the default and built-in tool sets, but exposes an opt-in `BashTool` for exploratory runs before the workflow is hardened with typed tools.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
 

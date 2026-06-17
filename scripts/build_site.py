@@ -158,7 +158,7 @@ def library_cell(cell: dict[str, str]) -> str:
     if name == "ThinHarness":
         return '<div class="lib-cell"><img class="thinharness-table-logo" src="assets/ThinHarness.svg" alt="">ThinHarness</div>'
     if name == "Agno":
-        return '<div class="lib-cell">Agno</div>'
+        return '<div class="lib-cell"><img src="assets/agno-a.svg" alt="">Agno</div>'
     img = cell["img"]
     return f'<div class="lib-cell"><img src="{html.escape(img, quote=True)}" alt="">{display_name}{superscript}</div>'
 
