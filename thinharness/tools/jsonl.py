@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -37,9 +40,22 @@ class JsonlWhereFilter(StrictArgs):
     """One JSONL where filter."""
 
     field: str
-    op: Literal["eq", "ne", "in", "contains", "regex", "exists"]
+    op: Literal["eq", "ne", "in", "contains", "regex", "exists", "gt", "gte", "lt", "lte"]
     value: str | None = None
     values: list[str] | None = None
+    type: Literal["number", "date"] | None = None
+
+
+class JsonlFieldSearch(StrictArgs):
+    """Search inside one string field on selected JSONL rows."""
+
+    field: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    regex: bool = False
+    case_sensitive: bool = False
+    context_lines: int = Field(default=0, ge=0)
+    max_matches: int = Field(default=20, ge=1)
+    max_line_chars: int = Field(default=300, ge=1)
 
 
 class JsonlSearchArgs(StrictArgs):
@@ -52,6 +68,10 @@ class JsonlSearchArgs(StrictArgs):
         description="Map of jq-style field path to max chars (0 = no truncation). If omitted, return the whole row.",
     )
     where: list[JsonlWhereFilter] = Field(default_factory=list, description="Filters AND-ed together.")
+    field_searches: list[JsonlFieldSearch] = Field(
+        default_factory=list,
+        description="Search inside selected string fields and return matching internal field lines/snippets.",
+    )
     max_files: int = Field(default=100, ge=1)
     max_matches_per_file: int = Field(default=25, ge=1)
     timeout: int | None = Field(default=None, ge=1)
@@ -65,6 +85,64 @@ class _CandidateScan:
     candidates: Iterator[tuple[str, int, str]]
     metadata: Json
     error: ToolResult | None = None
+
+
+_RANGE_OPS = {"gt", "gte", "lt", "lte"}
+
+
+@dataclass(frozen=True)
+class _DateValue:
+    """Parsed date-like value plus whether the source was date-only."""
+
+    value: date | datetime
+    date_only: bool
+
+
+@dataclass(frozen=True)
+class _CompiledWhere:
+    """Pre-validated JSONL where filter."""
+
+    field: str
+    segments: list[str | int]
+    op: str
+    value: str | None
+    values: list[str] | None
+    compare_type: Literal["number", "date"] | None
+    target: Any = None
+
+
+@dataclass(frozen=True)
+class _WhereResult:
+    """One row's where result, including one-shot comparison warning state."""
+
+    passed: bool
+    compare_warning: bool = False
+
+
+@dataclass(frozen=True)
+class _CompiledFieldSearch:
+    """Pre-validated field-level string search."""
+
+    field: str
+    occurrence: int
+    segments: list[str | int]
+    query: str
+    pattern: re.Pattern[str] | None
+    case_sensitive: bool
+    context_lines: int
+    max_matches: int
+    max_line_chars: int
+    show_query_label: bool
+
+
+@dataclass(frozen=True)
+class _RenderedFieldSearch:
+    """Rendered field search lines for one selected row."""
+
+    label: str
+    lines: list[str]
+    omitted_matches: int = 0
+    note: str | None = None
 
 
 class JsonlSearch:
@@ -101,7 +179,17 @@ class JsonlSearch:
         query = args.query
         path = args.path
         fields = args.fields
-        where = [item.model_dump(exclude_none=True) for item in args.where]
+        where_for_display = [item.model_dump(exclude_none=True) for item in args.where]
+        try:
+            where = _compile_where(args.where)
+        except ValueError as exc:
+            return ToolResult(False, f"invalid where filter: {exc}")
+        try:
+            field_searches = _compile_field_searches(args.field_searches)
+        except re.error as exc:
+            return ToolResult(False, f"invalid field_search regex: {exc}")
+        except ValueError as exc:
+            return ToolResult(False, f"invalid field path: {exc}")
         max_files = args.max_files
         max_matches_per_file = args.max_matches_per_file
         timeout = args.timeout or self.rg_timeout
@@ -114,9 +202,10 @@ class JsonlSearch:
         shown: dict[str, list[tuple[int, Any]]] = {}
         row_counts: dict[str, int] = {}
         json_errors = 0
+        compare_warnings = 0
         total_files = 0
         total_rows = 0
-        for path, line_number, line_text in scan.candidates:
+        for file_path, line_number, line_text in scan.candidates:
             if not line_text.strip():
                 continue
             try:
@@ -124,20 +213,20 @@ class JsonlSearch:
             except json.JSONDecodeError:
                 json_errors += 1
                 continue
-            try:
-                if not _where_passes(row, where):
-                    continue
-            except ValueError as exc:
-                return ToolResult(False, f"invalid where filter: {exc}")
-            if path not in row_counts:
+            where_result = _where_passes(row, where)
+            if where_result.compare_warning:
+                compare_warnings += 1
+            if not where_result.passed:
+                continue
+            if file_path not in row_counts:
                 total_files += 1
-                row_counts[path] = 0
-            row_counts[path] += 1
+                row_counts[file_path] = 0
+            row_counts[file_path] += 1
             total_rows += 1
-            if path in shown or len(shown) < max_files:
-                shown.setdefault(path, [])
-                if len(shown[path]) < max_matches_per_file:
-                    shown[path].append((line_number, row))
+            if file_path in shown or len(shown) < max_files:
+                shown.setdefault(file_path, [])
+                if len(shown[file_path]) < max_matches_per_file:
+                    shown[file_path].append((line_number, row))
 
         shown_files = sorted(shown.items())
 
@@ -146,25 +235,38 @@ class JsonlSearch:
             f"  query: {query or '(none)'}",
             f"  scope: path={path}",
         ]
-        if where:
-            header.append(f"  where: {_describe_where(where)}")
+        if where_for_display:
+            header.append(f"  where: {_describe_where(where_for_display)}")
         if fields:
             header.append(f"  fields: {', '.join(fields)}")
+        if field_searches:
+            header.append(f"  field_searches: {', '.join(search.field for search in field_searches)}")
         header.append(f"  files: {total_files} total, {len(shown_files)} shown")
         header.append(f"  rows_matched: {total_rows}")
+        if compare_warnings:
+            header.append(f"  compare_warnings: {compare_warnings} row(s) had non-comparable values")
         if json_errors:
             header.append(f"  json_parse_errors: {json_errors}")
         body = [""]
-        for path, rows in shown_files:
+        for file_path, rows in shown_files:
             rows.sort(key=lambda lr: lr[0])
-            body.append(path)
+            body.append(file_path)
             for line_number, row in rows:
                 try:
-                    projected = _project_fields(row, fields) if fields else row
+                    projected = _project_fields(row, fields) if fields else ({} if field_searches else row)
                 except ValueError as exc:
                     return ToolResult(False, f"invalid field path: {exc}")
                 body.append(f"  {line_number}: {json.dumps(projected, ensure_ascii=False, default=str)}")
-            omitted_rows = row_counts[path] - len(rows)
+                if field_searches:
+                    for rendered in _field_search_matches(row, field_searches, show_empty=not fields):
+                        if rendered.lines:
+                            body.append(f"    {rendered.label}:")
+                            body.extend(f"      {line}" for line in rendered.lines)
+                            if rendered.omitted_matches:
+                                body.append(f"      ... {rendered.omitted_matches} more match(es)")
+                        elif rendered.note:
+                            body.append(f"    {rendered.label}: {rendered.note}")
+            omitted_rows = row_counts[file_path] - len(rows)
             if omitted_rows:
                 body.append(f"  ... {omitted_rows} more row(s)")
         if total_files > max_files:
@@ -172,6 +274,8 @@ class JsonlSearch:
 
         result = self._truncate("\n".join(header + body), prefix="jsonl_search", max_chars=limit_chars)
         result.metadata.update(scan.metadata)
+        if compare_warnings:
+            result.metadata["compare_warnings"] = compare_warnings
         return result
 
     def _candidates(self, query: str, path: str, timeout: int) -> _CandidateScan:
@@ -298,6 +402,7 @@ def _display_path(root: Path, path: Path) -> str:
 
 
 _MISSING = object()
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PATH_TOKEN = re.compile(
     r'\.?(?:([A-Za-z_][A-Za-z0-9_]*)|\[(-?\d+)\]|\["([^"]*)"\]|\[\'([^\']*)\'\])'
 )
@@ -344,6 +449,158 @@ def _get_field_by_path(obj: Any, segments: list[str | int]) -> Any:
     return cur
 
 
+def _compile_where(where: list[JsonlWhereFilter]) -> list[_CompiledWhere]:
+    """Validate where filters once and parse range targets before scanning."""
+    compiled = []
+    for filt in where:
+        field = filt.field
+        op = filt.op
+        if not field or not op:
+            raise ValueError(f"where filter missing field or op: {filt.model_dump(exclude_none=True)}")
+        segments = _parse_jq_path(field)
+        if op in _RANGE_OPS:
+            if filt.value is None:
+                raise ValueError(f"op {op!r} requires 'value'")
+            if filt.value == "":
+                raise ValueError(f"op {op!r} requires non-empty 'value'")
+            if filt.type is None:
+                raise ValueError(f"op {op!r} requires 'type'")
+            if filt.values is not None:
+                raise ValueError(f"op {op!r} does not accept 'values'")
+            compiled.append(
+                _CompiledWhere(
+                    field=field,
+                    segments=segments,
+                    op=op,
+                    value=filt.value,
+                    values=None,
+                    compare_type=filt.type,
+                    target=_parse_range_target(filt.type, filt.value),
+                )
+            )
+            continue
+        if filt.type is not None:
+            raise ValueError(f"op {op!r} does not accept 'type'")
+        if op in {"eq", "ne", "contains", "regex"} and filt.value is None:
+            raise ValueError(f"op {op!r} requires 'value'")
+        if op == "in" and filt.values is None:
+            raise ValueError("op 'in' requires 'values'")
+        compiled.append(
+            _CompiledWhere(
+                field=field,
+                segments=segments,
+                op=op,
+                value=filt.value,
+                values=filt.values,
+                compare_type=None,
+            )
+        )
+    return compiled
+
+
+def _compile_field_searches(field_searches: list[JsonlFieldSearch]) -> list[_CompiledFieldSearch]:
+    """Validate field searches once before scanning rows."""
+    field_counts: dict[str, int] = {}
+    for search in field_searches:
+        field_counts[search.field] = field_counts.get(search.field, 0) + 1
+
+    compiled = []
+    field_occurrences: dict[str, int] = {}
+    for search in field_searches:
+        occurrence = field_occurrences.get(search.field, 0) + 1
+        field_occurrences[search.field] = occurrence
+        flags = 0 if search.case_sensitive else re.IGNORECASE
+        compiled.append(
+            _CompiledFieldSearch(
+                field=search.field,
+                occurrence=occurrence,
+                segments=_parse_jq_path(search.field),
+                query=search.query,
+                pattern=re.compile(search.query, flags) if search.regex else None,
+                case_sensitive=search.case_sensitive,
+                context_lines=search.context_lines,
+                max_matches=search.max_matches,
+                max_line_chars=search.max_line_chars,
+                show_query_label=field_counts[search.field] > 1,
+            )
+        )
+    return compiled
+
+
+def _field_search_matches(row: Any, searches: list[_CompiledFieldSearch], *, show_empty: bool) -> list[_RenderedFieldSearch]:
+    """Return rendered snippet blocks for every matching field search on one row."""
+    rendered = []
+    for search in searches:
+        value = _get_field_by_path(row, search.segments)
+        label = _field_search_label(search)
+        if value is _MISSING:
+            if show_empty:
+                rendered.append(_RenderedFieldSearch(label, [], note="none (missing field)"))
+            continue
+        if value is None:
+            if show_empty:
+                rendered.append(_RenderedFieldSearch(label, [], note="none (null field)"))
+            continue
+        if not isinstance(value, str):
+            if show_empty:
+                rendered.append(_RenderedFieldSearch(label, [], note="none (non-string field)"))
+            continue
+        lines = value.splitlines()
+        matching_indexes = [index for index, line in enumerate(lines) if _field_line_matches(line, search)]
+        if not matching_indexes:
+            if show_empty:
+                rendered.append(_RenderedFieldSearch(label, [], note="none"))
+            continue
+
+        displayed_matches = matching_indexes[: search.max_matches]
+        ranges = _line_ranges_for_matches(displayed_matches, total_lines=len(lines), context_lines=search.context_lines)
+        displayed_indexes = {index for start, end in ranges for index in range(start, end)}
+        snippet_lines = [
+            f"{index + 1}: {_truncate_internal_line(lines[index], search.max_line_chars)}"
+            for start, end in ranges
+            for index in range(start, end)
+        ]
+        omitted_matches = sum(1 for index in matching_indexes[search.max_matches :] if index not in displayed_indexes)
+        rendered.append(_RenderedFieldSearch(label, snippet_lines, omitted_matches=omitted_matches))
+    if any(item.lines for item in rendered):
+        return [item for item in rendered if item.lines]
+    return rendered
+
+
+def _field_search_label(search: _CompiledFieldSearch) -> str:
+    """Return a stable output label for a field search."""
+    if search.show_query_label:
+        return f"{search.field} matches #{search.occurrence} (query={search.query!r})"
+    return f"{search.field} matches"
+
+
+def _field_line_matches(line: str, search: _CompiledFieldSearch) -> bool:
+    """Return whether one internal field line matches a compiled field search."""
+    if search.pattern is not None:
+        return search.pattern.search(line) is not None
+    if search.case_sensitive:
+        return search.query in line
+    return search.query.casefold() in line.casefold()
+
+
+def _line_ranges_for_matches(matches: list[int], *, total_lines: int, context_lines: int) -> list[tuple[int, int]]:
+    """Build merged half-open line ranges around primary match indexes."""
+    ranges: list[tuple[int, int]] = []
+    for index in matches:
+        start = max(0, index - context_lines)
+        end = min(total_lines, index + context_lines + 1)
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return ranges
+
+
+def _truncate_internal_line(line: str, max_chars: int) -> str:
+    """Truncate one rendered field line."""
+    return line if len(line) <= max_chars else line[:max_chars] + "…"
+
+
 def _apply_where_op(value: Any, op: str, target: Any, targets: Any) -> bool:
     """Evaluate one where operator against a resolved field value."""
     if op == "exists":
@@ -364,21 +621,117 @@ def _apply_where_op(value: Any, op: str, target: Any, targets: Any) -> bool:
     raise ValueError(f"unknown op: {op!r}")
 
 
-def _where_passes(row: Any, where: list[Json]) -> bool:
-    """Return True if a row passes every where filter (AND)."""
+def _where_passes(row: Any, where: list[_CompiledWhere]) -> _WhereResult:
+    """Return whether a row passes every where filter (AND)."""
     for filt in where:
-        field = filt.get("field")
-        op = filt.get("op")
-        if not field or not op:
-            raise ValueError(f"where filter missing field or op: {filt}")
-        if op in {"eq", "ne", "contains", "regex"} and "value" not in filt:
-            raise ValueError(f"op {op!r} requires 'value'")
-        if op == "in" and "values" not in filt:
-            raise ValueError("op 'in' requires 'values'")
-        value = _get_field_by_path(row, _parse_jq_path(field))
-        if not _apply_where_op(value, op, filt.get("value"), filt.get("values")):
-            return False
-    return True
+        value = _get_field_by_path(row, filt.segments)
+        if filt.op in _RANGE_OPS:
+            if filt.compare_type is None:
+                raise ValueError(f"range op {filt.op!r} missing compare type")
+            passed, non_comparable = _apply_range_op(value, filt.op, filt.compare_type, filt.target)
+            if non_comparable:
+                return _WhereResult(False, compare_warning=True)
+            if not passed:
+                return _WhereResult(False)
+            continue
+        if not _apply_where_op(value, filt.op, filt.value, filt.values):
+            return _WhereResult(False)
+    return _WhereResult(True)
+
+
+def _parse_range_target(compare_type: Literal["number", "date"], value: str) -> Decimal | _DateValue:
+    """Parse a range filter target for its declared type."""
+    if compare_type == "number":
+        try:
+            parsed = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError(f"number range value must be a finite number: {value!r}") from exc
+        if parsed.is_nan() or parsed.is_infinite():
+            raise ValueError(f"number range value must be a finite number: {value!r}")
+        return parsed
+    parsed_date = _parse_date_value(value)
+    if parsed_date is None:
+        raise ValueError(f"date range value must be ISO-like: {value!r}")
+    return parsed_date
+
+
+def _parse_date_value(value: Any) -> _DateValue | None:
+    """Parse supported ISO-ish date strings."""
+    if not isinstance(value, str):
+        return None
+    if _DATE_ONLY_RE.fullmatch(value):
+        try:
+            return _DateValue(date.fromisoformat(value), date_only=True)
+        except ValueError:
+            return None
+    try:
+        return _DateValue(datetime.fromisoformat(value.removesuffix("Z") + ("+00:00" if value.endswith("Z") else "")), date_only=False)
+    except ValueError:
+        return None
+
+
+def _apply_range_op(value: Any, op: str, compare_type: Literal["number", "date"], target: Any) -> tuple[bool, bool]:
+    """Evaluate one range operator, returning (passed, non_comparable)."""
+    if compare_type == "number":
+        comparable = _number_value(value)
+        if comparable is None:
+            return False, True
+        return _compare_range(comparable, op, target), False
+    if compare_type == "date":
+        comparable = _parse_date_value(value)
+        if comparable is None:
+            return False, True
+        compared = _compare_date_range(comparable, op, target)
+        if compared is None:
+            return False, True
+        return compared, False
+    raise ValueError(f"unknown range type: {compare_type!r}")
+
+
+def _number_value(value: Any) -> Decimal | None:
+    """Return a comparable JSON number, excluding bool and non-finite float values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return Decimal(value) if isinstance(value, int) else Decimal(str(value))
+
+
+def _compare_date_range(left: _DateValue, op: str, right: _DateValue) -> bool | None:
+    """Compare parsed date values, returning None for aware/naive datetime mismatch."""
+    if left.date_only or right.date_only:
+        return _compare_range(_calendar_date(left.value), op, _calendar_date(right.value))
+
+    if not isinstance(left.value, datetime) or not isinstance(right.value, datetime):
+        return None
+    if _datetime_is_aware(left.value) != _datetime_is_aware(right.value):
+        return None
+    return _compare_range(left.value, op, right.value)
+
+
+def _datetime_is_aware(value: datetime) -> bool:
+    """Return whether a datetime has an effective timezone offset."""
+    return value.utcoffset() is not None
+
+
+def _calendar_date(value: date | datetime) -> date:
+    """Return the written calendar date for a date or datetime value."""
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
+def _compare_range(left: Any, op: str, right: Any) -> bool:
+    """Apply a range operator to already-comparable values."""
+    if op == "gt":
+        return left > right
+    if op == "gte":
+        return left >= right
+    if op == "lt":
+        return left < right
+    if op == "lte":
+        return left <= right
+    raise ValueError(f"unknown op: {op!r}")
 
 
 def _project_fields(row: Any, fields: dict[str, Any]) -> Json:
@@ -407,6 +760,8 @@ def _describe_where(where: list[Json]) -> str:
             parts.append(f"{filt.get('field')} in {filt.get('values')}")
         elif op == "exists":
             parts.append(f"{filt.get('field')} exists")
+        elif op in _RANGE_OPS:
+            parts.append(f"{filt.get('field')} {op} {filt.get('value')!r} ({filt.get('type')})")
         else:
             parts.append(f"{filt.get('field')} {op} {filt.get('value')!r}")
     return "; ".join(parts)

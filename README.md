@@ -34,9 +34,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
   domain-specific modalities (voice/realtime), eval/optimizer suites, UI/CLI
   tools, A2A/declarative wire protocols, code-executor backends. Provider
   implementations stay IN (they're part of what you import to use the library).
-  The exact tokei command + upstream commit hash for each row is in an HTML
-  comment above the row, so the number is reproducible. Measured 2026-06-15
-  against the commit pinned in each row's comment.
+  The exact tokei command + upstream commit hash for each upstream row is in an
+  HTML comment above the row, so the number is reproducible. Upstream rows were
+  measured 2026-06-15 against the pinned commits; ThinHarness was remeasured
+  from this working tree on 2026-06-19.
 -->
 
 <div align="center">
@@ -55,10 +56,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-15 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-19 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,892</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>8,197</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -227,7 +228,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Skills are tools, not auto-discovery.** Skills live in directories you point at explicitly. The agent calls `skill_read` and `skill_run` like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.
 
-**Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data (line-delimited, naturally chunked, `jq` + `rg`).
+**Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data: ripgrep row prefiltering, jq-style field projection, `where` filters, range filters, and snippets from large multiline fields.
 
 **Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs reliability beyond a single agent loop — majority vote, ensembled extraction. Set `builtin_parallel_llm_model` to enable the default `parallel_llm` tool for plain-text batches; for validated structured output per call, instantiate `ParallelLlmTool` yourself with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
@@ -282,7 +283,7 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 ## Features
 
 - **Filesystem tools:** `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
-- **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, and `where` filters.
+- **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
 - **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
 - **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/background/approval flags, and per-tool retry settings.

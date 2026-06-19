@@ -366,6 +366,13 @@ def test_file_tools_validate_glob_selectors(tmp_path: Path) -> None:
         assert not result.ok
         assert result.metadata["error_type"] == "PathValidationError"
 
+def test_jsonl_search_schema_exposes_range_and_field_search_arguments(tmp_path: Path) -> None:
+    jsonl_schema = next(tool.response_tool() for tool in FileTools(tmp_path).specs() if tool.name == "jsonl_search")
+    jsonl_schema_text = json.dumps(jsonl_schema)
+
+    for token in ["gt", "gte", "lt", "lte", "number", "date", "field_searches", "context_lines", "max_line_chars"]:
+        assert f'"{token}"' in jsonl_schema_text
+
 def test_search_groups_document_results_by_path_and_line(tmp_path: Path) -> None:
     (tmp_path / "claims").mkdir()
     (tmp_path / "policies").mkdir()
@@ -532,6 +539,47 @@ def test_jsonl_search_uses_ripgrep_prefilter(tmp_path: Path) -> None:
     assert "rows_matched: 1" in result.content
     assert '  3: {"id": 3}' in result.content
 
+def test_jsonl_search_non_range_where_operators_after_compile_refactor(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "status": "open", "owner": "alice", "priority": "high"},
+        {"id": 2, "status": "closed", "owner": None, "priority": "low"},
+        {"id": 3, "status": "open", "priority": "medium"},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    ne = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "status", "op": "ne", "value": "closed"}],
+        "fields": {"id": 0},
+    })
+    in_filter = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "priority", "op": "in", "values": ["high", "medium"]}],
+        "fields": {"id": 0},
+    })
+    exists = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "owner", "op": "exists"}],
+        "fields": {"id": 0},
+    })
+
+    assert ne.ok, ne.content
+    assert "rows_matched: 2" in ne.content
+    assert '  1: {"id": 1}' in ne.content
+    assert '  3: {"id": 3}' in ne.content
+    assert '"id": 2' not in ne.content
+    assert in_filter.ok, in_filter.content
+    assert "rows_matched: 2" in in_filter.content
+    assert '  1: {"id": 1}' in in_filter.content
+    assert '  3: {"id": 3}' in in_filter.content
+    assert '"id": 2' not in in_filter.content
+    assert exists.ok, exists.content
+    assert "rows_matched: 1" in exists.content
+    assert '  1: {"id": 1}' in exists.content
+    assert '"id": 2' not in exists.content
+    assert '"id": 3' not in exists.content
+
 def test_jsonl_search_path_accepts_recursive_directory(tmp_path: Path) -> None:
     nested = tmp_path / "logs" / "nested"
     nested.mkdir(parents=True)
@@ -608,6 +656,491 @@ def test_jsonl_search_preserves_partial_ripgrep_warning_metadata(tmp_path: Path,
     assert result.metadata["returncode"] == 2
     assert result.metadata["warning"] == "ripgrep returned 2; showing parsed partial matches"
     assert "secret" not in json.dumps(result.metadata)
+
+def test_jsonl_search_field_search_returns_matching_internal_lines(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        json.dumps({
+            "state_index": 11,
+            "url": "https://example.test",
+            "accessibility_tree": "\n".join([
+                "[a1] button 'Save'",
+                "[a2] menuitem 'Edit personal filters'",
+                "[a3] menuitem '-- None --'",
+                "[a4] menuitem 'Incident Portal'",
+            ]),
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "states.jsonl",
+        "where": [{"field": "state_index", "op": "eq", "value": "11"}],
+        "fields": {"state_index": 0, "url": 0},
+        "field_searches": [{"field": "accessibility_tree", "query": "Incident|-- None --|Edit personal filters", "regex": True}],
+    })
+
+    assert result.ok, result.content
+    assert "field_searches: accessibility_tree" in result.content
+    assert '  1: {"state_index": 11, "url": "https://example.test"}' in result.content
+    assert "    accessibility_tree matches:" in result.content
+    assert "      2: [a2] menuitem 'Edit personal filters'" in result.content
+    assert "      3: [a3] menuitem '-- None --'" in result.content
+    assert "      4: [a4] menuitem 'Incident Portal'" in result.content
+    assert "Save" not in result.content
+
+def test_jsonl_search_field_search_without_fields_does_not_render_whole_row(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        json.dumps({"id": 1, "blob": "alpha\nneedle\nomega", "secret": "do not print"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({"path": "*.jsonl", "field_searches": [{"field": "blob", "query": "needle"}]})
+
+    assert result.ok, result.content
+    assert '  1: {}' in result.content
+    assert "      2: needle" in result.content
+    assert "secret" not in result.content
+    assert "alpha" not in result.content
+
+def test_jsonl_search_field_search_top_level_query_remains_row_prefilter(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        "\n".join([
+            json.dumps({"id": 1, "kind": "candidate", "blob": "target internal line"}),
+            json.dumps({"id": 2, "kind": "other", "blob": "target internal line"}),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({
+        "query": "candidate",
+        "path": "*.jsonl",
+        "fields": {"id": 0},
+        "field_searches": [{"field": "blob", "query": "target"}],
+    })
+
+    assert result.ok, result.content
+    assert "rows_matched: 1" in result.content
+    assert '  1: {"id": 1}' in result.content
+    assert '"id": 2' not in result.content
+
+def test_jsonl_search_field_search_miss_with_fields_keeps_output_compact(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "alpha"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "fields": {"id": 0},
+        "field_searches": [{"field": "blob", "query": "needle"}],
+    })
+
+    assert result.ok, result.content
+    assert '  1: {"id": 1}' in result.content
+    assert "blob matches" not in result.content
+
+def test_jsonl_search_field_search_multiple_and_duplicate_searches_render_in_order(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        json.dumps({"id": 1, "body": "alpha\nbeta\nALPHA", "thought": "first\nfilters\nlast"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "fields": {"id": 0},
+        "field_searches": [
+            {"field": "body", "query": "alpha"},
+            {"field": "thought", "query": "filters"},
+            {"field": "body", "query": "beta"},
+        ],
+    })
+
+    assert result.ok, result.content
+    first = result.content.index("    body matches #1 (query='alpha'):")
+    second = result.content.index("    thought matches:")
+    third = result.content.index("    body matches #2 (query='beta'):")
+    assert first < second < third
+    assert "      1: alpha" in result.content
+    assert "      3: ALPHA" in result.content
+    assert "      2: beta" in result.content
+
+def test_jsonl_search_field_search_duplicate_same_query_labels_are_distinguishable(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "body": "alpha\nmiddle\nalpha"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "fields": {"id": 0},
+        "field_searches": [
+            {"field": "body", "query": "alpha", "context_lines": 0},
+            {"field": "body", "query": "alpha", "context_lines": 1},
+        ],
+    })
+
+    assert result.ok, result.content
+    assert "    body matches #1 (query='alpha'):" in result.content
+    assert "    body matches #2 (query='alpha'):" in result.content
+
+def test_jsonl_search_field_search_context_merges_and_limits_matches(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        json.dumps({"id": 1, "blob": "\n".join(["before", "target one", "middle", "target two", "after", "target three"])}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "target", "context_lines": 1, "max_matches": 2}],
+    })
+
+    assert result.ok, result.content
+    assert "      1: before" in result.content
+    assert "      2: target one" in result.content
+    assert "      3: middle" in result.content
+    assert "      4: target two" in result.content
+    assert "      5: after" in result.content
+    assert "target three" not in result.content
+    assert "      ... 1 more match(es)" in result.content
+    assert result.content.count("      3: middle") == 1
+
+def test_jsonl_search_field_search_does_not_count_context_visible_match_as_omitted(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "target one\ntarget two\nlast"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "target", "context_lines": 1, "max_matches": 1}],
+    })
+
+    assert result.ok, result.content
+    assert "      1: target one" in result.content
+    assert "      2: target two" in result.content
+    assert "more match(es)" not in result.content
+
+def test_jsonl_search_field_search_truncates_and_respects_case_sensitive(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "Needle abcdef\nneedle ghijkl"}) + "\n", encoding="utf-8")
+
+    insensitive = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "needle", "max_line_chars": 10}],
+    })
+    sensitive = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "needle", "case_sensitive": True}],
+    })
+
+    assert insensitive.ok, insensitive.content
+    assert "      1: Needle abc…" in insensitive.content
+    assert "      2: needle ghi…" in insensitive.content
+    assert sensitive.ok, sensitive.content
+    assert "Needle" not in sensitive.content
+    assert "      2: needle ghijkl" in sensitive.content
+
+def test_jsonl_search_field_search_string_miss_without_fields_renders_plain_none(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "alpha"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({"path": "*.jsonl", "field_searches": [{"field": "blob", "query": "needle"}]})
+
+    assert result.ok, result.content
+    assert "  1: {}\n    blob matches: none" in result.content
+
+def test_jsonl_search_field_search_regex_is_case_insensitive_by_default(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "Incident Portal"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "incident", "regex": True}],
+    })
+
+    assert result.ok, result.content
+    assert "      1: Incident Portal" in result.content
+
+def test_jsonl_search_field_search_regex_respects_case_sensitive(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "Needle\nneedle"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "blob", "query": "needle", "regex": True, "case_sensitive": True}],
+    })
+
+    assert result.ok, result.content
+    assert "Needle" not in result.content
+    assert "      2: needle" in result.content
+
+def test_jsonl_search_field_search_invalid_regex_and_field_path_fail_clearly(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path)
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "blob": "needle"}) + "\n", encoding="utf-8")
+
+    invalid_regex = tools.jsonl_search({"path": "*.jsonl", "field_searches": [{"field": "blob", "query": "[", "regex": True}]})
+    invalid_path = tools.jsonl_search({"path": "*.jsonl", "field_searches": [{"field": "blob[", "query": "needle"}]})
+
+    assert not invalid_regex.ok
+    assert invalid_regex.content.startswith("invalid field_search regex:")
+    assert not invalid_path.ok
+    assert invalid_path.content.startswith("invalid field path:")
+
+def test_jsonl_search_field_search_missing_and_non_string_fields_are_compact(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(
+        "\n".join([
+            json.dumps({"id": 1, "blob": 123}),
+            json.dumps({"id": 2, "blob": None}),
+            json.dumps({"id": 3}),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = FileTools(tmp_path).jsonl_search({"path": "*.jsonl", "field_searches": [{"field": "blob", "query": "needle"}]})
+
+    assert result.ok, result.content
+    assert "rows_matched: 3" in result.content
+    assert "  1: {}\n    blob matches: none (non-string field)" in result.content
+    assert "  2: {}\n    blob matches: none (null field)" in result.content
+    assert "  3: {}\n    blob matches: none (missing field)" in result.content
+
+def test_jsonl_search_field_search_suppresses_miss_notes_when_sibling_matches(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "body": "needle", "other": 123}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [
+            {"field": "body", "query": "needle"},
+            {"field": "other", "query": "needle"},
+        ],
+    })
+
+    assert result.ok, result.content
+    assert "    body matches:" in result.content
+    assert "other matches" not in result.content
+
+def test_jsonl_search_field_search_single_line_field_with_context(tmp_path: Path) -> None:
+    (tmp_path / "states.jsonl").write_text(json.dumps({"id": 1, "body": "needle"}) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "field_searches": [{"field": "body", "query": "needle", "context_lines": 3}],
+    })
+
+    assert result.ok, result.content
+    assert "      1: needle" in result.content
+    assert "      0:" not in result.content
+
+def test_jsonl_search_field_search_combines_with_range_where_filters(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "score": 2, "blob": "target line"},
+        {"id": 2, "score": "bad", "blob": "target line"},
+        {"id": 3, "score": 0, "blob": "target line"},
+    ]
+    (tmp_path / "states.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "score", "op": "gt", "value": "1", "type": "number"}],
+        "fields": {"id": 0},
+        "field_searches": [{"field": "blob", "query": "target"}],
+    })
+
+    assert result.ok, result.content
+    assert "rows_matched: 1" in result.content
+    assert "compare_warnings: 1 row(s) had non-comparable values" in result.content
+    assert result.metadata["compare_warnings"] == 1
+    assert '  1: {"id": 1}' in result.content
+    assert "      1: target line" in result.content
+
+def test_jsonl_search_number_range_filters_match_json_numbers_only(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "score": 9.5},
+        {"id": 2, "score": 8},
+        {"id": 3, "score": "9.5"},
+        {"id": 4, "score": True},
+        {"id": 5, "score": float("nan")},
+        {"id": 6, "score": -3},
+        {"id": 7},
+        {"id": 8, "score": None},
+        {"id": 9, "score": {"nested": 9}},
+        {"id": 10, "score": [9]},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "score", "op": "gt", "value": "8", "type": "number"}],
+        "fields": {"id": 0},
+    })
+
+    assert result.ok, result.content
+    assert "scope: path=*.jsonl" in result.content
+    assert "where: score gt '8' (number)" in result.content
+    assert "rows_matched: 1" in result.content
+    assert '  1: {"id": 1}' in result.content
+    assert '"id": 2' not in result.content
+    assert result.metadata["compare_warnings"] == 7
+    assert "compare_warnings: 7 row(s) had non-comparable values" in result.content
+
+def test_jsonl_search_number_range_strictness_and_negative_targets(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join(json.dumps({"id": index, "score": score}) for index, score in enumerate([-2, -1, 0], start=1)) + "\n",
+        encoding="utf-8",
+    )
+    tools = FileTools(tmp_path)
+
+    gt = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "score", "op": "gt", "value": "-1", "type": "number"}],
+        "fields": {"id": 0},
+    })
+    lt = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "score", "op": "lt", "value": "-1", "type": "number"}],
+        "fields": {"id": 0},
+    })
+
+    assert gt.ok
+    assert "rows_matched: 1" in gt.content
+    assert '  3: {"id": 3}' in gt.content
+    assert lt.ok
+    assert "rows_matched: 1" in lt.content
+    assert '  1: {"id": 1}' in lt.content
+    assert "compare_warnings" not in gt.content
+    assert "compare_warnings" not in gt.metadata
+
+def test_jsonl_search_number_range_filters_compare_large_integers_exactly(tmp_path: Path) -> None:
+    target = 9_007_199_254_740_993
+    rows = [
+        {"id": 1, "counter": target - 1},
+        {"id": 2, "counter": target},
+        {"id": 3, "counter": target + 1},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    cases = [
+        ("gt", [3]),
+        ("gte", [2, 3]),
+        ("lt", [1]),
+        ("lte", [1, 2]),
+    ]
+    for op, expected_ids in cases:
+        result = tools.jsonl_search({
+            "path": "*.jsonl",
+            "where": [{"field": "counter", "op": op, "value": str(target), "type": "number"}],
+            "fields": {"id": 0},
+        })
+
+        assert result.ok, result.content
+        assert f"rows_matched: {len(expected_ids)}" in result.content
+        for expected_id in expected_ids:
+            assert f'{{"id": {expected_id}}}' in result.content
+        for unexpected_id in {1, 2, 3} - set(expected_ids):
+            assert f'{{"id": {unexpected_id}}}' not in result.content
+
+def test_jsonl_search_rejects_invalid_range_filter_definitions_before_scanning(tmp_path: Path) -> None:
+    tools = FileTools(tmp_path)
+    bad_filters = [
+        [{"field": "score", "op": "gt", "value": "NaN", "type": "number"}],
+        [{"field": "score", "op": "gt", "value": "Infinity", "type": "number"}],
+        [{"field": "score", "op": "gt", "value": "-Infinity", "type": "number"}],
+        [{"field": "score", "op": "gt", "value": "", "type": "number"}],
+        [{"field": "score", "op": "gt", "value": "1"}],
+        [{"field": "score", "op": "gt", "value": "1", "type": "number", "values": ["1"]}],
+        [{"field": "score", "op": "eq", "value": "1", "type": "number"}],
+        [{"field": "published_at", "op": "lt", "value": "not-a-date", "type": "date"}],
+    ]
+
+    for where in bad_filters:
+        result = tools.jsonl_search({"path": "*.jsonl", "where": where})
+        assert not result.ok
+        assert result.content.startswith("invalid where filter:"), where
+
+def test_jsonl_search_date_range_filters_use_declared_date_semantics(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "published_at": "2026-06-11"},
+        {"id": 2, "published_at": "2026-06-12"},
+        {"id": 3, "published_at": "2026-06-12T15:30:00Z"},
+        {"id": 4, "published_at": "2026-06-12T23:30:00-04:00"},
+        {"id": 5, "published_at": "2026-06-13"},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    lte = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "published_at", "op": "lte", "value": "2026-06-12", "type": "date"}],
+        "fields": {"id": 0},
+    })
+    strict_gt = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "published_at", "op": "gt", "value": "2026-06-12", "type": "date"}],
+        "fields": {"id": 0},
+    })
+
+    assert lte.ok, lte.content
+    assert "where: published_at lte '2026-06-12' (date)" in lte.content
+    assert "rows_matched: 4" in lte.content
+    assert '  3: {"id": 3}' in lte.content
+    assert '  4: {"id": 4}' in lte.content
+    assert strict_gt.ok
+    assert "rows_matched: 1" in strict_gt.content
+    assert '  5: {"id": 5}' in strict_gt.content
+
+def test_jsonl_search_datetime_range_filters_compare_like_awareness(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "published_at": "2026-06-12T08:00:00"},
+        {"id": 2, "published_at": "2026-06-12T10:00:00"},
+        {"id": 3, "published_at": "2026-06-12T15:00:00Z"},
+        {"id": 4, "published_at": "not-a-date"},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "published_at", "op": "gte", "value": "2026-06-12T09:00:00", "type": "date"}],
+        "fields": {"id": 0},
+    })
+
+    assert result.ok, result.content
+    assert "rows_matched: 1" in result.content
+    assert '  2: {"id": 2}' in result.content
+    assert result.metadata["compare_warnings"] == 2
+
+def test_jsonl_search_range_warning_counts_candidate_rows_once(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "kind": "keep", "score": "bad", "other": "bad"},
+        {"id": 2, "kind": "skip", "score": "bad", "other": "bad"},
+        {"id": 3, "kind": "keep", "score": 2, "other": "bad"},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "path": "*.jsonl",
+        "where": [
+            {"field": "kind", "op": "eq", "value": "keep"},
+            {"field": "score", "op": "gte", "value": "1", "type": "number"},
+            {"field": "other", "op": "gte", "value": "1", "type": "number"},
+        ],
+        "fields": {"id": 0},
+    })
+
+    assert result.ok, result.content
+    assert "rows_matched: 0" in result.content
+    assert result.metadata["compare_warnings"] == 2
+
+def test_jsonl_search_compare_warnings_coexist_with_ripgrep_warnings(tmp_path: Path, monkeypatch) -> None:
+    def partial(*args, **kwargs):
+        stdout = "\n".join([
+            _rg_match("events.jsonl", 1, '{"id":1,"msg":"login","score":"bad"}'),
+            "rg: ./restricted: Permission denied",
+        ])
+        return subprocess.CompletedProcess(args[0], 2, stdout=stdout)
+
+    monkeypatch.setattr("subprocess.run", partial)
+    (tmp_path / "events.jsonl").write_text('{"id":1,"msg":"login","score":"bad"}\n', encoding="utf-8")
+
+    result = FileTools(tmp_path).jsonl_search({
+        "query": "login",
+        "path": "*.jsonl",
+        "where": [{"field": "score", "op": "gte", "value": "1", "type": "number"}],
+    })
+
+    assert result.ok, result.content
+    assert result.metadata["warning"] == "ripgrep returned 2; showing parsed partial matches"
+    assert result.metadata["compare_warnings"] == 1
 
 def test_spill_output_uses_thinharness_directory_and_read_guidance(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("\n".join(f"hit {i}" for i in range(100)), encoding="utf-8")
