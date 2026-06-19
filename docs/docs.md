@@ -124,6 +124,61 @@ harness = Harness(HarnessConfig(
 ))
 ```
 
+Use `query` as a ripgrep row prefilter, `fields` to project only the values the model needs, and `where` for structured filters over jq-style field paths:
+
+```python
+result = await harness.run(
+    "Use jsonl_search on support/events.jsonl. Find open tickets with priority p1 and return id, customer.name, and updated_at."
+)
+```
+
+The model can call `jsonl_search` with arguments like:
+
+```json
+{
+  "path": "support/events.jsonl",
+  "query": "ticket",
+  "where": [
+    {"field": "status", "op": "eq", "value": "open"},
+    {"field": "priority", "op": "eq", "value": "p1"}
+  ],
+  "fields": {"id": 0, "customer.name": 0, "updated_at": 0}
+}
+```
+
+Range filters use `op` values `gt`, `gte`, `lt`, or `lte` with an explicit `type` of `number` or `date`. Number ranges match JSON numbers only; date ranges compare ISO-like date or datetime strings:
+
+```json
+{
+  "path": "support/events.jsonl",
+  "where": [
+    {"field": "score", "op": "gte", "value": "0.8", "type": "number"},
+    {"field": "created_at", "op": "gte", "value": "2026-06-01", "type": "date"}
+  ],
+  "fields": {"id": 0, "score": 0, "created_at": 0}
+}
+```
+
+For large multiline string fields, `field_searches` returns matching internal lines without rendering the whole field. It runs after JSON parsing and `where` filtering, so it is best used with `fields` for the row summary and snippets for the bulky field:
+
+```json
+{
+  "path": "states.jsonl",
+  "where": [{"field": "state_index", "op": "eq", "value": "11"}],
+  "fields": {"state_index": 0, "url": 0},
+  "field_searches": [
+    {
+      "field": "accessibility_tree",
+      "query": "Incident|-- None --|Edit personal filters",
+      "regex": true,
+      "context_lines": 1,
+      "max_matches": 5,
+      "max_line_chars": 160
+    }
+  ]
+}
+```
+
 Filesystem tools enforce the configured read and write policies. Paths must resolve under `root`; escape attempts through absolute paths outside `root`, `..`, or symlinks are rejected.
 
 ```python

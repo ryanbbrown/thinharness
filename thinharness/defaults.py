@@ -62,7 +62,9 @@ DEFAULT_JSONL_SEARCH_INSTRUCTIONS = """jsonl_search usage:
 - Use jsonl_search for saved JSONL files when you need structured rows or selected fields.
 - Pass path to scope to a JSONL file, a directory of JSONL files, or a glob; omit path to search all readable JSONL files.
 - Pass query for an optional ripgrep prefilter before field and where filtering.
-- Use fields to return only the keys needed for the next decision."""
+- Use fields to return only the keys needed for the next decision.
+- Use where range filters with op gt/gte/lt/lte and type number/date for explicit scalar comparisons.
+- Use field_searches to extract matching lines from large multiline string fields after rows are selected."""
 
 DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE = (
     "Run N independent prompts as one-shot LLM completions in parallel. Each call is stateless: no tools, no memory, no continuation "

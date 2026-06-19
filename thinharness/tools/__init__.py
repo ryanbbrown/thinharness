@@ -16,7 +16,7 @@ from .base import (
 )
 from .bash import BashArgs, BashTool
 from .filesystem import FileTools, builtin_tools
-from .jsonl import JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
+from .jsonl import JsonlFieldSearch, JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
 from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
 from .parallel_llm import FilePromptSource, InlinePromptSource, ParallelLlmArgs, ParallelLlmTool, create_parallel_llm_tool
 from .skills import Skill, SkillRegistry
@@ -28,6 +28,7 @@ __all__ = [
     "Json",
     "JsonlSearch",
     "JsonlSearchArgs",
+    "JsonlFieldSearch",
     "JsonlWhereFilter",
     "MCPDependencyError",
     "MCPError",
