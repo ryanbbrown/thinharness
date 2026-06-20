@@ -88,6 +88,7 @@ class _CandidateScan:
 
 
 _RANGE_OPS = {"gt", "gte", "lt", "lte"}
+_TYPED_EQUALITY_OPS = {"eq", "ne"}
 
 
 @dataclass(frozen=True)
@@ -479,10 +480,18 @@ def _compile_where(where: list[JsonlWhereFilter]) -> list[_CompiledWhere]:
                 )
             )
             continue
-        if filt.type is not None:
+        if filt.type is not None and op not in _TYPED_EQUALITY_OPS:
             raise ValueError(f"op {op!r} does not accept 'type'")
         if op in {"eq", "ne", "contains", "regex"} and filt.value is None:
             raise ValueError(f"op {op!r} requires 'value'")
+        typed_equality_target: Decimal | _DateValue | None = None
+        if op in _TYPED_EQUALITY_OPS and filt.type is not None:
+            if filt.value == "":
+                raise ValueError(f"op {op!r} requires non-empty 'value'")
+            if filt.values is not None:
+                raise ValueError(f"op {op!r} does not accept 'values'")
+            assert filt.value is not None
+            typed_equality_target = _parse_range_target(filt.type, filt.value)
         if op == "in" and filt.values is None:
             raise ValueError("op 'in' requires 'values'")
         compiled.append(
@@ -492,7 +501,8 @@ def _compile_where(where: list[JsonlWhereFilter]) -> list[_CompiledWhere]:
                 op=op,
                 value=filt.value,
                 values=filt.values,
-                compare_type=None,
+                compare_type=filt.type,
+                target=typed_equality_target,
             )
         )
     return compiled
@@ -634,6 +644,13 @@ def _where_passes(row: Any, where: list[_CompiledWhere]) -> _WhereResult:
             if not passed:
                 return _WhereResult(False)
             continue
+        if filt.op in _TYPED_EQUALITY_OPS and filt.compare_type is not None:
+            passed, non_comparable = _apply_typed_equality_op(value, filt.op, filt.compare_type, filt.target)
+            if non_comparable:
+                return _WhereResult(False, compare_warning=True)
+            if not passed:
+                return _WhereResult(False)
+            continue
         if not _apply_where_op(value, filt.op, filt.value, filt.values):
             return _WhereResult(False)
     return _WhereResult(True)
@@ -688,6 +705,26 @@ def _apply_range_op(value: Any, op: str, compare_type: Literal["number", "date"]
     raise ValueError(f"unknown range type: {compare_type!r}")
 
 
+def _apply_typed_equality_op(value: Any, op: str, compare_type: Literal["number", "date"], target: Any) -> tuple[bool, bool]:
+    """Evaluate a typed equality operator, returning (passed, non-comparable)."""
+    if compare_type == "number":
+        comparable = _number_value(value)
+        if comparable is None:
+            return False, True
+        passed = comparable == target
+    elif compare_type == "date":
+        comparable = _parse_date_value(value)
+        if comparable is None:
+            return False, True
+        compared = _compare_date_equality(comparable, target)
+        if compared is None:
+            return False, True
+        passed = compared
+    else:
+        raise ValueError(f"unknown equality type: {compare_type!r}")
+    return (not passed if op == "ne" else passed), False
+
+
 def _number_value(value: Any) -> Decimal | None:
     """Return a comparable JSON number, excluding bool and non-finite float values."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -707,6 +744,17 @@ def _compare_date_range(left: _DateValue, op: str, right: _DateValue) -> bool | 
     if _datetime_is_aware(left.value) != _datetime_is_aware(right.value):
         return None
     return _compare_range(left.value, op, right.value)
+
+
+def _compare_date_equality(left: _DateValue, right: _DateValue) -> bool | None:
+    """Compare parsed date values, returning None for aware/naive datetime mismatch."""
+    if left.date_only or right.date_only:
+        return _calendar_date(left.value) == _calendar_date(right.value)
+    if not isinstance(left.value, datetime) or not isinstance(right.value, datetime):
+        return None
+    if _datetime_is_aware(left.value) != _datetime_is_aware(right.value):
+        return None
+    return left.value == right.value
 
 
 def _datetime_is_aware(value: datetime) -> bool:
@@ -760,7 +808,7 @@ def _describe_where(where: list[Json]) -> str:
             parts.append(f"{filt.get('field')} in {filt.get('values')}")
         elif op == "exists":
             parts.append(f"{filt.get('field')} exists")
-        elif op in _RANGE_OPS:
+        elif op in _RANGE_OPS or filt.get("type") is not None:
             parts.append(f"{filt.get('field')} {op} {filt.get('value')!r} ({filt.get('type')})")
         else:
             parts.append(f"{filt.get('field')} {op} {filt.get('value')!r}")

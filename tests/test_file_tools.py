@@ -943,6 +943,41 @@ def test_jsonl_search_field_search_combines_with_range_where_filters(tmp_path: P
     assert '  1: {"id": 1}' in result.content
     assert "      1: target line" in result.content
 
+def test_jsonl_search_number_equality_filters_match_json_numbers_only(tmp_path: Path) -> None:
+    rows = [
+        {"id": 1, "state_index": 1},
+        {"id": 2, "state_index": "1"},
+        {"id": 3, "state_index": True},
+        {"id": 4, "state_index": 2},
+        {"id": 5, "state_index": 1.0},
+        {"id": 6},
+    ]
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    tools = FileTools(tmp_path)
+
+    eq = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "state_index", "op": "eq", "value": "1", "type": "number"}],
+        "fields": {"id": 0},
+    })
+    ne = tools.jsonl_search({
+        "path": "*.jsonl",
+        "where": [{"field": "state_index", "op": "ne", "value": "1", "type": "number"}],
+        "fields": {"id": 0},
+    })
+
+    assert eq.ok, eq.content
+    assert "where: state_index eq '1' (number)" in eq.content
+    assert "rows_matched: 2" in eq.content
+    assert '  1: {"id": 1}' in eq.content
+    assert '  5: {"id": 5}' in eq.content
+    assert '"id": 2' not in eq.content
+    assert eq.metadata["compare_warnings"] == 3
+    assert ne.ok, ne.content
+    assert "rows_matched: 1" in ne.content
+    assert '  4: {"id": 4}' in ne.content
+    assert '"id": 1' not in ne.content
+
 def test_jsonl_search_number_range_filters_match_json_numbers_only(tmp_path: Path) -> None:
     rows = [
         {"id": 1, "score": 9.5},
@@ -1039,7 +1074,7 @@ def test_jsonl_search_rejects_invalid_range_filter_definitions_before_scanning(t
         [{"field": "score", "op": "gt", "value": "", "type": "number"}],
         [{"field": "score", "op": "gt", "value": "1"}],
         [{"field": "score", "op": "gt", "value": "1", "type": "number", "values": ["1"]}],
-        [{"field": "score", "op": "eq", "value": "1", "type": "number"}],
+        [{"field": "score", "op": "contains", "value": "1", "type": "number"}],
         [{"field": "published_at", "op": "lt", "value": "not-a-date", "type": "date"}],
     ]
 
