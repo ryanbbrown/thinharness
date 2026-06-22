@@ -292,7 +292,7 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
 - **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and retry settings.
 - **Skills:** explicit `skill_read` and `skill_run` tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.
-- **Resume:** clean new-turn continuation through opaque provider session state.
+- **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Background tools:** opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.
@@ -302,11 +302,47 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 - **Limits and notices:** configured request, tool-call, output-retry, and tool-retry budgets bound each run; near-limit guidance can warn the model before request or tool-call budgets are exhausted.
 - **Tracing:** local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.
 
+## Resume
+
+Cleanly completed runs return `HarnessResult.resume_state`, a JSON-serializable transcript that can be passed back as `resume_from` with the next user message.
+
+```python
+first = await harness.run("Summarize this repository.")
+second = await harness.run("Now turn that into a checklist.", resume_from=first.resume_state)
+```
+
+For the built-in OpenAI, Anthropic, and OpenRouter adapters, resume state is self-contained and provider-agnostic. A run captured with one built-in provider or model can be replayed by another built-in provider or model, subject to provider wire-format acceptance for tool-call ids and argument JSON. The live harness config supplies the system prompt and tool schemas on resume; captured system prompts are not stored.
+
+Provider-specific reasoning chains are not preserved in version 2 resume state. OpenAI runs seeded manually with `previous_response_id` still work, but later resume state captures only the new transcript entries, not the externally seeded prior turns.
+
 ## Tracing
 
 Local tracing is on by default. It writes full plaintext JSONL traces under `~/.thinharness/traces/<encoded-project-root>/`, including prompts, model outputs, tool arguments, and tool results, so treat that directory as sensitive local data.
 
 Set `local_tracing=False` or `THINHARNESS_DISABLE_LOCAL_TRACING=1` to disable local trace files. External tracing is generic OpenTelemetry: pass any tracer with `start_as_current_span(...)` or `start_span(...)` in `TracingOptions`, and each sink keeps its own capture policy.
+
+## Examples
+
+Three agents built on ThinHarness, from a self-contained demo to a benchmark run to one I use live.
+
+### 1. Web Research Report
+
+A market-landscape research agent that plans, runs batched Exa search, triages and fetches sources, extracts structured source notes with `parallel_llm`, drafts a report, and runs a `citation_critic` subagent before finalizing. 
+
+It isn't meant to be a state-of-the-art research agent; it's a worked example showing the harness drive a non-trivial agentic loop correctly &mdash; real multi-tool use across 15 model turns, ending in a reasonable cited report. The full run is browsable on the [docs site](https://ryanbbrown.com/thinharness/examples).
+
+### 2. LongMemEval-V2 Reproduction
+
+I ran ThinHarness on a 127-question subset of a real long-term-memory retrieval benchmark, and did a local reproduction of the benchmark's optimized harness on the same subset.
+
+- **Performance:** Matched-or-better accuracy (74.0% vs 72.4% on the 127 dynamic questions) with ~46% less token usage (62M vs. 116M). See [my fork](https://github.com/ryanbbrown/LongMemEval-V2) for more details.
+- **Simpler Setup:** ThinHarness only had its built-in filesystem tools (with `jsonl_search` doing the heavy lifting), while the benchmark harness was a full Codex instance with shell and a custom Python tool designed for the task.
+
+### 3. Personal Opinions Agent
+
+An agent I run live for myself, inspired by [this Substack post](https://blog.kunchenguid.com/p/everyone-should-have-an-opinionsmd). On a schedule, it reads my Readwise highlights + surrounding context, draws on what it's learned in past runs, and proposes conceptual changes to a durable `OPINIONS.md`.
+
+Approval happens over Telegram, and it can be simple accept/reject or involve multi-turn revision + discussion. Under the hood it exercises filesystem tools over a JSONL corpus, native structured output, long-term memory, a custom validation tool, and resumable conversations that pick up across each round. See [here](https://github.com/ryanbbrown/opinions-agent) for the code.
 
 ## Status
 

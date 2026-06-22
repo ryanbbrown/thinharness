@@ -205,7 +205,7 @@
             <thead><tr><th>Name</th><th>Meaning</th></tr></thead>
             <tbody>
               <tr><td><code>Model</code></td><td>Protocol for reusable model configuration. It creates isolated <code>ModelSession</code> objects.</td></tr>
-              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Anthropic and OpenRouter sessions store message lists; OpenAI Responses stores <code>previous_response_id</code>. All expose <code>start</code>, continuation, correction, resume, and <code>dump_state</code> methods.</td></tr>
+              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Built-in sessions keep native in-run state plus a parallel neutral transcript; <code>dump_state</code> returns the transcript for provider-agnostic resume. All expose <code>start</code>, continuation, correction, resume, and <code>dump_state</code> methods.</td></tr>
               <tr><td><code>ModelTurn</code></td><td>Normalized provider response: assistant text, requested <code>ModelToolCall</code> entries, raw provider JSON.</td></tr>
               <tr><td><code>ModelToolCall</code></td><td>Normalized tool request with id, name, and raw JSON argument string.</td></tr>
               <tr><td><code>ToolOutput</code></td><td>Tool result sent back to the provider so the model can continue after a tool call: call id plus model-visible output string.</td></tr>
@@ -386,21 +386,21 @@
             <td>OpenAI Responses</td>
             <td><code>OpenAIProvider</code></td>
             <td><code>OpenAIResponsesModel</code></td>
-            <td><code>OpenAIResponsesSession.previous_response_id</code></td>
+            <td>Live <code>previous_response_id</code> chaining plus neutral transcript state</td>
             <td><code>native</code>: ask OpenAI directly for JSON-schema output.</td>
           </tr>
           <tr>
             <td>Anthropic Messages</td>
             <td><code>AnthropicProvider</code></td>
             <td><code>AnthropicMessagesModel</code></td>
-            <td><code>system</code> plus full <code>messages</code> transcript</td>
+            <td>Live <code>system</code>/<code>messages</code> plus neutral transcript state</td>
             <td><code>tool</code>: use the harness-created <code>final_result</code> tool because Anthropic native JSON-schema output is not supported here.</td>
           </tr>
           <tr>
             <td>OpenRouter chat completions</td>
             <td><code>OpenRouterProvider</code></td>
             <td><code>OpenRouterModel</code></td>
-            <td>full chat <code>messages</code> transcript</td>
+            <td>Live chat <code>messages</code> plus neutral transcript state</td>
             <td><code>tool</code> by default; explicit <code>native</code> mode is passed through as OpenRouter <code>response_format</code>.</td>
           </tr>
         </tbody>
@@ -655,7 +655,7 @@
               </tr>
               <tr>
                 <td><code>RunContext.pause_for_approval()</code></td>
-                <td>Captures provider resume state, pending tool batch, usage, responses, tool records, emitted limit-warning keys, metadata, and any background-task cancellations before emitting <code>RunCompletedEvent</code>.</td>
+                <td>Captures provider resume payload, pending tool batch, usage, responses, tool records, emitted limit-warning keys, metadata, and any background-task cancellations before emitting <code>RunCompletedEvent</code>.</td>
               </tr>
               <tr>
                 <td><code>Harness.resume_approvals()</code></td>
@@ -675,7 +675,7 @@
           <p>
             The paused batch counts against <code>usage.tool_calls</code> at pause time and is not counted again during
             resume. The post-resume result contains the whole logical run history, not only the second half of the run.
-            This is why approval envelopes are larger than plain provider resume state: they carry prior responses and
+            This is why approval envelopes are larger than plain resume state: they carry provider transcript state, prior responses, and
             accounting as well as the provider checkpoint.
           </p>
         </div>
@@ -898,13 +898,13 @@
               </tr>
               <tr>
                 <td>Resume state</td>
-                <td>Provider-specific resume state copied into <code>HarnessResult.resume_state</code> while building the final result.</td>
-                <td>OpenAI stores a <code>previous_response_id</code>; Anthropic and OpenRouter store their message transcript plus provider metadata. Callers can store and pass it back, but should not edit or construct it.</td>
+                <td>Provider-agnostic transcript state copied into <code>HarnessResult.resume_state</code> while building the final result.</td>
+                <td>Built-in providers emit <code>kind="transcript"</code>, <code>version=2</code>, origin diagnostics, and neutral user/assistant/tool entries. Callers can store and pass it back, but should not edit or construct it.</td>
               </tr>
               <tr>
                 <td>Approval pause state</td>
                 <td>Harness-level <code>approval_pause</code> envelope copied into <code>HarnessResult.resume_state</code> when <code>stop_reason="approval_required"</code>.</td>
-                <td>Wraps provider state plus pending batch, run history, usage, emitted limit-warning keys, metadata, and background cancellations. It must be resumed with <code>resume_approvals()</code>, not <code>resume_from</code>.</td>
+                <td>Wraps provider transcript state plus pending batch, run history, usage, emitted limit-warning keys, metadata, and background cancellations. It must be resumed with <code>resume_approvals()</code>, not <code>resume_from</code>.</td>
               </tr>
             </tbody>
           </table>

@@ -40,7 +40,11 @@ class ApprovalToolCall:
 
 @dataclass(frozen=True)
 class ApprovalPause:
-    """Validated approval pause envelope data."""
+    """Validated approval pause envelope data.
+
+    provider_state is the provider resume payload. Built-in providers store the
+    full neutral transcript there; the approval envelope version is independent.
+    """
 
     provider_state: Json
     batch: list[ApprovalToolCall]
@@ -68,8 +72,11 @@ def build_approval_envelope(
     metadata: Json,
 ) -> Json:
     """Build an isolated JSON approval pause envelope."""
+    # Built-in provider_state contains the full neutral transcript. The outer
+    # envelope version is unchanged because only the nested provider payload
+    # changed; old nested payloads fail later when the provider resumes them.
     # Raw provider responses make the post-resume result a full logical-run result.
-    # They also make approval envelopes grow with run length; host docs call this out.
+    # Both provider_state and responses make approval envelopes grow with run length.
     envelope: Json = {
         "kind": APPROVAL_ENVELOPE_KIND,
         "version": APPROVAL_ENVELOPE_VERSION,

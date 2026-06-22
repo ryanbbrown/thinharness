@@ -27,7 +27,33 @@ from thinharness.hooks import RunEndContext
 from thinharness.providers import ModelSession, ProviderError
 
 
-async def test_openai_resume_uses_previous_response_id_only_for_followup(tmp_path: Path) -> None:
+class _TerminalOpenAIProvider(OpenAIProvider):
+    def __init__(self) -> None:
+        super().__init__(api_key="fake")
+        self.payloads = []
+
+    async def create_response(self, payload):
+        self.payloads.append(payload)
+        return {"id": f"resp_{len(self.payloads)}", "output_text": "done"}
+
+
+class _MultiToolAnthropicProvider(FakeAnthropicProvider):
+    async def create_message(self, payload):
+        """Capture payloads and request two echo tool calls on the first user turn."""
+        self.payloads.append(json.loads(json.dumps(payload)))
+        last = payload["messages"][-1]
+        if isinstance(last["content"], str):
+            return {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_a", "name": "echo", "input": {"value": "a"}},
+                    {"type": "tool_use", "id": "toolu_b", "name": "echo", "input": {"value": "b"}},
+                ],
+                "stop_reason": "tool_use",
+            }
+        return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+
+
+async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
     client = FakeClient()
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read"]), model=OpenAIResponsesModel("gpt-test", provider=client))
@@ -36,14 +62,26 @@ async def test_openai_resume_uses_previous_response_id_only_for_followup(tmp_pat
     state = json.loads(json.dumps(first.resume_state))
     second = await harness.run("follow-up", resume_from=state)
 
-    assert first.resume_state == {"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": "resp_2"}
+    assert first.resume_state["kind"] == "transcript"
+    assert first.resume_state["version"] == 2
+    assert first.resume_state["origin_provider"] == "openai"
+    assert first.resume_state["origin_model"] == "gpt-test"
+    assert [entry["role"] for entry in first.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
     assert second.text == "done"
     assert client.payloads[1]["previous_response_id"] == "resp_1"
     assert client.payloads[1]["instructions"] == harness.system_instructions()
-    assert client.payloads[2]["input"] == "follow-up"
-    assert client.payloads[2]["previous_response_id"] == "resp_2"
+    assert "previous_response_id" not in client.payloads[2]
+    assert [item["type"] for item in client.payloads[2]["input"]] == [
+        "message",
+        "function_call",
+        "function_call_output",
+        "message",
+        "message",
+    ]
+    assert client.payloads[2]["input"][0]["content"][0]["text"] == "first"
+    assert client.payloads[2]["input"][-1]["content"][0]["text"] == "follow-up"
     assert client.payloads[2]["instructions"] == harness.system_instructions()
-    assert "first" not in json.dumps(client.payloads[2])
+    assert "first" in json.dumps(client.payloads[2])
 
 
 async def test_anthropic_resume_replays_transcript_and_appends_new_user_turn(tmp_path: Path) -> None:
@@ -83,25 +121,129 @@ async def test_openrouter_resume_replays_transcript_and_appends_new_user_turn(tm
     assert assistant_tool_call["type"] == "function"
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == assistant_tool_call["id"]
+    assert provider.payloads[2]["messages"][4] == {"role": "assistant", "content": "done"}
 
 
-def test_resume_rejects_provider_model_version_and_unknown_key_mismatches(tmp_path: Path) -> None:
-    def openai_harness() -> Harness:
+async def test_cross_provider_resume_after_tool_round_trip(tmp_path: Path) -> None:
+    source_provider = FakeAnthropicProvider()
+    source = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
+    state = json.loads(json.dumps((await source.run("first")).resume_state))
+
+    openai_provider = _TerminalOpenAIProvider()
+    openai_result = await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=OpenAIResponsesModel("gpt-test", provider=openai_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=state)
+    openai_input = openai_provider.payloads[0]["input"]
+    assert openai_result.text == "done"
+    assert [item["type"] for item in openai_input[:3]] == ["message", "function_call", "function_call_output"]
+    assert openai_input[1]["call_id"] == "toolu_1"
+    assert openai_input[2]["call_id"] == "toolu_1"
+
+    openrouter_provider = FakeOpenRouterProvider()
+    openrouter_result = await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=OpenRouterModel("openai/test", provider=openrouter_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=state)
+    replay = openrouter_provider.payloads[0]["messages"]
+    assert openrouter_result.text == "done"
+    assert replay[2]["tool_calls"][0]["id"] == "toolu_1"
+    assert replay[3]["tool_call_id"] == "toolu_1"
+
+
+async def test_multi_tool_batch_replay_shapes(tmp_path: Path) -> None:
+    source_provider = _MultiToolAnthropicProvider()
+    source = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
+    state = json.loads(json.dumps((await source.run("first")).resume_state))
+    assert json.loads(json.dumps(state)) == state
+
+    anthropic_provider = FakeAnthropicProvider()
+    await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=AnthropicMessagesModel("claude-test", provider=anthropic_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=state)
+    tool_result_blocks = anthropic_provider.payloads[0]["messages"][2]["content"]
+    assert [block["type"] for block in tool_result_blocks] == ["tool_result", "tool_result"]
+    assert [block["tool_use_id"] for block in tool_result_blocks] == ["toolu_a", "toolu_b"]
+
+    openrouter_provider = FakeOpenRouterProvider()
+    await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=OpenRouterModel("openai/test", provider=openrouter_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=state)
+    roles = [message["role"] for message in openrouter_provider.payloads[0]["messages"]]
+    assert roles[:6] == ["system", "user", "assistant", "tool", "tool", "assistant"]
+
+
+async def test_resume_rederives_live_system_prompt(tmp_path: Path) -> None:
+    anthropic_source = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()),
+        tools=[echo_tool()],
+    )
+    anthropic_state = json.loads(json.dumps((await anthropic_source.run("first")).resume_state))
+    anthropic_provider = FakeAnthropicProvider()
+    await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        model=AnthropicMessagesModel("claude-test", provider=anthropic_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=anthropic_state)
+    assert anthropic_provider.payloads[0]["system"].startswith("new system")
+    assert "old system" not in anthropic_provider.payloads[0]["system"]
+
+    openrouter_source = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        model=OpenRouterModel("openai/test", provider=FakeOpenRouterProvider()),
+        tools=[echo_tool()],
+    )
+    openrouter_state = json.loads(json.dumps((await openrouter_source.run("first")).resume_state))
+    openrouter_provider = FakeOpenRouterProvider()
+    await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        model=OpenRouterModel("openai/test", provider=openrouter_provider),
+        tools=[echo_tool()],
+    ).run("follow-up", resume_from=openrouter_state)
+    assert openrouter_provider.payloads[0]["messages"][0]["content"].startswith("new system")
+    assert "old system" not in openrouter_provider.payloads[0]["messages"][0]["content"]
+
+    openai_source = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        model=OpenAIResponsesModel("gpt-test", provider=_TerminalOpenAIProvider()),
+    )
+    openai_state = json.loads(json.dumps((await openai_source.run("first")).resume_state))
+    openai_provider = _TerminalOpenAIProvider()
+    await Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        model=OpenAIResponsesModel("gpt-test", provider=openai_provider),
+    ).run("follow-up", resume_from=openai_state)
+    assert openai_provider.payloads[0]["instructions"].startswith("new system")
+    assert "old system" not in openai_provider.payloads[0]["instructions"]
+
+
+def test_resume_allows_provider_model_mismatches_and_rejects_bad_versions_and_keys(tmp_path: Path) -> None:
+    class NoToolOpenAIProvider(OpenAIProvider):
+        def __init__(self) -> None:
+            super().__init__(api_key="fake")
+
+        async def create_response(self, payload):
+            return {"id": "resp_text", "output_text": "done"}
+
+    def openai_harness(model_name: str = "gpt-test") -> Harness:
         """Create a fresh OpenAI resume harness."""
-        return Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=FakeClient()))
+        return Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel(model_name, provider=NoToolOpenAIProvider()))
 
     state = openai_harness().run_sync("first").resume_state
     anthropic = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()))
 
-    with pytest.raises(HarnessError, match="resume_from kind"):
-        anthropic.run_sync("follow-up", resume_from=state)
+    assert anthropic.run_sync("follow-up", resume_from=state).text == "done"
+    assert openai_harness("other").run_sync("follow-up", resume_from=state).text == "done"
 
-    wrong_model = {**state, "model": "other"}
-    with pytest.raises(HarnessError, match="resume_from model"):
-        openai_harness().run_sync("follow-up", resume_from=wrong_model)
-
-    wrong_version = {**state, "version": 2}
-    with pytest.raises(HarnessError, match="resume_from version 2 is not supported"):
+    wrong_version = {**state, "version": 1}
+    with pytest.raises(HarnessError, match="resume_from version 1 is not supported"):
         openai_harness().run_sync("follow-up", resume_from=wrong_version)
 
     missing_version = {key: value for key, value in state.items() if key != "version"}
@@ -111,6 +253,9 @@ def test_resume_rejects_provider_model_version_and_unknown_key_mismatches(tmp_pa
     unknown = {**state, "foo": "bar"}
     with pytest.raises(HarnessError, match="unknown keys.*foo"):
         openai_harness().run_sync("follow-up", resume_from=unknown)
+
+    with pytest.raises(HarnessError, match="resume_from kind 'openai' is not supported"):
+        openai_harness().run_sync("follow-up", resume_from={"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": "resp_1"})
 
 
 def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> None:
@@ -129,24 +274,40 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
 
     with pytest.raises(HarnessError, match="resume_from must be a dict"):
         harness().run_sync("follow-up", resume_from="resp_abc")  # type: ignore[arg-type]
-    with pytest.raises(HarnessError, match="resume_from kind None does not match 'anthropic'"):
-        harness().run_sync("follow-up", resume_from={"version": 1, "model": "claude-test", "system": "", "messages": []})
-    with pytest.raises(HarnessError, match="field 'previous_response_id' has wrong type"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=FakeClient())).run_sync(
+    base_state = {"kind": "transcript", "version": 2, "origin_provider": "anthropic", "origin_model": "claude-test"}
+    with pytest.raises(HarnessError, match="resume_from kind None is not supported"):
+        harness().run_sync("follow-up", resume_from={"version": 2, "origin_provider": "anthropic", "origin_model": "claude-test", "entries": []})
+    with pytest.raises(HarnessError, match="missing required field: 'entries'"):
+        harness().run_sync("follow-up", resume_from=base_state)
+    with pytest.raises(HarnessError, match="field 'entries' has wrong type"):
+        harness().run_sync("follow-up", resume_from={**base_state, "entries": "bad"})
+    with pytest.raises(HarnessError, match="entry 'user' has wrong keys"):
+        harness().run_sync("follow-up", resume_from={**base_state, "entries": [{"role": "user", "content": "hi"}]})
+    with pytest.raises(HarnessError, match="assistant tool call has wrong type"):
+        harness().run_sync(
             "follow-up",
-            resume_from={"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": 123},
+            resume_from={**base_state, "entries": [{"role": "assistant", "text": "", "tool_calls": [{"id": 1, "name": "x", "arguments": "{}"}]}]},
         )
-    with pytest.raises(HarnessError, match="missing required field: 'system'"):
-        harness().run_sync("follow-up", resume_from={"kind": "anthropic", "version": 1, "model": "claude-test"})
-    with pytest.raises(HarnessError, match="field 'messages' has wrong type"):
-        harness().run_sync("follow-up", resume_from={"kind": "anthropic", "version": 1, "model": "claude-test", "system": "", "messages": ["bad"]})
     with pytest.raises(HarnessError, match="JSON-serializable"):
         harness().run_sync(
             "follow-up",
-            resume_from={"kind": "anthropic", "version": 1, "model": "claude-test", "system": "", "messages": [{"bad": datetime.now()}]},
+            resume_from={**base_state, "entries": [{"role": "user", "content": datetime.now(), "notice": False}]},
         )
 
     assert events == []
+
+
+def test_anthropic_resume_rejects_non_json_tool_arguments() -> None:
+    model = AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider())
+
+    with pytest.raises(HarnessError, match="resume_from assistant tool call arguments must be JSON"):
+        model.resume_session({
+            "kind": "transcript",
+            "version": 2,
+            "origin_provider": "openrouter",
+            "origin_model": "openai/test",
+            "entries": [{"role": "assistant", "text": "", "tool_calls": [{"id": "call_1", "name": "echo", "arguments": "{bad"}]}],
+        })
 
 
 def test_structured_output_final_result_omits_resume_state(tmp_path: Path) -> None:
@@ -245,17 +406,29 @@ def test_resumed_user_prompt_runs_prompt_submit_hooks_before_notices(tmp_path: P
     assert resumed_session.notice_calls[0][1][0].content == "Final request: produce the answer now; do not request tools."
 
 
-def test_no_openai_response_id_omits_resume_state(tmp_path: Path) -> None:
+def test_no_openai_response_id_still_produces_resume_state(tmp_path: Path) -> None:
     class NoIdProvider(OpenAIProvider):
         def __init__(self) -> None:
             super().__init__(api_key="fake")
+            self.payloads = []
 
         async def create_response(self, payload):
+            self.payloads.append(payload)
             return {"output_text": "done"}
 
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=NoIdProvider()))
+    provider = NoIdProvider()
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=provider))
 
-    assert harness.run_sync("first").resume_state is None
+    first = harness.run_sync("first")
+    assert first.resume_state is not None
+    assert first.resume_state["kind"] == "transcript"
+    resumed = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=provider)).run_sync(
+        "follow-up",
+        resume_from=json.loads(json.dumps(first.resume_state)),
+    )
+    assert resumed.text == "done"
+    assert "previous_response_id" not in provider.payloads[1]
+    assert [item["type"] for item in provider.payloads[1]["input"]] == ["message", "message", "message"]
 
 
 def test_non_clean_exits_omit_resume_state(tmp_path: Path) -> None:
@@ -365,10 +538,10 @@ async def test_resume_state_is_detached_outbound_and_inbound(tmp_path: Path) -> 
     first = await harness.run("first")
     stashed = json.loads(json.dumps(first.resume_state))
 
-    first.resume_state["messages"][1]["content"] = "mutated"
+    first.resume_state["entries"][0]["content"] = "mutated"
     inbound = json.loads(json.dumps(stashed))
     result = await harness.run("follow-up", resume_from=inbound)
-    inbound["messages"][1]["content"] = "mutated after call"
+    inbound["entries"][0]["content"] = "mutated after call"
 
     assert result.text == "done"
     assert provider.payloads[2]["messages"][1]["content"] == "first"
@@ -393,7 +566,13 @@ def test_adapter_validation_does_not_mutate_state_on_failure() -> None:
     model = AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider())
 
     with pytest.raises(HarnessError):
-        model.resume_session({"kind": "anthropic", "version": 1, "model": "claude-test", "system": "", "messages": ["bad"]})
+        model.resume_session({
+            "kind": "transcript",
+            "version": 2,
+            "origin_provider": "anthropic",
+            "origin_model": "claude-test",
+            "entries": [{"role": "user", "content": "missing notice flag"}],
+        })
 
     session = model.new_session()
     assert session.messages == []

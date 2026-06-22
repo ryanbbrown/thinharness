@@ -193,7 +193,7 @@ asyncio.run(main())</code></pre>
           <div class="f"><div class="ft">Subagents</div><p>Opt-in delegation through a built-in <code>subagent</code> tool and explicit <code>SubAgentConfig</code>.</p></div>
           <div class="f"><div class="ft">Parallel LLM</div><p>Opt-in <code>parallel_llm</code> fan-out for batches of independent one-shot prompts, plus <code>ParallelLlmTool(...).spec()</code> for renameable tools with explicit model, path, prompt, and retry settings.</p></div>
           <div class="f"><div class="ft">Skills</div><p>Explicit <code>skill_read</code> and <code>skill_run</code> tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.</p></div>
-          <div class="f"><div class="ft">Resume</div><p>Clean new-turn continuation through opaque provider session state.</p></div>
+          <div class="f"><div class="ft">Resume</div><p>Clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models.</p></div>
           <div class="f"><div class="ft">MCP</div><p>Optional MCP client support with lazy tool discovery and collision checks.</p></div>
           <div class="f"><div class="ft">Parallel tool calls</div><p>Same-turn tool batches run concurrently when every called tool is parallel-safe.</p></div>
           <div class="f"><div class="ft">Background tools</div><p>Opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.</p></div>
