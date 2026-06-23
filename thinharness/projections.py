@@ -93,6 +93,10 @@ def trace_input_messages_from_entries(entries: list[TranscriptEntry]) -> list[Js
 def trace_output_messages_from_assistant(entry_or_turn: AssistantEntry | ModelTurn) -> list[Json]:
     """Project a neutral assistant entry or model turn into OTel-style output messages."""
     parts: list[Json] = []
+    for reasoning in entry_or_turn.reasoning:
+        # OTel GenAI `thinking` part carries only text; opaque signatures/blobs are never traced.
+        if reasoning.text:
+            parts.append({"type": "thinking", "content": reasoning.text})
     if entry_or_turn.text:
         parts.append({"type": "text", "content": entry_or_turn.text})
     for call in entry_or_turn.tool_calls:

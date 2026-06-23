@@ -598,7 +598,7 @@ async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) 
     assert result.text == "done"
     assert called == [{"path": "hello.txt"}]
     assert paused.resume_state["provider_state"]["kind"] == "transcript"
-    assert paused.resume_state["provider_state"]["version"] == 2
+    assert paused.resume_state["provider_state"]["version"] == 3
     assert [entry["role"] for entry in paused.resume_state["provider_state"]["entries"]] == ["user", "assistant"]
     assert "previous_response_id" not in client.payloads[1]
     assert [item["type"] for item in client.payloads[1]["input"]] == ["message", "function_call", "function_call_output"]

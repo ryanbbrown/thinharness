@@ -105,7 +105,7 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
     await session.continue_with_user_message("fix this", instructions="system", tools=[], notices=[notice])
     resumed = model.resume_session({
         "kind": "transcript",
-        "version": 2,
+        "version": 3,
         "origin_provider": "openai",
         "origin_model": "gpt-test",
         "entries": [{"role": "user", "content": "prior", "notice": False}],
@@ -388,7 +388,7 @@ async def test_openai_notice_payload_live() -> None:
 @pytest.mark.skipif(not os.getenv("ANTHROPIC_API_KEY"), reason="ANTHROPIC_API_KEY is not set")
 async def test_anthropic_notice_payload_live() -> None:
     provider = AnthropicProvider()
-    model = AnthropicMessagesModel(os.getenv("THINHARNESS_LIVE_ANTHROPIC_MODEL", "claude-3-5-haiku-latest"), provider=provider)
+    model = AnthropicMessagesModel(os.getenv("THINHARNESS_LIVE_ANTHROPIC_MODEL", "claude-haiku-4-5"), provider=provider)
     session = model.new_session()
     sentinel_notice = ModelNotice(
         kind="limit_warning",

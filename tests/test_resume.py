@@ -63,7 +63,7 @@ async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path
     second = await harness.run("follow-up", resume_from=state)
 
     assert first.resume_state["kind"] == "transcript"
-    assert first.resume_state["version"] == 2
+    assert first.resume_state["version"] == 3
     assert first.resume_state["origin_provider"] == "openai"
     assert first.resume_state["origin_model"] == "gpt-test"
     assert [entry["role"] for entry in first.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
@@ -274,7 +274,7 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
 
     with pytest.raises(HarnessError, match="resume_from must be a dict"):
         harness().run_sync("follow-up", resume_from="resp_abc")  # type: ignore[arg-type]
-    base_state = {"kind": "transcript", "version": 2, "origin_provider": "anthropic", "origin_model": "claude-test"}
+    base_state = {"kind": "transcript", "version": 3, "origin_provider": "anthropic", "origin_model": "claude-test"}
     with pytest.raises(HarnessError, match="resume_from kind None is not supported"):
         harness().run_sync("follow-up", resume_from={"version": 2, "origin_provider": "anthropic", "origin_model": "claude-test", "entries": []})
     with pytest.raises(HarnessError, match="missing required field: 'entries'"):
@@ -284,9 +284,10 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
     with pytest.raises(HarnessError, match="entry 'user' has wrong keys"):
         harness().run_sync("follow-up", resume_from={**base_state, "entries": [{"role": "user", "content": "hi"}]})
     with pytest.raises(HarnessError, match="assistant tool call has wrong type"):
+        bad_assistant = {"role": "assistant", "text": "", "tool_calls": [{"id": 1, "name": "x", "arguments": "{}"}], "reasoning": []}
         harness().run_sync(
             "follow-up",
-            resume_from={**base_state, "entries": [{"role": "assistant", "text": "", "tool_calls": [{"id": 1, "name": "x", "arguments": "{}"}]}]},
+            resume_from={**base_state, "entries": [bad_assistant]},
         )
     with pytest.raises(HarnessError, match="JSON-serializable"):
         harness().run_sync(
@@ -303,10 +304,15 @@ def test_anthropic_resume_rejects_non_json_tool_arguments() -> None:
     with pytest.raises(HarnessError, match="resume_from assistant tool call arguments must be JSON"):
         model.resume_session({
             "kind": "transcript",
-            "version": 2,
+            "version": 3,
             "origin_provider": "openrouter",
             "origin_model": "openai/test",
-            "entries": [{"role": "assistant", "text": "", "tool_calls": [{"id": "call_1", "name": "echo", "arguments": "{bad"}]}],
+            "entries": [{
+                "role": "assistant",
+                "text": "",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": "{bad"}],
+                "reasoning": [],
+            }],
         })
 
 
@@ -568,7 +574,7 @@ def test_adapter_validation_does_not_mutate_state_on_failure() -> None:
     with pytest.raises(HarnessError):
         model.resume_session({
             "kind": "transcript",
-            "version": 2,
+            "version": 3,
             "origin_provider": "anthropic",
             "origin_model": "claude-test",
             "entries": [{"role": "user", "content": "missing notice flag"}],
