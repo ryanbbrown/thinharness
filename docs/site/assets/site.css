@@ -1812,3 +1812,27 @@ body.page-transcripts {
 background: #fff;
 }
 }
+
+/* ---- examples page: LongMemEval / transcript toggle ---- */
+.ex-toggle{display:flex;justify-content:center;gap:8px;width:min(1180px,calc(100vw - 48px));margin:18px auto 6px;}
+.ex-toggle button{font-family:var(--mono);font-size:13px;padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink-soft);cursor:pointer;transition:color .15s,background .15s,border-color .15s;}
+.ex-toggle button:hover{color:var(--green-deep);border-color:var(--green-line);}
+.ex-toggle button.is-active{color:var(--green-deep);background:var(--green-wash);border-color:var(--green-line);font-weight:600;}
+.ex-panel[hidden]{display:none !important;}
+.md-render{width:min(860px,calc(100vw - 48px));margin:0 auto;padding:14px 0 64px;color:var(--ink);font-family:var(--sans);line-height:1.62;}
+.md-render .md-eyebrow{font-family:var(--mono);font-size:13px;color:var(--green);letter-spacing:.04em;font-weight:500;margin:6px 0 6px;}
+.md-render h1{font-size:30px;margin:0 0 8px;letter-spacing:-.02em;font-weight:700;}
+.md-render h2{font-size:20px;margin:30px 0 10px;color:var(--green-deep);border-bottom:1px solid var(--line);padding-bottom:6px;}
+.md-render h3{font-size:16px;margin:20px 0 8px;}
+.md-render p{margin:10px 0;color:var(--ink-soft);}
+.md-render ul{margin:10px 0;padding-left:22px;color:var(--ink-soft);}
+.md-render li{margin:7px 0;}
+.md-render a{color:var(--green);text-decoration:underline;text-underline-offset:2px;}
+.md-render code{font-family:var(--mono);font-size:.86em;background:var(--green-wash);padding:1px 5px;border-radius:4px;color:var(--green-deep);}
+.md-render strong{color:var(--ink);}
+.md-table-wrap{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px;max-width:620px;}
+.md-render table{width:100%;border-collapse:collapse;font-size:13px;}
+.md-render th,.md-render td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+.md-render td:first-child,.md-render th:first-child{font-family:var(--mono);font-size:12px;color:var(--ink);white-space:nowrap;}
+.md-render thead th{background:var(--green-wash);color:var(--green-deep);font-weight:600;}
+.md-render tbody tr:last-child td{border-bottom:none;}

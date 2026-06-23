@@ -63,7 +63,7 @@ Stream events are high-level workflow events intended for app consumption:
 - `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
 - `ToolCallCompletedEvent.output` and `BackgroundTaskCompletedEvent.output` include model-visible tool output.
 - Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
-- `ModelMessageEvent.text` is included by default; set `include_model_text=False` to hide it.
+- `ModelMessageEvent.text` includes assistant text from the completed provider turn.
 - Child subagent events are flattened by default; set `include_subagents=False` to keep only the parent `subagent` tool lifecycle.
 
 Workflow UIs should group nested work with `kind`, `run_id`, `parent_run_id`, and `parent_tool_call_id`. The final successful `RunCompletedEvent` carries the same full `HarnessResult` returned by `run()`, including `responses`, `tool_call_records`, and `resume_state`; treat that terminal result as completion data rather than a progress update.
@@ -245,11 +245,11 @@ Set `requires_approval=True` on a custom `ToolSpec` when the host application mu
 The paused result includes:
 
 - `pending_approvals`: call id, tool name, and raw JSON arguments for each approval-required call.
-- `resume_state`: one JSON-serializable approval envelope that wraps provider resume state, the full paused tool batch, run history, usage, metadata, and accounting needed to continue the same logical run.
+- `resume_state`: one JSON-serializable approval envelope that wraps the provider resume payload, the full paused tool batch, run history, usage, metadata, and accounting needed to continue the same logical run. For built-in providers, the nested `provider_state` is the full neutral transcript.
 
 Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
 
-Approval-required tools need a resumable model because the harness must continue the exact provider session after the paused assistant tool-call turn. They cannot use background execution, and they are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
+Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They cannot use background execution, and they are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
 
 ### Bash Prototype Tool
 
@@ -559,21 +559,24 @@ The contract:
 
 - Save `result.resume_state` exactly as JSON.
 - Pass it back as `resume_from` with the next user message.
-- Use the same provider, model, system prompt, and tools as the run that produced it.
+- Built-in provider state is a self-contained transcript and can be resumed by any built-in provider or model.
+- The resuming harness supplies the live system prompt and tool schemas; captured system prompts are not stored or restored.
 - Expect no state after failed, cancelled, partial, or exhausted runs.
-- Treat the contents as provider-owned details; do not read or construct them.
+- Treat the contents as harness-owned details; persist them exactly, but do not construct them by hand.
 
 `resume_from` is a new-turn API. The prior run completed, and the next call appends a new user message. It is not a retry mechanism, interrupted-tool-call recovery, or a way to continue the assistant's previous response.
 
 Approval pauses use a separate resume path. When `stop_reason == "approval_required"`, persist the returned `resume_state` envelope and call `resume_approvals(...)` with approval decisions instead of passing that envelope to `run(..., resume_from=...)`. The post-resume result carries the full logical run history: pre-pause responses, tool records, usage counters, and metadata are restored before the approved or rejected batch is processed.
 
-Budgets span the pause. The paused batch counts against `usage.tool_calls` exactly once at pause time, and a resumed run can immediately hit `limit_reached` if the logical run was already at its configured model-request or tool-call limit. The approval envelope also includes raw provider responses, so its stored size grows with run length.
+Budgets span the pause. The paused batch counts against `usage.tool_calls` exactly once at pause time, and a resumed run can immediately hit `limit_reached` if the logical run was already at its configured model-request or tool-call limit. The approval envelope also includes the full nested provider transcript and raw provider responses, so its stored size grows with run length. `APPROVAL_ENVELOPE_VERSION` remains independent from the nested provider-state version; old nested provider states fail when the provider resume step validates them.
 
-Provider behavior differs internally:
+Built-in provider resume details:
 
-- OpenAI Responses stores conversation state server-side. `resume_state` contains the previous response id.
-- Anthropic Messages stores the full message transcript in `resume_state`.
-- OpenRouter chat completions stores the full chat transcript in `resume_state`.
+- `resume_state["kind"] == "transcript"` and `version == 3`.
+- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention.
+- Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
+- Cross-provider resume is supported by the built-in renderers, but real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
+- `OpenAIResponsesSession.start(previous_response_id=...)` remains available as a low-level escape hatch, but later resume state captures only the new prompt onward, not the externally seeded prior turns.
 
 The same `resume_state` can be reused for sequential branching:
 

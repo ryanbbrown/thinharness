@@ -39,7 +39,6 @@ class StreamToolCall:
 class StreamOptions:
     """Visibility controls for Harness.stream()."""
 
-    include_model_text: bool = True
     include_subagents: bool = True
 
 

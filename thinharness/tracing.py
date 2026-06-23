@@ -1,11 +1,10 @@
 """OpenTelemetry-compatible tracing helpers.
 
-Model input messages are constructed from provider-neutral ModelTraceSnapshot
-objects, never from provider payloads, because providers.py may already have
-appended harness notices to those payloads. For top-level runs,
-langfuse.trace.input stores the raw caller prompt while the first model span
-stores the effective prompt after hooks. OTel GenAI message shapes follow the
-semantic convention as retrieved on 2026-05-19:
+Model input messages are constructed from provider-neutral request deltas,
+never from provider payloads. For top-level runs, the agent span stores the raw
+caller prompt while the first model span stores the effective prompt after
+hooks. OTel GenAI message shapes follow the semantic convention as retrieved
+on 2026-05-19:
 https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/.
 """
 
@@ -20,13 +19,13 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from .providers import ModelNotice
+from .projections import ModelRequestDelta, model_request_input_from_delta, trace_input_messages_from_entries, trace_output_messages_from_assistant
 from .tools.base import Json
 
 try:
@@ -71,22 +70,6 @@ class LocalTracing:
 
     tracer: Any
     trace_dir: Path
-
-
-@dataclass(frozen=True)
-class ModelTraceSnapshot:
-    """Canonical input for one model span."""
-
-    kind: Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool", "background_completion"]
-    prompt: str | None = None
-    tool_outputs: list[Json] | None = None
-    notices: list[Json] | None = None
-    structured_output: str | None = None
-
-    def with_notices(self, notices: list[ModelNotice]) -> ModelTraceSnapshot:
-        """Return a copy with model-facing notices attached."""
-        serialized = [asdict(notice) for notice in notices]
-        return replace(self, notices=serialized or None)
 
 
 def create_local_tracing(trace_dir: str | Path | None = None, *, project_root: str | Path | None = None) -> LocalTracing:
@@ -474,18 +457,18 @@ class _LocalTraceSpan:
         }
 
 
-def annotate_model_request(span: _SpanAdapter, snapshot: ModelTraceSnapshot, *, capture_messages: bool) -> None:
-    """Write opt-in request content for portable OTel and Langfuse display."""
+def annotate_model_request(span: _SpanAdapter, delta: ModelRequestDelta, *, capture_messages: bool) -> None:
+    """Write opt-in request content using OTel GenAI attributes."""
     if not capture_messages:
         return
-    input_payload = _model_request_input(snapshot)
+    input_payload = model_request_input_from_delta(delta)
+    notices = [asdict(notice) for notice in delta.notices]
     span.set_attributes({
-        "gen_ai.input.messages": serialize_attribute_value(_otel_input_messages(snapshot)),
+        "gen_ai.input.messages": serialize_attribute_value(trace_input_messages_from_entries(delta.entries)),
         "gen_ai.prompt": serialize_attribute_value(input_payload),
-        "langfuse.observation.input": serialize_attribute_value(input_payload),
-        "thinharness.model.request.kind": snapshot.kind,
-        "thinharness.output.mode_requested": snapshot.structured_output,
-        "thinharness.model.notices": serialize_attribute_value(snapshot.notices),
+        "thinharness.model.request.kind": delta.kind,
+        "thinharness.output.mode_requested": delta.structured_output,
+        "thinharness.model.notices": serialize_attribute_value(notices or None),
     })
 
 
@@ -499,12 +482,9 @@ def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool
         "gen_ai.response.finish_reasons": _finish_reasons(raw),
         **_usage_attributes(raw),
     }
-    output_messages = _otel_output_messages(turn)
+    output_messages = trace_output_messages_from_assistant(turn)
     if capture_messages and output_messages and output_messages[0]["parts"]:
         attributes.update({
-            "langfuse.observation.output": serialize_attribute_value(
-                {"text": text} if text else {"messages": output_messages}
-            ),
             "gen_ai.output.messages": serialize_attribute_value(output_messages),
         })
         if text:
@@ -525,11 +505,11 @@ def annotate_agent_start(
         return
     if top_level:
         span.set_attributes({
-            "langfuse.trace.input": prompt,
+            "gen_ai.prompt": prompt,
             "gen_ai.system_instructions": serialize_attribute_value([{"type": "text", "content": instructions}]),
         })
     else:
-        span.set_attribute("langfuse.observation.input", prompt)
+        span.set_attribute("gen_ai.prompt", prompt)
 
 
 def annotate_agent_result(
@@ -543,15 +523,12 @@ def annotate_agent_result(
     """Write opt-in agent trace or observation output attributes."""
     if not capture_messages:
         return
-    output_payload = output_schema.dump(result.output) if output_schema is not None and result.output is not None else None
-    output = {"text": result.text, "output": output_payload, "stop_reason": result.stop_reason}
     if top_level:
         span.set_attributes({
-            "langfuse.trace.output": serialize_attribute_value(output),
             "gen_ai.completion": result.text,
         })
     else:
-        span.set_attribute("langfuse.observation.output", serialize_attribute_value(output))
+        span.set_attribute("gen_ai.completion", result.text)
 
 
 def _trace_output_mode(output_schema: Any | None) -> str | None:
@@ -569,70 +546,6 @@ def serialize_attribute_value(value: Any) -> str | None:
         return json.dumps(value, ensure_ascii=False, default=str)
     except TypeError:
         return str(value)
-
-
-def _model_request_input(snapshot: ModelTraceSnapshot) -> Json | None:
-    """Return the backend-compatible logical request payload."""
-    if snapshot.kind in {"start", "resume"}:
-        return {"prompt": snapshot.prompt}
-    if snapshot.kind in {"tool_outputs", "approval_resume", "output_retry_tool"} or (
-        snapshot.kind == "background_completion" and snapshot.tool_outputs is not None
-    ):
-        return {"tool_outputs": snapshot.tool_outputs or []}
-    if snapshot.kind == "background_completion":
-        return {"background_completion": snapshot.prompt}
-    if snapshot.kind == "correction":
-        return {"correction": snapshot.prompt}
-    return None
-
-
-def _otel_input_messages(snapshot: ModelTraceSnapshot) -> list[Json] | None:
-    """Return OTel-shaped logical input messages."""
-    if snapshot.kind == "background_completion":
-        if snapshot.prompt is not None:
-            return [{"role": "user", "parts": [{"type": "text", "content": snapshot.prompt}]}]
-        return [
-            {
-                "role": "tool",
-                "parts": [{
-                    "type": "tool_result",
-                    "id": output.get("call_id"),
-                    "content": output.get("output"),
-                }],
-            }
-            for output in snapshot.tool_outputs or []
-        ]
-    if snapshot.kind in {"start", "resume", "correction"} and snapshot.prompt is not None:
-        return [{"role": "user", "parts": [{"type": "text", "content": snapshot.prompt}]}]
-    if snapshot.kind in {"tool_outputs", "approval_resume", "output_retry_tool"}:
-        return [
-            {
-                "role": "tool",
-                "parts": [{
-                    "type": "tool_result",
-                    "id": output.get("call_id"),
-                    "content": output.get("output"),
-                }],
-            }
-            for output in snapshot.tool_outputs or []
-        ]
-    return None
-
-
-def _otel_output_messages(turn: Any) -> list[Json]:
-    """Return OTel-shaped assistant output messages."""
-    parts: list[Json] = []
-    text = getattr(turn, "text", "") or ""
-    if text:
-        parts.append({"type": "text", "content": text})
-    for call in getattr(turn, "tool_calls", []) or []:
-        parts.append({
-            "type": "tool_call",
-            "id": getattr(call, "id", None),
-            "name": getattr(call, "name", None),
-            "arguments": getattr(call, "arguments", None),
-        })
-    return [{"role": "assistant", "parts": parts}]
 
 
 def _usage_attributes(raw: Json) -> Json:

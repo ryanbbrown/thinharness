@@ -597,9 +597,12 @@ async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) 
 
     assert result.text == "done"
     assert called == [{"path": "hello.txt"}]
-    assert paused.resume_state["provider_state"] == {"kind": "openai", "version": 1, "model": "test-model", "previous_response_id": "resp_1"}
-    assert client.payloads[1]["previous_response_id"] == "resp_1"
-    assert client.payloads[1]["input"][0] == {
+    assert paused.resume_state["provider_state"]["kind"] == "transcript"
+    assert paused.resume_state["provider_state"]["version"] == 3
+    assert [entry["role"] for entry in paused.resume_state["provider_state"]["entries"]] == ["user", "assistant"]
+    assert "previous_response_id" not in client.payloads[1]
+    assert [item["type"] for item in client.payloads[1]["input"]] == ["message", "function_call", "function_call_output"]
+    assert client.payloads[1]["input"][-1] == {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": result.tool_call_records[-1]["output"],
@@ -731,6 +734,30 @@ async def test_approval_resume_labels_inner_provider_state_errors(tmp_path: Path
     state["provider_state"]["kind"] = "wrong"
 
     with pytest.raises(HarnessError, match="approval state provider_state kind 'wrong' does not match 'scripted'"):
+        await harness.resume_approvals(state, [ApprovalDecision(call_id="call_1", approved=True)])
+
+
+async def test_approval_resume_labels_builtin_provider_state_errors(tmp_path: Path) -> None:
+    client = FakeClient()
+    model = _fake_openai(client)
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=model,
+        tools=[
+            ToolSpec(
+                "read",
+                "Read something.",
+                {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+                lambda _args: "read-ok",
+                requires_approval=True,
+            )
+        ],
+    )
+    paused = await harness.run("read")
+    state = json.loads(json.dumps(paused.resume_state))
+    state["provider_state"]["version"] = 1
+
+    with pytest.raises(HarnessError, match="approval state provider_state version 1 is not supported"):
         await harness.resume_approvals(state, [ApprovalDecision(call_id="call_1", approved=True)])
 
 

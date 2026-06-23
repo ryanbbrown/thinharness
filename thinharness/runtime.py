@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from .approvals import build_approval_envelope
 from .events import (
@@ -17,14 +17,18 @@ from .events import (
     RunCompletedEvent,
     RunStreamContext,
     StreamEmitter,
-    StreamToolCall,
 )
 from .hooks import LimitReachedContext, RunEndContext
 from .output import OutputTurnDecision, resolve_turn_output
+from .projections import (
+    ModelRequestKind,
+    model_request_delta_from_prompt,
+    model_request_delta_from_tool_outputs,
+    stream_tool_calls_from_assistant,
+)
 from .providers import ModelNotice, ModelSession, ModelTurn, StructuredOutputRequest, ToolOutput
 from .tool_execution import BackgroundToolCompletion, background_completion_message
 from .tracing import (
-    ModelTraceSnapshot,
     RunTracer,
     _trace_output_mode,
     annotate_agent_result,
@@ -75,7 +79,8 @@ class TurnDriver:
                 structured_output=self._structured_output,
                 notices=notices,
             ),
-            trace_snapshot=ModelTraceSnapshot(kind="start", prompt=prompt, structured_output=self._output_mode),
+            request_kind="start",
+            prompt=prompt,
         )
 
     async def resume(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
@@ -89,7 +94,8 @@ class TurnDriver:
                 structured_output=self._structured_output,
                 notices=notices,
             ),
-            trace_snapshot=ModelTraceSnapshot(kind="resume", prompt=prompt, structured_output=self._output_mode),
+            request_kind="resume",
+            prompt=prompt,
         )
 
     async def send_tool_outputs(
@@ -110,11 +116,8 @@ class TurnDriver:
                 structured_output=self._structured_output,
                 notices=[*notices, *(extra_notices or [])],
             ),
-            trace_snapshot=ModelTraceSnapshot(
-                kind=kind,
-                tool_outputs=[{"call_id": item.call_id, "output": item.output} for item in outputs],
-                structured_output=self._output_mode,
-            ),
+            request_kind=kind,
+            tool_outputs=outputs,
             output_retry=output_retry,
             extra_notices=extra_notices,
         )
@@ -136,7 +139,8 @@ class TurnDriver:
                 structured_output=self._structured_output,
                 notices=notices,
             ),
-            trace_snapshot=ModelTraceSnapshot(kind=kind, prompt=message, structured_output=self._output_mode),
+            request_kind=kind,
+            prompt=message,
             output_retry=output_retry,
         )
 
@@ -144,14 +148,19 @@ class TurnDriver:
         self,
         request: ModelRequest,
         *,
-        trace_snapshot: ModelTraceSnapshot,
+        request_kind: ModelRequestKind,
+        prompt: str | None = None,
+        tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
         extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Delegate to RunContext model advancement."""
         return await self._run_ctx.advance_model(
             request,
-            trace_snapshot=trace_snapshot,
+            request_kind=request_kind,
+            prompt=prompt,
+            tool_outputs=tool_outputs,
+            structured_output=self._output_mode,
             output_retry=output_retry,
             extra_notices=extra_notices,
         )
@@ -372,7 +381,10 @@ class RunContext:
         self,
         request: ModelRequest,
         *,
-        trace_snapshot: ModelTraceSnapshot,
+        request_kind: ModelRequestKind,
+        structured_output: str | None,
+        prompt: str | None = None,
+        tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
         extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
@@ -388,7 +400,7 @@ class RunContext:
         all_notices = [*notices, *(extra_notices or [])]
         self.emit(ModelRequestStartedEvent(
             **self.stream_base(),
-            request_kind=trace_snapshot.kind,
+            request_kind=request_kind,
             model=self.harness.model_ref,
             provider=getattr(self.harness.model.provider, "name", None),
         ))
@@ -405,11 +417,27 @@ class RunContext:
         if output_retry:
             self.usage.output_retries += 1
         with self.tracer.model(self.harness.model) as model_span:
-            snapshot = trace_snapshot.with_notices(all_notices)
+            if tool_outputs is None:
+                assert prompt is not None
+                assert request_kind in {"start", "resume", "correction", "background_completion"}
+                delta = model_request_delta_from_prompt(
+                    kind=cast(Literal["start", "resume", "correction", "background_completion"], request_kind),
+                    prompt=prompt,
+                    notices=all_notices,
+                    structured_output=structured_output,
+                )
+            else:
+                assert request_kind in {"tool_outputs", "approval_resume", "output_retry_tool", "background_completion"}
+                delta = model_request_delta_from_tool_outputs(
+                    kind=cast(Literal["tool_outputs", "approval_resume", "output_retry_tool", "background_completion"], request_kind),
+                    outputs=tool_outputs,
+                    notices=all_notices,
+                    structured_output=structured_output,
+                )
             model_span.for_each(
                 lambda span, option: annotate_model_request(
                     span,
-                    snapshot,
+                    delta,
                     capture_messages=option.capture_messages,
                 )
             )
@@ -434,11 +462,10 @@ class RunContext:
                     "thinharness.output.mode": finalized_mode,
                     "gen_ai.output.finalized": True,
                 })
-            options = self.stream.options if self.stream is not None else None
             self.emit(ModelMessageEvent(
                 **self.stream_base(),
-                text=turn.text if options is None or options.include_model_text else "",
-                tool_calls=tuple(StreamToolCall(id=call.id, name=call.name) for call in turn.tool_calls),
+                text=turn.text,
+                tool_calls=stream_tool_calls_from_assistant(turn),
                 finalized_output_mode=turn.finalized_output_mode,
             ))
             return turn, decision

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_ROOT = REPO_ROOT / "examples"
+LONGMEMEVAL_MD = EXAMPLES_ROOT / "longmemeval.md"
 DEFAULT_OUTPUT = REPO_ROOT / "docs" / "site" / "examples.html"
 LONG_PREVIEW_CHARS = 1200
 WEB_RESEARCH_REPORT_META = {
@@ -31,6 +33,72 @@ WEB_RESEARCH_REPORT_META = {
     ),
 }
 AGENT_META = {"web_research_report": WEB_RESEARCH_REPORT_META}
+
+
+def md_inline(text: str) -> str:
+    """Render inline markdown (code, bold, links) to HTML, preserving links."""
+    placeholders: list[str] = []
+
+    def hold(value: str) -> str:
+        placeholders.append(value)
+        return f"\0{len(placeholders) - 1}\0"
+
+    text = re.sub(r"`([^`]+)`", lambda m: hold(f"<code>{html.escape(m.group(1))}</code>"), text)
+    text = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda m: hold(f'<a href="{html.escape(m.group(2), quote=True)}">{html.escape(m.group(1))}</a>'),
+        text,
+    )
+    escaped = html.escape(text, quote=False).replace("\n", " ")
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    for index, value in enumerate(placeholders):
+        escaped = escaped.replace(f"\0{index}\0", value)
+    return escaped
+
+
+def md_table(block: str) -> str:
+    """Render a GFM table block to an HTML table wrapped for horizontal scroll."""
+    def cells(row: str) -> list[str]:
+        return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+    def is_separator(row: str) -> bool:
+        return set(row.replace("|", "").replace("-", "").replace(":", "").strip()) <= {" ", ""}
+
+    rows = [cells(line) for line in block.splitlines() if line.strip().startswith("|") and not is_separator(line)]
+    head, *body = rows
+    thead = "".join(f"<th>{md_inline(cell)}</th>" for cell in head)
+    tbody = "".join("<tr>" + "".join(f"<td>{md_inline(cell)}</td>" for cell in row) + "</tr>" for row in body)
+    return f'<div class="md-table-wrap"><table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table></div>'
+
+
+def render_markdown(md: str) -> str:
+    """Render the LongMemEval excerpt (headings, paragraphs, one table) to HTML.
+
+    Block-level only, matching the regex-based markdown approach used in build_site.py; the
+    leading h1 gets a site-style eyebrow so it reads like the rest of the docs pages.
+    """
+    out: list[str] = []
+    eyebrow_done = False
+    for block in re.split(r"\n[ \t]*\n", md.strip()):
+        block = block.strip()
+        if not block:
+            continue
+        if block.lstrip().startswith("|"):
+            out.append(md_table(block))
+        elif block.startswith("### "):
+            out.append(f"<h3>{md_inline(block[4:].strip())}</h3>")
+        elif block.startswith("## "):
+            out.append(f"<h2>{md_inline(block[3:].strip())}</h2>")
+        elif block.startswith("# "):
+            title = md_inline(block[2:].strip())
+            if eyebrow_done:
+                out.append(f"<h1>{title}</h1>")
+            else:
+                out.append(f'<div class="md-eyebrow">// benchmark reproduction</div><h1>{title}</h1>')
+                eyebrow_done = True
+        else:
+            out.append(f"<p>{md_inline(block)}</p>")
+    return "\n".join(out)
 
 
 def parse_jsonish(value: Any) -> Any:
@@ -445,12 +513,18 @@ def load_agents() -> list[dict[str, Any]]:
 def render_html(agents: list[dict[str, Any]], *, template_path: Path | None = None) -> str:
     data = json.dumps({"agents": agents}, ensure_ascii=False)
     script_data = data.replace("</", "<\\/")
-    if template_path and template_path.exists():
-        template = template_path.read_text(encoding="utf-8")
-        pattern = re.compile(r'(<script id="trace-data" type="application/json">)(.*?)(</script>)', re.S)
-        if pattern.search(template):
-            return pattern.sub(lambda match: f"{match.group(1)}{script_data}{match.group(3)}", template, count=1)
-    raise ValueError("examples template must contain <script id=\"trace-data\" type=\"application/json\">")
+    if not (template_path and template_path.exists()):
+        raise ValueError("examples template not found")
+    template = template_path.read_text(encoding="utf-8")
+    trace_pattern = re.compile(r'(<script id="trace-data" type="application/json">)(.*?)(</script>)', re.S)
+    if not trace_pattern.search(template):
+        raise ValueError("examples template must contain <script id=\"trace-data\" type=\"application/json\">")
+    template = trace_pattern.sub(lambda match: f"{match.group(1)}{script_data}{match.group(3)}", template, count=1)
+    longmem_pattern = re.compile(r'(<section id="panel-longmem"[^>]*>)(.*?)(</section>)', re.S)
+    if longmem_pattern.search(template) and LONGMEMEVAL_MD.exists():
+        longmem_html = "\n" + render_markdown(LONGMEMEVAL_MD.read_text(encoding="utf-8")) + "\n      "
+        template = longmem_pattern.sub(lambda match: f"{match.group(1)}{longmem_html}{match.group(3)}", template, count=1)
+    return template
 
 
 def main() -> None:

@@ -41,7 +41,6 @@
         <a href="#install">install</a>
         <a href="#use">use</a>
         <a href="#features">features</a>
-        <a href="#tracing">tracing</a>
         <a href="#status">status</a>
         <a href="#license">license</a>
       </nav>
@@ -49,7 +48,7 @@
       <section id="why">
         <div class="eyebrow">// why this exists</div>
         <h2>Why this exists</h2>
-        <p>Production agents rarely stop at framework configuration. Things like orchestration, permissions, user/session storage, and deployment become specific to the application and its users.</p><p>ThinHarness exists for the gap between building the agent loop yourself and adopting a large agent runtime where the loop comes bundled with assumptions you don’t need and can’t easily change.</p><p>It owns a focused set of agent-loop primitives that generalize well and are tedious to rebuild, leaving the rest of the application stack for you to own.</p><p>I started building ThinHarness after running into this gap in practice. Filesystem-enabled agents are simple but powerful, yet most frameworks don't include them out of the box, and the ones that do are among the largest and heaviest options (Claude Code -&gt; Claude Agent SDK, LangChain -&gt; deepagents, Agno). I usually needed only a small slice of the functionality, but that slice came with coupled assumptions that didn't match my application. Making it fit meant writing enough wrappers, adapters, and fixes that I ended up owning framework-shaped code anyway.</p>
+        <p>Production agents rarely stop at framework configuration. Things like orchestration, permissions, user/session storage, and deployment become specific to the application and its users.</p><p>ThinHarness exists for the gap between building the agent loop yourself and adopting a large agent runtime where the loop comes bundled with assumptions you don’t need and can’t easily change.</p><p>It owns a focused set of agent-loop primitives that generalize well and are tedious to rebuild, leaving the rest of the application stack for you to own.</p><p>I started building ThinHarness after running into this gap in practice. Filesystem-enabled agents are simple yet powerful, but you mostly get them by adopting a large framework with layers of abstraction. I usually needed only a small slice of the functionality, but that slice came with coupled assumptions that didn't match my application. Making it fit meant writing enough wrappers, adapters, and fixes that I ended up owning framework-shaped code anyway.</p>
       </section>
 
       <section id="comparison">
@@ -69,7 +68,6 @@
                 <th>LOC<sup>1</sup></th>
                 <th>Tool<br>retries<sup>2</sup></th>
                 <th>Sub-<br>agents</th>
-                <th>Structured<br>output</th>
                 <th>Skills</th>
                 <th>FS<br>tools</th>
                 <th>OTel<br>tracing</th>
@@ -78,63 +76,63 @@
             <tbody>
               <tr class="me">
                 <td class="lib"><div class="lib-cell"><img class="thinharness-table-logo" src="../assets/ThinHarness.svg" alt="">ThinHarness</div></td>
-                <td class="loc-n">8,241</td>
-                <td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">8,658</td>
+                <td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td>
               </tr>
               <tr>
-                <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" alt="">Claude Agent SDK<sup>3</sup></div></td>
-                <td class="loc-n">8,263</td>
-                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark p">◑</i></td>
+                <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/anthropic.svg" alt="">Claude Agent SDK</div></td>
+                <td class="loc-n">8,263<sup>3</sup></td>
+                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark p">◑</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/huggingface.svg" alt="">smolagents</div></td>
                 <td class="loc-n">9,840</td>
-                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark p">◑</i></td>
               </tr>
               <tr>
-                <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" alt="">deepagents<sup>4</sup></div></td>
-                <td class="loc-n">17,039</td>
-                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td>
+                <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/langchain.svg" alt="">deepagents</div></td>
+                <td class="loc-n">17,664<sup>4</sup></td>
+                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/amazonwebservices.svg" alt="">AWS Strands</div></td>
-                <td class="loc-n">28,157</td>
-                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">32,526</td>
+                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/microsoft.svg" alt="">Microsoft Agent Framework</div></td>
-                <td class="loc-n">40,514</td>
-                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">41,331</td>
+                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/pydantic.svg" alt="">Pydantic AI</div></td>
-                <td class="loc-n">59,034</td>
-                <td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">59,087</td>
+                <td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/google.svg" alt="">Google ADK</div></td>
-                <td class="loc-n">64,890</td>
-                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">65,799</td>
+                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/openai.svg" alt="">OpenAI Agents SDK</div></td>
-                <td class="loc-n">73,139</td>
-                <td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark n">○</i></td><td><i class="mark n">○</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">73,796</td>
+                <td><i class="mark n">○</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark p">◑</i></td><td><i class="mark p">◑</i></td>
               </tr>
               <tr>
                 <td class="lib"><div class="lib-cell"><img src="../assets/agno-a.svg" alt="">Agno</div></td>
-                <td class="loc-n">111,539</td>
-                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td>
+                <td class="loc-n">113,477</td>
+                <td><i class="mark p">◑</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark y">●</i></td><td><i class="mark p">◑</i></td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p class="table-note table-note-summary">Table focuses on harness-level features that differentiate the libraries. All listed also support MCP, lifecycle hooks, multi-turn conversations, and human-in-the-loop. It intentionally does not compare framework/platform features like vector DB integrations, hosted deployment, memory/session stores, or broad SaaS connectors.</p>
+        <p class="table-note table-note-summary">Table focuses on harness-level features that differentiate the libraries. All listed also support MCP, lifecycle hooks, multi-turn conversations, structured output, and human-in-the-loop. It intentionally does not compare framework/platform features like vector DB integrations, hosted deployment, memory/session stores, or broad SaaS connectors.</p>
         <div class="footnotes">
           <p><strong>1.</strong> LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.</p>
           <p><strong>2.</strong> Tool retries: a documented primitive (e.g. Pydantic AI's <code>ModelRetry</code>) that lets tools signal "model passed bad args — retry with this feedback," distinct from generic exception propagation.</p>
           <p><strong>3.</strong> Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.</p>
-          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈111k LOC.</p>
+          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈112k LOC.</p>
         </div>
         <p class="source-note"><span class="source-link">See <code>docs/table.md</code> for per-cell rationale and how the LOC numbers are measured.</span></p>
       </section>
@@ -146,10 +144,8 @@
         <div class="op-list">
           <div class="op-item"><div class="tag">purpose_built</div><h3>Purpose-built agents, not universal agents</h3><p>ThinHarness is for bounded agent loops inside software you control, not open-ended interactive assistants. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.</p></div>
           <div class="op-item"><div class="tag">no_bash</div><h3>No bash by default</h3><p>Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness keeps bash out of the default and built-in tool sets, but exposes an opt-in <code>BashTool</code> for exploratory runs before the workflow is hardened with typed tools.</p></div>
-          <div class="op-item"><div class="tag">skills</div><h3>Skills are tools, not auto-discovery</h3><p>Skills live in directories you point at explicitly. The agent calls <code>skill_read</code> and <code>skill_run</code> like any other tool. No interactive scan of the workspace, no global skill marketplace, no magic. SDK use is deliberate; the auto-discovery design is for interactive coding agents and doesn't belong here.</p></div>
           <div class="op-item"><div class="tag">search</div><h3>Search is a top priority</h3><p>The <code>search</code> tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a <code>jsonl_search</code> variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data: ripgrep row prefiltering, jq-style field projection, <code>where</code> filters, range filters, and snippets from large multiline fields.</p></div>
-          <div class="op-item"><div class="tag">parallel_llm</div><h3>Parallel LLM calls, built in</h3><p>Fan out from inside the harness when a workflow needs reliability beyond a single agent loop — majority vote, ensembled extraction. Set <code>builtin_parallel_llm_model</code> to enable the default <code>parallel_llm</code> tool for plain-text batches; for validated structured output per call, instantiate <code>ParallelLlmTool</code> yourself with <code>output_type</code> (a Pydantic model). Each call is stateless, and large batches can write JSON to <code>output_file</code>.</p></div>
-          <div class="op-item"><div class="tag">background_tools</div><h3>Background tools are simple</h3><p>Some long-running tools can start in the background so the agent can keep working. There is no detached job queue, polling API, or job-control surface; the current run still owns the task, and the completion is sent back to the model when it finishes.</p></div>
+          <div class="op-item"><div class="tag">parallel_llm</div><h3>Parallel LLM calls, built in</h3><p>Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Set <code>builtin_parallel_llm_model</code> to enable the default <code>parallel_llm</code> tool for plain-text batches; for validated structured output per call, instantiate <code>ParallelLlmTool</code> yourself with <code>output_type</code> (a Pydantic model). Each call is stateless, and large batches can write JSON to <code>output_file</code>.</p></div>
           <div class="op-item"><div class="tag">no_token_streaming</div><h3>No token streaming</h3><p>Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, background, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.</p></div>
           <div class="op-item"><div class="tag">providers</div><h3>Three providers, no matrix</h3><p>ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing.</p></div>
           <div class="op-item"><div class="tag">no_compaction</div><h3>No compaction</h3><p>Compaction is a workaround for context windows filling up across long, accumulating runs — useful for interactive coding sessions that sprawl over hours. For SDK-based business agents, the right answer to "context is getting big" is almost always better task decomposition: shorter runs, separate harness instances, narrower subagents.</p></div>
@@ -193,7 +189,7 @@ asyncio.run(main())</code></pre>
           <div class="f"><div class="ft">Subagents</div><p>Opt-in delegation through a built-in <code>subagent</code> tool and explicit <code>SubAgentConfig</code>.</p></div>
           <div class="f"><div class="ft">Parallel LLM</div><p>Opt-in <code>parallel_llm</code> fan-out for batches of independent one-shot prompts, plus <code>ParallelLlmTool(...).spec()</code> for renameable tools with explicit model, path, prompt, and retry settings.</p></div>
           <div class="f"><div class="ft">Skills</div><p>Explicit <code>skill_read</code> and <code>skill_run</code> tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.</p></div>
-          <div class="f"><div class="ft">Resume</div><p>Clean new-turn continuation through opaque provider session state.</p></div>
+          <div class="f"><div class="ft">Resume</div><p>Clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.</p></div>
           <div class="f"><div class="ft">MCP</div><p>Optional MCP client support with lazy tool discovery and collision checks.</p></div>
           <div class="f"><div class="ft">Parallel tool calls</div><p>Same-turn tool batches run concurrently when every called tool is parallel-safe.</p></div>
           <div class="f"><div class="ft">Background tools</div><p>Opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.</p></div>
@@ -203,13 +199,6 @@ asyncio.run(main())</code></pre>
           <div class="f"><div class="ft">Limits and notices</div><p>Configured request, tool-call, output-retry, and tool-retry budgets bound each run; near-limit guidance can warn the model before request or tool-call budgets are exhausted.</p></div>
           <div class="f"><div class="ft">Tracing</div><p>Local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.</p></div>
         </div>
-      </section>
-
-      <section id="tracing">
-        <div class="eyebrow">// tracing</div>
-        <h2>Tracing</h2>
-        <p>Local tracing is on by default. It writes full plaintext JSONL traces under <code>~/.thinharness/traces/&lt;encoded-project-root&gt;/</code>, including prompts, model outputs, tool arguments, and tool results, so treat that directory as sensitive local data.</p>
-        <div class="callout"><p>Set <code>local_tracing=False</code> or <code>THINHARNESS_DISABLE_LOCAL_TRACING=1</code> to disable local trace files. External tracing is generic OpenTelemetry: pass any tracer with <code>start_as_current_span(...)</code> or <code>start_span(...)</code> in <code>TracingOptions</code>, and each sink keeps its own capture policy.</p></div>
       </section>
 
       <section id="status">

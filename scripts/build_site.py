@@ -46,10 +46,8 @@ def slug_for_opinion(title: str) -> str:
     known_tags = {
         "Purpose-built agents, not universal agents": "purpose_built",
         "No bash by default": "no_bash",
-        "Skills are tools, not auto-discovery": "skills",
         "Search is a top priority": "search",
         "Parallel LLM calls, built in": "parallel_llm",
-        "Background tools are simple": "background_tools",
         "Three providers, no matrix": "providers",
         "No compaction": "no_compaction",
         "No deployment layer": "no_deployment",
@@ -98,22 +96,31 @@ class TableParser(HTMLParser):
         self._row: list[dict[str, str]] | None = None
         self._cell: dict[str, str] | None = None
         self._text: list[str] = []
+        self._sup: list[str] = []
+        self._in_sup = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
             self._row = []
         elif tag in {"td", "th"} and self._row is not None:
-            self._cell = {"text": "", "img": ""}
+            self._cell = {"text": "", "img": "", "sup": ""}
             self._text = []
+            self._sup = []
+            self._in_sup = False
         elif tag == "img" and self._cell is not None:
             attrs_dict = dict(attrs)
             self._cell["img"] = attrs_dict.get("src") or ""
+        elif tag == "sup" and self._cell is not None:
+            self._in_sup = True
         elif tag == "br" and self._cell is not None:
             self._text.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in {"td", "th"} and self._cell is not None and self._row is not None:
+        if tag == "sup" and self._cell is not None:
+            self._in_sup = False
+        elif tag in {"td", "th"} and self._cell is not None and self._row is not None:
             self._cell["text"] = normalize_table_text("".join(self._text))
+            self._cell["sup"] = normalize_table_text("".join(self._sup))
             self._row.append(self._cell)
             self._cell = None
         elif tag == "tr" and self._row is not None:
@@ -122,7 +129,11 @@ class TableParser(HTMLParser):
             self._row = None
 
     def handle_data(self, data: str) -> None:
-        if self._cell is not None:
+        if self._cell is None:
+            return
+        if self._in_sup:
+            self._sup.append(data)
+        else:
             self._text.append(data)
 
 
@@ -149,12 +160,8 @@ def mark(value: str) -> str:
 
 def library_cell(cell: dict[str, str], asset_prefix: str = "assets/") -> str:
     name = cell["text"]
-    superscript = ""
-    match = re.search(r"(\d+)$", name)
-    if match and name not in {"3"}:
-        name = name[: -len(match.group(1))].strip()
-        superscript = f"<sup>{match.group(1)}</sup>"
-    display_name = html.escape(name).replace("Claude Agent SDK", "Claude Agent SDK").replace("OpenAI Agents SDK", "OpenAI Agents SDK")
+    superscript = f"<sup>{html.escape(cell['sup'])}</sup>" if cell.get("sup") else ""
+    display_name = html.escape(name)
     if name == "ThinHarness":
         return f'<div class="lib-cell"><img class="thinharness-table-logo" src="{asset_prefix}ThinHarness.svg" alt="">ThinHarness</div>'
     if name == "Agno":
@@ -169,12 +176,14 @@ def comparison_table(markdown: str, asset_prefix: str = "assets/") -> str:
     body_rows = []
     for row in rows[1:]:
         library = row[0]
+        loc = row[1]
+        loc_sup = f'<sup>{html.escape(loc["sup"])}</sup>' if loc.get("sup") else ""
         css = ' class="me"' if library["text"] == "ThinHarness" else ""
         marks = "".join(f"<td>{mark(cell['text'])}</td>" for cell in row[2:])
         body_rows.append(
             f"""              <tr{css}>
                 <td class="lib">{library_cell(library, asset_prefix)}</td>
-                <td class="loc-n">{html.escape(row[1]["text"])}</td>
+                <td class="loc-n">{html.escape(loc["text"])}{loc_sup}</td>
                 {marks}
               </tr>"""
         )
@@ -204,7 +213,6 @@ def render_about(markdown: str) -> str:
     use = section(markdown, "Use")
     use_code = code_highlight(fenced_code(use, "python"))
     use_paragraph = paragraphs(use.split("```", 2)[2].strip())[0]
-    tracing = paragraphs(section(markdown, "Tracing"))
 
     opinion_items = "\n".join(
         f'          <div class="op-item"><div class="tag">{tag}</div><h3>{html.escape(title)}</h3><p>{body}</p></div>'
@@ -219,7 +227,7 @@ def render_about(markdown: str) -> str:
     )
     table_summary = (
         "Table focuses on harness-level features that differentiate the libraries. All listed also support MCP, "
-        "lifecycle hooks, multi-turn conversations, and human-in-the-loop. It intentionally does not compare "
+        "lifecycle hooks, multi-turn conversations, structured output, and human-in-the-loop. It intentionally does not compare "
         "framework/platform features like vector DB integrations, hosted deployment, memory/session stores, or broad SaaS connectors."
     )
     retry_footnote = (
@@ -274,7 +282,6 @@ def render_about(markdown: str) -> str:
         <a href="#install">install</a>
         <a href="#use">use</a>
         <a href="#features">features</a>
-        <a href="#tracing">tracing</a>
         <a href="#status">status</a>
         <a href="#license">license</a>
       </nav>
@@ -302,7 +309,6 @@ def render_about(markdown: str) -> str:
                 <th>LOC<sup>1</sup></th>
                 <th>Tool<br>retries<sup>2</sup></th>
                 <th>Sub-<br>agents</th>
-                <th>Structured<br>output</th>
                 <th>Skills</th>
                 <th>FS<br>tools</th>
                 <th>OTel<br>tracing</th>
@@ -318,7 +324,7 @@ def render_about(markdown: str) -> str:
           <p><strong>1.</strong> LOC excludes anything that is not the core agent harness framework. See raw README source comments for exact commands.</p>
           <p><strong>2.</strong> {retry_footnote}</p>
           <p><strong>3.</strong> Claude Agent SDK shells out to the Claude Code CLI binary, which is 200k+ LOC.</p>
-          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈111k LOC.</p>
+          <p><strong>4.</strong> deepagents is a thin wrapper over LangChain/LangGraph; effective import surface is ≈112k LOC.</p>
         </div>
         <p class="source-note"><span class="source-link">See <code>docs/table.md</code> for per-cell rationale and how the LOC numbers are measured.</span></p>
       </section>
@@ -352,13 +358,6 @@ def render_about(markdown: str) -> str:
         <div class="feat">
 {feature_items}
         </div>
-      </section>
-
-      <section id="tracing">
-        <div class="eyebrow">// tracing</div>
-        <h2>Tracing</h2>
-        <p>{inline_markdown(tracing[0])}</p>
-        <div class="callout"><p>{inline_markdown(tracing[1])}</p></div>
       </section>
 
       <section id="status">

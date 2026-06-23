@@ -103,7 +103,13 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
         notices=[notice],
     )
     await session.continue_with_user_message("fix this", instructions="system", tools=[], notices=[notice])
-    resumed = model.resume_session({"kind": "openai", "version": 1, "model": "gpt-test", "previous_response_id": "resp_existing"})
+    resumed = model.resume_session({
+        "kind": "transcript",
+        "version": 3,
+        "origin_provider": "openai",
+        "origin_model": "gpt-test",
+        "entries": [{"role": "user", "content": "prior", "notice": False}],
+    })
     await resumed.continue_with_user_prompt("follow-up", instructions="system", tools=[], notices=[notice])
 
     assert client.payloads[0]["input"].endswith("<harness_notice kind=\"limit_warning\">\nFinal request.\n</harness_notice>")
@@ -116,8 +122,19 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
     assert client.payloads[2]["input"] == f"fix this\n\n{_notice_text()}"
     assert client.payloads[1]["instructions"] == "system"
     assert client.payloads[2]["instructions"] == "system"
-    assert client.payloads[3]["input"] == f"follow-up\n\n{_notice_text()}"
-    assert client.payloads[3]["previous_response_id"] == "resp_existing"
+    assert client.payloads[3]["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "prior"}],
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": f"follow-up\n\n{_notice_text()}"}],
+        },
+    ]
+    assert "previous_response_id" not in client.payloads[3]
 
 async def test_openai_no_notice_payloads_are_unchanged() -> None:
     client = FakeClient()
@@ -175,6 +192,77 @@ async def test_openrouter_appends_notices_to_messages() -> None:
     assert continuation_messages[-1]["content"] == _notice_text()
     assert provider.payloads[2]["messages"][-1]["content"] == f"fix this\n\n{_notice_text()}"
     assert provider.payloads[3]["messages"][-1]["content"] == f"follow-up\n\n{_notice_text()}"
+
+async def test_resume_replays_preserved_tool_notices() -> None:
+    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    notice = _notice()
+
+    anthropic_provider = FakeAnthropicProvider()
+    anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_provider).new_session()
+    anthropic_first = await anthropic_session.start(prompt="hi", instructions="system", tools=tools)
+    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], tools=tools, notices=[notice])
+    anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
+    assert anthropic_state == json.loads(json.dumps(anthropic_state))
+    anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_provider).resume_session(anthropic_state)
+    await anthropic_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert anthropic_provider.payloads[2]["messages"][2]["content"][-1] == {"type": "text", "text": _notice_text()}
+
+    openai_capture = FakeClient()
+    openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
+    openai_first = await openai_session.start(prompt="hi", instructions="system", tools=tools)
+    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], instructions="system", tools=tools, notices=[notice])
+    openai_state = json.loads(json.dumps(openai_session.dump_state()))
+    openai_replay = FakeClient()
+    openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
+    await openai_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": _notice_text()}],
+    } in openai_replay.payloads[0]["input"]
+
+    openrouter_provider = FakeOpenRouterProvider()
+    openrouter_session = OpenRouterModel("openai/test", provider=openrouter_provider).new_session()
+    openrouter_first = await openrouter_session.start(prompt="hi", instructions="system", tools=tools)
+    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], tools=tools, notices=[notice])
+    openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
+    openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_provider).resume_session(openrouter_state)
+    await openrouter_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert {"role": "user", "content": _notice_text()} in openrouter_provider.payloads[2]["messages"]
+
+async def test_resume_replays_preserved_user_notices() -> None:
+    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    notice = _notice()
+
+    anthropic_capture = FakeAnthropicProvider()
+    anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_capture).new_session()
+    anthropic_first = await anthropic_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
+    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], tools=tools)
+    anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
+    anthropic_replay = FakeAnthropicProvider()
+    anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_replay).resume_session(anthropic_state)
+    await anthropic_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert anthropic_replay.payloads[0]["messages"][0]["content"] == f"hi\n\n{_notice_text()}"
+
+    openai_capture = FakeClient()
+    openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
+    openai_first = await openai_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
+    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], instructions="system", tools=tools)
+    openai_state = json.loads(json.dumps(openai_session.dump_state()))
+    openai_replay = FakeClient()
+    openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
+    await openai_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert openai_replay.payloads[0]["input"][0]["content"][0]["text"] == f"hi\n\n{_notice_text()}"
+
+    openrouter_capture = FakeOpenRouterProvider()
+    openrouter_session = OpenRouterModel("openai/test", provider=openrouter_capture).new_session()
+    openrouter_first = await openrouter_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
+    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], tools=tools)
+    openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
+    openrouter_replay = FakeOpenRouterProvider()
+    openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_replay).resume_session(openrouter_state)
+    await openrouter_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    assert openrouter_replay.payloads[0]["messages"][1]["content"] == f"hi\n\n{_notice_text()}"
 
 def test_openai_native_structured_output_overrides_extra_body_text() -> None:
     model = OpenAIResponsesModel(
@@ -300,7 +388,7 @@ async def test_openai_notice_payload_live() -> None:
 @pytest.mark.skipif(not os.getenv("ANTHROPIC_API_KEY"), reason="ANTHROPIC_API_KEY is not set")
 async def test_anthropic_notice_payload_live() -> None:
     provider = AnthropicProvider()
-    model = AnthropicMessagesModel(os.getenv("THINHARNESS_LIVE_ANTHROPIC_MODEL", "claude-3-5-haiku-latest"), provider=provider)
+    model = AnthropicMessagesModel(os.getenv("THINHARNESS_LIVE_ANTHROPIC_MODEL", "claude-haiku-4-5"), provider=provider)
     session = model.new_session()
     sentinel_notice = ModelNotice(
         kind="limit_warning",
