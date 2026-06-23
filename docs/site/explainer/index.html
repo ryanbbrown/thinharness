@@ -55,7 +55,7 @@
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>8,493</strong>
+          <strong>8,658</strong>
           <span>README-stated framework LOC, intentionally small enough to inspect, adapt, and fork.</span>
         </div>
         <div class="panel kpi">
@@ -899,7 +899,7 @@
               <tr>
                 <td>Resume state</td>
                 <td>Provider-agnostic transcript state copied into <code>HarnessResult.resume_state</code> while building the final result.</td>
-                <td>Built-in providers emit <code>kind="transcript"</code>, <code>version=2</code>, origin diagnostics, and neutral user/assistant/tool entries. Callers can store and pass it back, but should not edit or construct it.</td>
+                <td>Built-in providers emit <code>kind="transcript"</code>, <code>version=3</code>, origin diagnostics, and neutral user/assistant/tool entries. Callers can store and pass it back, but should not edit or construct it.</td>
               </tr>
               <tr>
                 <td>Approval pause state</td>
@@ -913,6 +913,38 @@
             interrupted-tool continuation, or transcript repair mechanism. Errors, cancellation, limit exits, tool retry
             exhaustion, output validation failure, unexpected model behavior, and tool-mode <code>final_result</code> exits
             intentionally produce no checkpoint.
+          </p>
+          <p>
+            Resume also carries model reasoning. Each built-in session keeps the provider's native reasoning parts in the
+            neutral transcript, so resuming on the <em>same</em> provider replays them verbatim — Anthropic signed thinking
+            blocks, OpenAI <code>encrypted_content</code>, OpenRouter <code>reasoning_details</code>. An opaque blob cannot
+            be replayed to a different provider, so cross-provider resume degrades every reasoning part to a leading
+            <code>&lt;thinking&gt;</code>-tagged text block and drops the blob. Native re-emit also requires the resuming
+            request to be able to accept the block:
+          </p>
+          <table>
+            <thead><tr><th>Provider</th><th>Native reasoning in resume state</th><th>Re-emits natively only when</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>OpenAI Responses</td>
+                <td><code>encrypted_content</code>, captured via <code>include=["reasoning.encrypted_content"]</code> on reasoning-capable models</td>
+                <td>the resuming model is reasoning-capable; otherwise the text fallback is used</td>
+              </tr>
+              <tr>
+                <td>Anthropic Messages</td>
+                <td>signed <code>thinking</code> / <code>redacted_thinking</code> blocks</td>
+                <td>extended thinking is enabled on the resuming run; otherwise the text fallback is used</td>
+              </tr>
+              <tr>
+                <td>OpenRouter chat completions</td>
+                <td><code>reasoning_details</code></td>
+                <td>resuming on OpenRouter — no additional capability gate</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Because <code>resume_state</code> can therefore hold encrypted reasoning blobs and signed thinking, treat it as
+            sensitive, like the local traces it mirrors.
           </p>
         </div>
       </details>

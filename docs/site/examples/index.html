@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Web Research Example — ThinHarness</title>
+  <title>Examples — ThinHarness</title>
   <link rel="stylesheet" href="../assets/site.css">
   <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -22,11 +22,30 @@
     </div>
   </header>
   <header class="page-title">
-    <div class="eyebrow">// example run</div>
-    <h1>Web Research Example</h1>
-    <div class="muted">A complete DeepSeek + Exa run: plan, search, source notes, citation critique, final report.</div>
+    <div class="eyebrow">// examples</div>
+    <h1>Examples</h1>
+    <div class="muted">Real ThinHarness runs. Toggle between the LongMemEval-V2 benchmark write-up and the Web Research transcript.</div>
   </header>
-  <div class="layout transcript-layout-single">
+  <div class="ex-toggle" role="tablist">
+    <button id="tab-longmem" class="is-active" onclick="showPanel('longmem')">LongMemEval-V2</button>
+    <button id="tab-transcript" onclick="showPanel('transcript')">Web Research Report</button>
+  </div>
+  <section id="panel-longmem" class="ex-panel md-render">
+<div class="md-eyebrow">// benchmark reproduction</div><h1>LongMemEval-V2 - ThinHarness Benchmark</h1>
+<h2>Context</h2>
+<p>I used a <a href="https://github.com/ryanbbrown/LongMemEval-V2">fork</a> of the LongMemEval-V2 benchmark to test whether ThinHarness is a strong general-purpose agent harness on a nontrivial non-coding task: information retrieval over long trajectory haystacks.</p>
+<p>I scoped the comparison to the 127 dynamic questions in the small tier: <code>dynamic-environment</code> and <code>dynamic-environment-abs</code> across the web and enterprise domains. After reviewing the benchmark categories, this subset looked like the best test for my purposes: given a long history of interaction traces, can the memory layer efficiently and accurately find the state change, UI behavior, or environment fact needed to answer the question?</p>
+<h2>Run Details</h2>
+<p>To get a local baseline for more detailed metrics than the leaderboard provides, I ran AgentRunbook-C with the resumable wrapper in <code>evaluation/scripts/run_agentrunbook_c_dynamic.sh</code>. That script plans the 127-question dynamic set, runs one question per output directory, and can be re-run to fill only missing questions. Running one question at a time is slower but was helpful when encountering intermittent issues running on my local machine. The matching ThinHarness wrapper is <code>evaluation/scripts/run_thinharness_dynamic.sh</code>.</p>
+<p>This is a best-faith reproduction rather than an exact reproduction of the paper. The paper setup expects a local <code>Qwen/Qwen3.5-9B</code> reader deployment; I used <code>qwen/qwen3.5-9b</code> through OpenRouter. The paper uses Codex v0.117.0 for Codex and AgentRunbook-C; my rerun used the local Codex CLI available, <code>codex-cli 0.141.0</code>. Both the AgentRunbook-C rerun and ThinHarness run used <code>gpt-5.4-mini</code> with <code>xhigh</code> reasoning for the query-time memory agent and <code>gpt-5.2</code> for the evaluator.</p>
+<p>For the ThinHarness run, I used only its generic built-in filesystem tools (<code>read</code>, <code>search</code>, <code>jsonl_search</code>, <code>list</code>, and <code>glob</code>). I did restructure the memory files into a JSONL-friendly corpus so its generic <code>jsonl_search</code> tool could work well; that seems acceptable here because AgentRunbook-C also creates a custom trajectory structure rather than using the vanilla Codex raw layout. I tried to keep the query-time system prompt as close as practical to AgentRunbook-C, changing the tool instructions only where ThinHarness needed to know how to use its built-in tools.</p>
+<h2>Results</h2>
+<p>Across all 127 dynamic questions in the small tier:</p>
+<div class="md-table-wrap"><table><thead><tr><th>Metric</th><th>AgentRunbook-C rerun</th><th>ThinHarness</th></tr></thead><tbody><tr><td>Dynamic score</td><td>72.4% (92/127)</td><td>74.0% (94/127)</td></tr><tr><td>Non-abstention</td><td>86.0% (74/86)</td><td>84.9% (73/86)</td></tr><tr><td>Abstention</td><td>43.9% (18/41)</td><td>51.2% (21/41)</td></tr><tr><td>Memory query time</td><td>151.9s avg, 129.1s median</td><td>99.7s avg, 87.9s median</td></tr><tr><td>Memory-agent tokens / usage</td><td>114.77M input, 1.32M output, 116.09M total</td><td>60.14M input, 2.10M output, 62.24M total</td></tr><tr><td>Dynamic-subset LAFS</td><td>3.76</td><td>9.73 (+5.96)</td></tr></tbody></table></div>
+<p>The 72.4% accuracy for AgentRunbook-C matches the paper, but I would not treat this single consolidated run as a statistically signficant claim that ThinHarness has higher accuracy than AgentRunbook-C--I saw meaningful variance on a portion of the questions when doing targeted reruns. The result does make me reasonably confident that ThinHarness at least matches AgentRunbook-C's performance on this slice, and the published leaderboard reference for vanilla Codex is materially lower than both.</p>
+<p>The memory query time is the harness-measured time around <code>memory.query(...)</code>: it includes the query-time memory retrieval agent, but not the downstream reader, scorer, or prior runtime input generation. The timing comparison isn't perfect (local Codex CLI vs. OpenAI API), but the 46.4% lower token usage indicates that ~34% time savings is probably in the right ballpark. Note that the paper only provides a single aggregate query time figure across all questions, 108.3s, which is far lower than the 151.9s above but includes all questions in the small tier (some of which may have been faster).</p>
+      </section>
+  <div class="layout transcript-layout-single ex-panel" id="panel-transcript" hidden>
     <main>
       <section class="controls transcript-toolbar" aria-label="Example filters">
         <input id="search" type="search" placeholder="Search example text, tools, outputs">
@@ -604,6 +623,15 @@
     });
     readHash();
     render();
+  </script>
+  <script>
+    function showPanel(which){
+      var longmem = which === 'longmem';
+      document.getElementById('panel-longmem').hidden = !longmem;
+      document.getElementById('panel-transcript').hidden = longmem;
+      document.getElementById('tab-longmem').classList.toggle('is-active', longmem);
+      document.getElementById('tab-transcript').classList.toggle('is-active', !longmem);
+    }
   </script>
 </body>
 </html>
