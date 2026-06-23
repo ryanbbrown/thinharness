@@ -23,6 +23,7 @@ from thinharness import (
     Harness,
     HarnessConfig,
     HarnessError,
+    ModelMessageEvent,
     SubAgentConfig,
     ToolResult,
     ToolSpec,
@@ -30,8 +31,9 @@ from thinharness import (
     build_child_harness,
     create_subagent_tool,
 )
-from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn
-from thinharness.tracing import ModelTraceSnapshot, _SpanAdapter, annotate_model_request, create_local_tracing_options, serialize_attribute_value
+from thinharness.projections import model_request_delta_from_prompt, model_request_delta_from_tool_outputs
+from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn, ToolOutput
+from thinharness.tracing import _SpanAdapter, annotate_model_request, create_local_tracing_options, serialize_attribute_value
 
 
 class Person(BaseModel):
@@ -72,12 +74,12 @@ def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> N
     assert root.attributes["gen_ai.operation.name"] == "invoke_agent"
     assert root.attributes["gen_ai.conversation.id"] == "conv-1"
     assert root.attributes["gen_ai.completion"] == "done"
-    assert root.attributes["langfuse.trace.input"] == "read hello"
+    assert root.attributes["gen_ai.prompt"] == "read hello"
     assert "gen_ai.system_instructions" in root.attributes
     assert first_chat.attributes["gen_ai.provider.name"] == "OpenAI"
     assert first_chat.attributes["gen_ai.request.model"] == "test-model"
     assert json.loads(first_chat.attributes["gen_ai.input.messages"])[0]["parts"][0]["content"] == "read hello"
-    assert json.loads(first_chat.attributes["langfuse.observation.input"]) == {"prompt": "read hello"}
+    assert json.loads(first_chat.attributes["gen_ai.prompt"]) == {"prompt": "read hello"}
     assert "gen_ai.system_instructions" not in first_chat.attributes
     first_output = json.loads(first_chat.attributes["gen_ai.output.messages"])
     assert first_output[0]["parts"][0]["type"] == "tool_call"
@@ -89,25 +91,48 @@ def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> N
     assert "hello" in tool.attributes["gen_ai.tool.call.result"]
     assert second_chat.attributes["gen_ai.completion"] == "done"
     assert json.loads(second_chat.attributes["gen_ai.output.messages"])[0]["parts"][0]["content"] == "done"
-    assert json.loads(second_chat.attributes["langfuse.observation.output"]) == {"text": "done"}
+    assert all(key.startswith(("gen_ai.", "thinharness.")) for key in root.attributes)
+    assert all(key.startswith(("gen_ai.", "thinharness.")) for key in first_chat.attributes)
+    assert all(key.startswith("gen_ai.") for key in tool.attributes)
+    assert all(key.startswith(("gen_ai.", "thinharness.")) for key in second_chat.attributes)
 
 def test_serialize_attribute_value_keeps_none_absent() -> None:
     assert serialize_attribute_value(None) is None
 
-def test_model_request_snapshot_keeps_tool_output_separate_from_notices() -> None:
+def test_model_request_delta_includes_rendered_tool_output_notices() -> None:
     span = FakeSpan("chat", {})
-    snapshot = ModelTraceSnapshot(
+    delta = model_request_delta_from_tool_outputs(
         kind="tool_outputs",
-        tool_outputs=[{"call_id": "call_1", "output": '{"ok":true,"content":"real output"}'}],
-    ).with_notices([ModelNotice(kind="limit_warning", content="notice text", limit_kind="model_requests", remaining=1)])
+        outputs=[ToolOutput(call_id="call_1", output='{"ok":true,"content":"real output"}')],
+        notices=[ModelNotice(kind="limit_warning", content="notice text", limit_kind="model_requests", remaining=1)],
+        structured_output=None,
+    )
 
-    annotate_model_request(_SpanAdapter(span), snapshot, capture_messages=True)
+    annotate_model_request(_SpanAdapter(span), delta, capture_messages=True)
 
     input_messages = json.loads(span.attributes["gen_ai.input.messages"])
     notices = json.loads(span.attributes["thinharness.model.notices"])
     assert input_messages[0]["parts"][0]["content"] == '{"ok":true,"content":"real output"}'
-    assert "notice text" not in span.attributes["gen_ai.input.messages"]
+    assert input_messages[1]["parts"][0]["content"] == '<harness_notice kind="limit_warning">\nnotice text\n</harness_notice>'
+    assert "notice text" in span.attributes["gen_ai.prompt"]
     assert notices[0]["content"] == "notice text"
+
+def test_model_request_delta_includes_rendered_prompt_notices() -> None:
+    span = FakeSpan("chat", {})
+    delta = model_request_delta_from_prompt(
+        kind="start",
+        prompt="hello",
+        notices=[ModelNotice(kind="limit_warning", content="final turn", limit_kind="model_requests", remaining=1)],
+        structured_output=None,
+    )
+
+    annotate_model_request(_SpanAdapter(span), delta, capture_messages=True)
+
+    input_messages = json.loads(span.attributes["gen_ai.input.messages"])
+    assert input_messages[0]["parts"][0]["content"] == 'hello\n\n<harness_notice kind="limit_warning">\nfinal turn\n</harness_notice>'
+    assert json.loads(span.attributes["gen_ai.prompt"]) == {
+        "prompt": 'hello\n\n<harness_notice kind="limit_warning">\nfinal turn\n</harness_notice>'
+    }
 
 def test_local_tracing_writes_full_jsonl_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("THINHARNESS_DISABLE_LOCAL_TRACING", raising=False)
@@ -138,7 +163,7 @@ def test_local_tracing_writes_full_jsonl_trace(tmp_path: Path, monkeypatch: pyte
     root = next(record for record in records if record["name"] == "invoke_agent thinharness")
     first_chat = next(record for record in records if record["name"] == "chat test-model" and "gen_ai.output.messages" in record["attributes"])
     tool = next(record for record in records if record["name"] == "execute_tool read")
-    assert root["attributes"]["langfuse.trace.input"] == "read hello"
+    assert root["attributes"]["gen_ai.prompt"] == "read hello"
     assert json.loads(first_chat["attributes"]["gen_ai.input.messages"])[0]["parts"][0]["content"] == "read hello"
     assert json.loads(first_chat["attributes"]["gen_ai.output.messages"])[0]["parts"][0]["type"] == "tool_call"
     assert tool["attributes"]["gen_ai.tool.call.arguments"] == '{"path":"hello.txt"}'
@@ -170,8 +195,8 @@ def test_local_tracing_nests_subagent_spans(tmp_path: Path, monkeypatch: pytest.
     subagent_tool = next(record for record in records if record["name"] == "execute_tool subagent")
     child_agent = next(record for record in records if record["name"] == "invoke_agent subagent.default")
     assert child_agent["parent_id"] == subagent_tool["span_id"]
-    assert child_agent["attributes"]["langfuse.observation.input"] == "help"
-    assert "child done" in child_agent["attributes"]["langfuse.observation.output"]
+    assert child_agent["attributes"]["gen_ai.prompt"] == "help"
+    assert child_agent["attributes"]["gen_ai.completion"] == "child done"
 
 def test_local_tracing_does_not_change_remote_capture_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("THINHARNESS_DISABLE_LOCAL_TRACING", raising=False)
@@ -187,10 +212,6 @@ def test_local_tracing_does_not_change_remote_capture_policy(tmp_path: Path, mon
     harness.run_sync("read hello")
 
     forbidden = {
-        "langfuse.observation.input",
-        "langfuse.observation.output",
-        "langfuse.trace.input",
-        "langfuse.trace.output",
         "gen_ai.input.messages",
         "gen_ai.output.messages",
         "gen_ai.system_instructions",
@@ -225,10 +246,6 @@ def test_capture_messages_false_omits_content_attributes(tmp_path: Path) -> None
     harness.run_sync("read hello")
 
     forbidden = {
-        "langfuse.observation.input",
-        "langfuse.observation.output",
-        "langfuse.trace.input",
-        "langfuse.trace.output",
         "gen_ai.input.messages",
         "gen_ai.output.messages",
         "gen_ai.system_instructions",
@@ -254,6 +271,36 @@ def test_tool_tracing_marks_normalized_failures(tmp_path: Path) -> None:
     tool = next(span for span in tracer.spans if span.name == "execute_tool fail")
     assert tool.status is not None
     assert tool.attributes["error.type"] == "ToolExecutionError"
+
+
+async def test_assistant_text_and_tool_calls_project_to_trace_and_stream(tmp_path: Path) -> None:
+    turn = ModelTurn(
+        text="thinking",
+        tool_calls=[ModelToolCall(id="call_1", name="echo", arguments='{"value":"ok"}')],
+        raw={"id": "start"},
+    )
+    session = ScriptedSession(start_turn=turn, continue_turn=ModelTurn(text="done", raw={"id": "done"}))
+    tracer = FakeTracer()
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([session]),
+        tools=[echo_tool()],
+        tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
+    )
+
+    events = []
+    async for event in harness.stream("go"):
+        events.append(event)
+
+    message = next(event for event in events if isinstance(event, ModelMessageEvent) and event.text == "thinking")
+    assert [(call.id, call.name) for call in message.tool_calls] == [("call_1", "echo")]
+    first_chat = next(span for span in tracer.spans if span.name == "chat scripted-model")
+    parts = json.loads(first_chat.attributes["gen_ai.output.messages"])[0]["parts"]
+    assert parts == [
+        {"type": "text", "content": "thinking"},
+        {"type": "tool_call", "id": "call_1", "name": "echo", "arguments": '{"value":"ok"}'},
+    ]
+
 
 def test_subagent_tracing_nests_child_under_parent_tool_span(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -288,10 +335,8 @@ def test_subagent_tracing_nests_child_under_parent_tool_span(tmp_path: Path) -> 
     assert child_chat.parent is child_agent
     assert final_chat.parent is root
     assert child_agent.attributes["gen_ai.agent.name"] == "subagent.default"
-    assert child_agent.attributes["langfuse.observation.input"] == "help"
-    assert child_agent.attributes["langfuse.observation.output"]
-    assert "langfuse.trace.input" not in child_agent.attributes
-    assert "langfuse.trace.output" not in child_agent.attributes
+    assert child_agent.attributes["gen_ai.prompt"] == "help"
+    assert child_agent.attributes["gen_ai.completion"] == "child done"
     assert subagent_tool.attributes["subagent.name"] == "default"
     assert subagent_tool.attributes["subagent.tool_mode"] == "inherited"
     assert subagent_tool.attributes["subagent.tools"] == ["echo"]
@@ -341,8 +386,8 @@ def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_pat
     assert all(span.parent is root for span in subagent_tools)
     assert {id(span.parent) for span in child_agents} == {id(span) for span in subagent_tools}
     assert {id(span.parent) for span in child_model_spans} == {id(span) for span in child_agents}
-    assert {span.attributes["langfuse.observation.input"] for span in child_agents} == {"first", "second"}
-    assert all(span.attributes["langfuse.observation.input"] != "delegate" for span in child_agents)
+    assert {span.attributes["gen_ai.prompt"] for span in child_agents} == {"first", "second"}
+    assert all(span.attributes["gen_ai.prompt"] != "delegate" for span in child_agents)
 
 def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> None:
     retry_session = ScriptedSession(
@@ -385,12 +430,12 @@ def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> No
     assert "resume" in kinds
     retry_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "output_retry_tool")
     assert json.loads(retry_chat.attributes["gen_ai.input.messages"])[0]["parts"][0]["content"].startswith("The previous response failed")
-    assert "Final request" not in retry_chat.attributes["gen_ai.input.messages"]
+    assert "Final request" in retry_chat.attributes["gen_ai.input.messages"]
     assert "Final request" in retry_chat.attributes["thinharness.model.notices"]
     correction_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "correction")
-    assert json.loads(correction_chat.attributes["langfuse.observation.input"])["correction"].startswith("The previous response failed")
+    assert json.loads(correction_chat.attributes["gen_ai.prompt"])["correction"].startswith("The previous response failed")
     resume_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "resume")
-    assert json.loads(resume_chat.attributes["langfuse.observation.input"]) == {"prompt": "follow-up"}
+    assert json.loads(resume_chat.attributes["gen_ai.prompt"]) == {"prompt": "follow-up"}
 
 def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None:
     tracer = FakeTracer()
@@ -404,9 +449,9 @@ def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None
         harness.run_sync("fail please")
 
     root = tracer.spans[0]
-    assert root.attributes["langfuse.trace.input"] == "fail please"
+    assert root.attributes["gen_ai.prompt"] == "fail please"
     assert "gen_ai.system_instructions" in root.attributes
-    assert "langfuse.trace.output" not in root.attributes
+    assert "gen_ai.completion" not in root.attributes
     assert root.status is not None
 
 def test_unknown_named_subagent_trace_marks_failed_without_child_tool_mode(tmp_path: Path) -> None:

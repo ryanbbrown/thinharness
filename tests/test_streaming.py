@@ -157,6 +157,16 @@ async def test_stream_payloads_are_high_level_without_raw_provider_payloads(tmp_
     assert "ok" in completed.output
 
 
+async def test_stream_options_keep_model_text_visible(tmp_path: Path) -> None:
+    session = ScriptedSession(start_turn=ModelTurn(text="visible", raw={"id": "done"}))
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+
+    events = await _collect_events(harness, "go", stream_options=StreamOptions())
+
+    message = next(event for event in events if isinstance(event, ModelMessageEvent))
+    assert message.text == "visible"
+
+
 async def test_stream_limit_warning_events(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=ScriptedModel([session]))

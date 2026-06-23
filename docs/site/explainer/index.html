@@ -51,11 +51,11 @@
       <h2>Snapshot</h2>
       <div class="grid cols-3">
         <div class="panel kpi">
-          <strong>22</strong>
+          <strong>23</strong>
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>8,241</strong>
+          <strong>8,493</strong>
           <span>README-stated framework LOC, intentionally small enough to inspect, adapt, and fork.</span>
         </div>
         <div class="panel kpi">
@@ -136,7 +136,7 @@
           <ul>
             <li>Stream events include high-level prompt, tool argument, and model-visible tool result payloads for app-facing workflow visibility.</li>
             <li>Raw provider response JSON is not included in stream events. Use the terminal <code>HarnessResult.responses</code> after completion when provider raw responses are needed.</li>
-            <li><code>StreamOptions</code> can hide model text or child subagent events, but it does not expose raw provider payloads.</li>
+            <li><code>StreamOptions</code> can hide child subagent events, but it does not hide model text or expose raw provider payloads.</li>
             <li>Nested work is correlated with <code>run_id</code>, <code>parent_run_id</code>, <code>parent_tool_call_id</code>, <code>agent_name</code>, and per-stream <code>sequence</code>.</li>
           </ul>
         </div>

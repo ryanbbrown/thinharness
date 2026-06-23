@@ -775,7 +775,11 @@ def test_background_completion_notice_tracing_is_coalesced(tmp_path: Path) -> No
     input_messages = json.loads(coalesced_chat.attributes["gen_ai.input.messages"])
     notices = json.loads(coalesced_chat.attributes["thinharness.model.notices"])
     contents = [part["content"] for message in input_messages for part in message["parts"]]
-    assert contents == [session.tool_outputs[0][0].output, session.tool_outputs[0][1].output]
+    assert contents == [
+        session.tool_outputs[0][0].output,
+        session.tool_outputs[0][1].output,
+        f'<harness_notice kind="background_completion">\n{notices[0]["content"]}\n</harness_notice>',
+    ]
     assert notices[0]["kind"] == "background_completion"
     assert "Tool: background" in notices[0]["content"]
 
