@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-06-23
+
+- Added JSONL search range filters, typed equality filters, and field snippets.
+- Added a unified, provider-agnostic transcript resume state shared across Anthropic, OpenAI Responses, and OpenRouter, replacing the previous provider-specific resume payloads.
+- Added same-provider reasoning fidelity: native model reasoning (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) is preserved when resuming on the same provider and degraded to a leading `<thinking>`-tagged text block on cross-provider resume.
+- Changed `resume_state` to a `kind="transcript"`, version 3 format; resume state captured by 0.2.0 (version 1) is rejected and must be regenerated.
+
 ## 0.2.0 - 2026-06-15
 
 - Added SDK event streaming with typed run, model, tool, background task, retry, limit warning, completion, and failure events.
