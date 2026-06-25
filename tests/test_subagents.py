@@ -68,6 +68,8 @@ def test_subagent_config_validation_accepts_tool_specs() -> None:
         SubAgentConfig(name="ok", description="   ", builtin_tools=["read"])
     with pytest.raises(ValueError, match="non-empty single line"):
         SubAgentConfig(name="ok", description="Bad\nhelper.", builtin_tools=["read"])
+    with pytest.raises(ValueError, match="SubAgentConfig.background has been removed"):
+        SubAgentConfig(name="old-background", description="Old helper.", builtin_tools=["read"], background="always")
 
 def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     default = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))
@@ -78,7 +80,7 @@ def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     assert "subagent" not in [tool["name"] for tool in disabled.tool_schemas()]
     assert [tool["name"] for tool in only_subagent.tool_schemas()] == ["subagent"]
     schema = only_subagent.tool_schemas()[0]["parameters"]
-    assert set(schema["properties"]) == {"task", "agent", "_background"}
+    assert set(schema["properties"]) == {"task", "agent"}
     assert "tools" not in schema["properties"]
 
 def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(tmp_path: Path) -> None:

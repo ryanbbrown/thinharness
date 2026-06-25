@@ -17,8 +17,6 @@ StreamEventKind = Literal[
     "model_message",
     "tool_call_started",
     "tool_call_completed",
-    "background_task_started",
-    "background_task_completed",
     "model_retry",
     "limit_warning",
     "approval_resumed",
@@ -79,7 +77,7 @@ class ModelRequestStartedEvent(StreamEvent):
     """A provider request is about to be made."""
 
     kind: Literal["model_request_started"] = "model_request_started"
-    request_kind: Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool", "background_completion"] = "start"
+    request_kind: Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool"] = "start"
     model: str = ""
     provider: str | None = None
 
@@ -118,31 +116,6 @@ class ToolCallCompletedEvent(StreamEvent):
     error_type: str | None = None
     message: str | None = None
     duration_ms: float | None = None
-    output: str | None = None
-    background_task_id: str | None = None
-    background_status: Literal["running"] | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class BackgroundTaskStartedEvent(StreamEvent):
-    """A background tool task has been scheduled."""
-
-    kind: Literal["background_task_started"] = "background_task_started"
-    background_task_id: str = ""
-    tool_call_id: str = ""
-    tool_name: str = ""
-
-
-@dataclass(frozen=True, kw_only=True)
-class BackgroundTaskCompletedEvent(StreamEvent):
-    """A background tool task has finished."""
-
-    kind: Literal["background_task_completed"] = "background_task_completed"
-    background_task_id: str = ""
-    tool_call_id: str = ""
-    tool_name: str = ""
-    status: Literal["completed", "failed", "cancelled"] = "completed"
-    elapsed_ms: float = 0.0
     output: str | None = None
 
 
@@ -190,8 +163,6 @@ HarnessStreamEvent = (
     | ModelMessageEvent
     | ToolCallStartedEvent
     | ToolCallCompletedEvent
-    | BackgroundTaskStartedEvent
-    | BackgroundTaskCompletedEvent
     | ModelRetryEvent
     | LimitWarningEvent
     | ApprovalResumedEvent

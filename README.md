@@ -55,10 +55,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-23 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-06-25 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>8,658</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,985</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -219,7 +219,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Set `builtin_parallel_llm_model` to enable the default `parallel_llm` tool for plain-text batches; for validated structured output per call, instantiate `ParallelLlmTool` yourself with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
-**No token streaming.** Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, background, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.
+**No token streaming.** Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.
 
 **Three providers, no matrix.** ThinHarness ships small provider classes for OpenAI, Anthropic, and OpenRouter. If your gateway speaks one of those protocols, you swap a base URL and move on. If not, the provider classes are small enough to fork or replace, and ignoring the bundled ones costs you nothing
 
@@ -263,7 +263,7 @@ async for event in harness.stream("Process these records."):
         result = event.result
 ```
 
-Streaming emits coarse run, model, tool, background, retry, limit, and subagent events, then finishes with the same `HarnessResult` returned by `run()`.
+Streaming emits coarse run, model, tool, retry, limit, and subagent events, then finishes with the same `HarnessResult` returned by `run()`.
 
 ## Features
 
@@ -271,7 +271,7 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 - **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
 - **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
-- **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/background/approval flags, and per-tool retry settings.
+- **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/approval flags, and per-tool retry settings.
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
@@ -280,9 +280,8 @@ Streaming emits coarse run, model, tool, background, retry, limit, and subagent 
 - **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
 - **MCP:** optional MCP client support with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
-- **Background tools:** opt-in long-running tool calls return a start notice immediately, keep the agent loop moving, and deliver completion back to the model when ready.
 - **Human approvals:** mark custom tools as approval-required so a run pauses before side effects, returns pending call details plus resume state, then continues after an approve/reject decision.
-- **Event streaming:** async coarse-grained run, model, tool, background, retry, limit, and subagent events for workflow visibility.
+- **Event streaming:** async coarse-grained run, model, tool, retry, limit, and subagent events for workflow visibility.
 - **Tool retries:** tools raise `ModelRetry` to send structured feedback back to the model and trigger a retry within a per-tool budget.
 - **Limits and notices:** configured request, tool-call, output-retry, and tool-retry budgets bound each run; near-limit guidance can warn the model before request or tool-call budgets are exhausted.
 - **Tracing:** local plaintext JSONL traces plus OpenTelemetry-compatible spans for runs, provider calls, tools, and subagents.

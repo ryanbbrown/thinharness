@@ -145,7 +145,6 @@ class ParallelLlmTool:
             ParallelLlmArgs,
             handler,
             instructions=self.instructions,
-            background="model",
             kind="parallel_llm",
         )
 
@@ -274,19 +273,16 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         if not same_provider_model_ref(parent.model, parent.config.builtin_parallel_llm_model):
             api_key = None
             base_url = None
-    background_available = parent.config.tool_execution != "sequential"
-    description = _parallel_llm_description(background_available=background_available)
-    instructions = _parallel_llm_instructions(background_available=background_available)
     return ParallelLlmTool(
         model=model,
         model_ref=model_ref,
         root=parent.root,
-        description=description,
+        description=_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION,
         read_paths=parent.config.read_paths,
         write_paths=parent.config.write_paths,
         max_prompts=parent.config.parallel_llm_max_prompts,
         max_attempts=parent.config.parallel_llm_max_attempts,
-        instructions=instructions,
+        instructions=_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
         api_key=api_key,
         base_url=base_url,
         request_timeout=parent.config.request_timeout,
@@ -295,20 +291,6 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         else parent.config.temperature,
         extra_body=parent.config.extra_body,
     ).spec()
-
-
-def _parallel_llm_description(*, background_available: bool) -> str:
-    """Return the built-in description with optional background guidance."""
-    if not background_available:
-        return _defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE
-    return f"{_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BASE} {_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION_BACKGROUND}"
-
-
-def _parallel_llm_instructions(*, background_available: bool) -> str:
-    """Return built-in instructions with optional background guidance."""
-    if not background_available:
-        return _defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE
-    return f"{_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BASE}\n{_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS_BACKGROUND}"
 
 
 def _load_prompts(args: ParallelLlmArgs, read_policy: PathPolicy) -> list[str]:

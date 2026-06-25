@@ -11,7 +11,7 @@ One short paragraph describing the behavior from the user or system perspective.
 
 ### Requirements
 
-Use an uppercase, readable requirement prefix from the section name, such as `BACKGROUND-1` or `TOOL-APPROVAL-1`.
+Use an uppercase, readable requirement prefix from the section name, such as `TOOL-APPROVAL-1`.
 
 - FEATURE-1: A concrete externally meaningful behavior.
 - FEATURE-2: A behavior constraint, including any important exclusion or boundary.

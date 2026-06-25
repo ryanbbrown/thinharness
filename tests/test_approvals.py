@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from thinharness import (
     AnthropicMessagesModel,
     ApprovalDecision,
     ApprovalResumedEvent,
-    BackgroundTaskCompletedEvent,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -30,7 +28,6 @@ from thinharness import (
     ToolSpec,
     TracingOptions,
 )
-from thinharness.approvals import validate_approval_pause_state
 from thinharness.tools.base import ToolResult
 
 
@@ -452,116 +449,6 @@ async def test_over_budget_approval_batch_fails_before_pause(tmp_path: Path) -> 
     assert called == []
 
 
-async def test_background_task_is_cancelled_and_reported_when_later_turn_pauses(tmp_path: Path) -> None:
-    release = asyncio.Event()
-    resumed_notices = []
-    first = ScriptedSession(
-        start_turn=ModelTurn(
-            tool_calls=[ModelToolCall(id="call_bg", name="slow", arguments='{"_background":true}')],
-            raw={"id": "start"},
-        ),
-        continue_turn=ModelTurn(
-            tool_calls=[ModelToolCall(id="call_approval", name="deploy", arguments='{"env":"prod"}')],
-            raw={"id": "approval"},
-        ),
-    )
-    resumed = ScriptedSession(
-        start_turn=ModelTurn(raw={"unused": True}),
-        continue_turn=ModelTurn(text="done", raw={"id": "done"}),
-        on_continue=lambda _outputs, _tools, _metadata: resumed_notices.extend(resumed.notice_calls[-1][1]),
-    )
-
-    async def slow(_args) -> str:
-        await release.wait()
-        return "late"
-
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([first, resumed]),
-        tools=[
-            ToolSpec("slow", "Slow", {"type": "object", "properties": {}, "additionalProperties": False}, slow, background="model"),
-            approval_tool([]),
-        ],
-    )
-
-    events = []
-    async for event in harness.stream("go"):
-        events.append(event)
-    paused = next(event.result for event in events if isinstance(event, RunCompletedEvent))
-
-    assert paused.stop_reason == "approval_required"
-    assert paused.resume_state["cancelled_background_task_ids"] == ["bg_1"]
-    assert paused.tool_call_records[-1]["background"]["event"] == "cancelled"
-    background_completed_at = next(index for index, event in enumerate(events) if isinstance(event, BackgroundTaskCompletedEvent))
-    run_completed_at = next(index for index, event in enumerate(events) if isinstance(event, RunCompletedEvent))
-    assert background_completed_at < run_completed_at
-
-    result = await harness.resume_approvals(paused.resume_state, [ApprovalDecision(call_id="call_approval", approved=True)])
-
-    assert result.text == "done"
-    assert [(notice.kind, notice.content) for notice in resumed_notices] == [
-        ("background_cancelled", "Background task was cancelled when the run paused for human approval: bg_1.")
-    ]
-
-
-async def test_ready_background_completion_is_preserved_across_approval_pause(tmp_path: Path) -> None:
-    background_finished = asyncio.Event()
-    resumed_notices = []
-
-    class WaitingSession(ScriptedSession):
-        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-            await asyncio.wait_for(background_finished.wait(), timeout=0.5)
-            return await super().continue_with_tools(
-                outputs,
-                instructions=instructions,
-                tools=tools,
-                metadata=metadata,
-                structured_output=structured_output,
-                notices=notices,
-            )
-
-    first = WaitingSession(
-        start_turn=ModelTurn(
-            tool_calls=[ModelToolCall(id="call_bg", name="fast", arguments='{"_background":true}')],
-            raw={"id": "start"},
-        ),
-        continue_turn=ModelTurn(
-            tool_calls=[ModelToolCall(id="call_approval", name="deploy", arguments='{"env":"prod"}')],
-            raw={"id": "approval"},
-        ),
-    )
-    resumed = ScriptedSession(
-        start_turn=ModelTurn(raw={"unused": True}),
-        continue_turn=ModelTurn(text="done", raw={"id": "done"}),
-        on_continue=lambda _outputs, _tools, _metadata: resumed_notices.extend(resumed.notice_calls[-1][1]),
-    )
-
-    async def fast(_args) -> str:
-        background_finished.set()
-        return "ready"
-
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([first, resumed]),
-        tools=[
-            ToolSpec("fast", "Fast", {"type": "object", "properties": {}, "additionalProperties": False}, fast, background="model"),
-            approval_tool([]),
-        ],
-    )
-
-    paused = await harness.run("go")
-
-    assert paused.stop_reason == "approval_required"
-    assert paused.resume_state["cancelled_background_task_ids"] == []
-    assert len(paused.resume_state["ready_background_completion_messages"]) == 1
-    assert paused.tool_call_records[-1]["background"]["event"] == "completed"
-
-    result = await harness.resume_approvals(paused.resume_state, [ApprovalDecision(call_id="call_approval", approved=True)])
-
-    assert result.text == "done"
-    assert [(notice.kind, "Tool: fast" in notice.content) for notice in resumed_notices] == [("background_completion", True)]
-
-
 async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) -> None:
     called: list[dict] = []
     client = FakeClient()
@@ -783,7 +670,7 @@ async def test_limit_warning_dedup_keys_survive_approval_round_trip(tmp_path: Pa
     assert [(notice.limit_kind, notice.remaining) for _method, notices in resumed.notice_calls for notice in notices] == [("tool_calls", 0)]
 
 
-def test_approval_tool_requires_resumable_model_and_no_background(tmp_path: Path) -> None:
+def test_approval_tool_requires_resumable_model(tmp_path: Path) -> None:
     class NonResumableModel:
         model = "non-resumable"
         provider = type("Provider", (), {"name": "test"})()
@@ -792,8 +679,6 @@ def test_approval_tool_requires_resumable_model_and_no_background(tmp_path: Path
         def new_session(self):
             raise AssertionError("unused")
 
-    with pytest.raises(ValueError, match="approval-required tools cannot use background execution"):
-        ToolSpec("x", "X", {"type": "object"}, lambda args: "x", requires_approval=True, background="model")
     with pytest.raises(ValueError, match="approval-required tools require a resumable model"):
         Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=NonResumableModel(), tools=[approval_tool([])])
 
@@ -897,7 +782,6 @@ def test_directed_resume_api_errors(tmp_path: Path) -> None:
         "provider_state": provider_state,
         "batch": [{"id": "call_1", "name": "deploy", "arguments": "{}"}],
         "approval_required_ids": ["call_1"],
-        "cancelled_background_task_ids": [],
         "usage": {"model_requests": 1, "tool_calls": 1, "cancelled_tool_calls": 0, "output_retries": 0, "tool_retries": {}},
         "responses": [],
         "tool_call_records": [],
@@ -906,25 +790,3 @@ def test_directed_resume_api_errors(tmp_path: Path) -> None:
     }
     with pytest.raises(HarnessError, match="approval pause state must be resumed with resume_approvals"):
         Harness(HarnessConfig(root=tmp_path / "other", builtin_tools=[]), model=ScriptedModel([])).run_sync("next", resume_from=approval_state)
-
-
-def test_approval_pause_state_accepts_old_envelopes_without_ready_messages(tmp_path: Path) -> None:
-    session = ScriptedSession(start_turn=ModelTurn(text="ready", raw={"id": "first"}))
-    provider_state = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session])).run_sync("first").resume_state
-    approval_state = {
-        "kind": "approval_pause",
-        "version": 1,
-        "provider_state": provider_state,
-        "batch": [{"id": "call_1", "name": "deploy", "arguments": "{}"}],
-        "approval_required_ids": ["call_1"],
-        "cancelled_background_task_ids": [],
-        "usage": {"model_requests": 1, "tool_calls": 1, "cancelled_tool_calls": 0, "output_retries": 0, "tool_retries": {}},
-        "responses": [],
-        "tool_call_records": [],
-        "emitted_limit_warnings": [],
-        "metadata": {},
-    }
-
-    pause = validate_approval_pause_state(approval_state)
-
-    assert pause.ready_background_completion_messages == []

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 - 2026-06-25
+
+- Removed background tool execution and background completion semantics, including `ToolSpec.background`/`background_policy`, `SubAgentConfig.background`, `BackgroundTask*Event`, and the approval-envelope background fields.
+
 ## 0.3.0 - 2026-06-23
 
 - Added JSONL search range filters, typed equality filters, and field snippets.

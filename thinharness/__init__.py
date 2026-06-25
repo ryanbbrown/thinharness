@@ -6,8 +6,6 @@ from importlib.metadata import version as _metadata_version
 from .core import Harness, HarnessConfig
 from .events import (
     ApprovalResumedEvent,
-    BackgroundTaskCompletedEvent,
-    BackgroundTaskStartedEvent,
     HarnessStream,
     HarnessStreamEvent,
     LimitWarningEvent,
@@ -61,7 +59,6 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
-    BackgroundPolicyDecision,
     BashArgs,
     BashTool,
     FilePromptSource,
@@ -81,7 +78,6 @@ from .tools import (
     PathValidationError,
     Skill,
     SkillRegistry,
-    ToolBackgroundMode,
     ToolEnvelope,
     ToolResult,
     ToolSpec,
@@ -124,8 +120,6 @@ __all__ = [
     "ModelMessageEvent",
     "ToolCallStartedEvent",
     "ToolCallCompletedEvent",
-    "BackgroundTaskStartedEvent",
-    "BackgroundTaskCompletedEvent",
     "ModelRetryEvent",
     "LimitWarningEvent",
     "RunCompletedEvent",
@@ -177,9 +171,7 @@ __all__ = [
     "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
-    "BackgroundPolicyDecision",
     "McpToolInfo",
-    "ToolBackgroundMode",
     "ToolEnvelope",
     "ParallelLlmArgs",
     "ParallelLlmTool",

@@ -18,8 +18,6 @@ _ENVELOPE_KEYS = frozenset({
     "provider_state",
     "batch",
     "approval_required_ids",
-    "cancelled_background_task_ids",
-    "ready_background_completion_messages",
     "usage",
     "responses",
     "tool_call_records",
@@ -49,8 +47,6 @@ class ApprovalPause:
     provider_state: Json
     batch: list[ApprovalToolCall]
     approval_required_ids: frozenset[str]
-    cancelled_background_task_ids: list[str]
-    ready_background_completion_messages: list[str]
     usage: RunUsage
     responses: list[Json]
     tool_call_records: list[Json]
@@ -63,8 +59,6 @@ def build_approval_envelope(
     provider_state: Json,
     batch: list[Any],
     approval_required_ids: list[str],
-    cancelled_background_task_ids: list[str],
-    ready_background_completion_messages: list[str],
     usage: RunUsage,
     responses: list[Json],
     tool_call_records: list[Json],
@@ -83,8 +77,6 @@ def build_approval_envelope(
         "provider_state": provider_state,
         "batch": [{"id": call.id, "name": call.name, "arguments": call.arguments} for call in batch],
         "approval_required_ids": approval_required_ids,
-        "cancelled_background_task_ids": cancelled_background_task_ids,
-        "ready_background_completion_messages": ready_background_completion_messages,
         "usage": asdict(usage),
         "responses": responses,
         "tool_call_records": tool_call_records,
@@ -103,7 +95,6 @@ def validate_approval_pause_state(state: dict[str, Any], *, label: str = "approv
     if state.get("version") != APPROVAL_ENVELOPE_VERSION:
         raise HarnessError(f"{label} version {state.get('version')!r} is not supported")
     missing = set(_ENVELOPE_KEYS - set(state))
-    missing.discard("ready_background_completion_messages")
     if missing:
         raise HarnessError(f"{label} missing required field: {sorted(missing)[0]!r}")
     unknown = set(state) - _ENVELOPE_KEYS
@@ -117,8 +108,6 @@ def validate_approval_pause_state(state: dict[str, Any], *, label: str = "approv
     provider_state = _expect_dict(isolated["provider_state"], "provider_state", label)
     batch = _parse_batch(isolated["batch"], label)
     approval_required_ids = _parse_approval_ids(isolated["approval_required_ids"], batch, label)
-    cancelled_ids = _parse_string_list(isolated["cancelled_background_task_ids"], "cancelled_background_task_ids", label)
-    ready_messages = _parse_string_list(isolated.get("ready_background_completion_messages", []), "ready_background_completion_messages", label)
     responses = _parse_dict_list(isolated["responses"], "responses", label)
     records = _parse_dict_list(isolated["tool_call_records"], "tool_call_records", label)
     emitted = _parse_limit_notice_keys(isolated["emitted_limit_warnings"], label)
@@ -129,8 +118,6 @@ def validate_approval_pause_state(state: dict[str, Any], *, label: str = "approv
         provider_state=provider_state,
         batch=batch,
         approval_required_ids=approval_required_ids,
-        cancelled_background_task_ids=cancelled_ids,
-        ready_background_completion_messages=ready_messages,
         usage=usage,
         responses=responses,
         tool_call_records=records,

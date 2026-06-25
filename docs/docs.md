@@ -55,13 +55,13 @@ async for event in harness.stream("Process these records."):
         result = event.result
 ```
 
-Streaming is coarse turn/tool/run streaming, not token-delta streaming. Provider calls still return complete model turns. Events cover run start/end, provider request starts, complete model messages, tool call start/completion, background task start/completion, structured-output and tool retries, limit warnings, and child subagent runs.
+Streaming is coarse turn/tool/run streaming, not token-delta streaming. Provider calls still return complete model turns. Events cover run start/end, provider request starts, complete model messages, tool call start/completion, structured-output and tool retries, limit warnings, and child subagent runs.
 
 Stream events are high-level workflow events intended for app consumption:
 
 - `RunStartedEvent.prompt` includes the submitted prompt.
 - `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
-- `ToolCallCompletedEvent.output` and `BackgroundTaskCompletedEvent.output` include model-visible tool output.
+- `ToolCallCompletedEvent.output` includes model-visible tool output.
 - Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
 - `ModelMessageEvent.text` includes assistant text from the completed provider turn.
 - Child subagent events are flattened by default; set `include_subagents=False` to keep only the parent `subagent` tool lifecycle.
@@ -249,7 +249,7 @@ The paused result includes:
 
 Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
 
-Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They cannot use background execution, and they are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
+Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
 
 ### Bash Prototype Tool
 
@@ -288,46 +288,6 @@ If any tool in a model-emitted batch is sequential, the whole batch runs seriall
 ```python
 HarnessConfig(tool_execution="sequential")
 ```
-
-## Background Tools
-
-Background tools let long-running independent work stop blocking the agent loop. The work is still owned by the current `Harness.run(...)`: the model gets a start notice, continues other work, and later receives the completion as provider input.
-
-There is no detached job queue, polling API, or job-control surface.
-
-```python
-import asyncio
-
-from pydantic import BaseModel
-
-from thinharness import ToolSpec
-
-
-class ReportArgs(BaseModel):
-    topic: str
-
-
-async def build_report(args: ReportArgs) -> str:
-    await asyncio.sleep(10)
-    return f"report for {args.topic}"
-
-
-report_tool = ToolSpec(
-    name="build_report",
-    description="Build a long report for a topic.",
-    parameters=ReportArgs,
-    handler=build_report,
-    background="model",
-)
-```
-
-Background modes:
-
-- `background="never"` is the default.
-- `background="model"` exposes a private `_background: true` argument when `tool_execution` is not sequential. The model chooses whether to start that call in the background.
-- `background="always"` always starts the tool in the background and does not expose a model-facing switch.
-
-Sequential tools cannot run in the background. `tool_execution="sequential"` disables model-facing background arguments and rejects `background="always"` tools.
 
 ## Structured Output
 
@@ -430,7 +390,7 @@ Named subagents can:
 - choose explicit `builtin_tools`
 - receive explicit custom `tools`
 - opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
-- use their own model, limits, structured output, and background policy
+- use their own model, limits, and structured output
 
 `default` is reserved for the framework default subagent name.
 

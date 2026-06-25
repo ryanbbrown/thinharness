@@ -38,7 +38,6 @@
         <a href="#files">Files</a>
         <a href="#contracts">Core Objects</a>
         <a href="#tools">Default Tools</a>
-        <a href="#background-mode">Background Mode</a>
         <a href="#providers">Providers</a>
         <a href="#lifecycle-observability">Lifecycle</a>
         <a href="#extras">Extras</a>
@@ -55,7 +54,7 @@
           <span>runtime Python files under <code>thinharness/</code>, including the tools package.</span>
         </div>
         <div class="panel kpi">
-          <strong>8,658</strong>
+          <strong>7,985</strong>
           <span>README-stated framework LOC, intentionally small enough to inspect, adapt, and fork.</span>
         </div>
         <div class="panel kpi">
@@ -85,7 +84,7 @@
       <figure class="diagram-frame">
         <img src="../assets/thinharness-run-loop.svg" alt="SVG flowchart showing the ThinHarness run loop from Harness.run through RunContext, ModelSession, ModelTurn resolution, tool execution, approval pause, retries, and HarnessResult construction.">
         <figcaption>
-          Background-capable tools use the same tool-execution path: the original call returns a short start notice while the handler continues under run ownership. When completion is ready, the harness delivers it at the next legal provider request, often coalesced with foreground tool outputs. If the model tries to finalize while background work is still pending or ready but undelivered, the harness waits if needed, sends the completion back to the provider, and requires the final answer again.
+          Tool calls execute through the same local tool path, then their normalized outputs are returned to the provider before the loop resolves the next model turn.
         </figcaption>
       </figure>
 
@@ -126,7 +125,7 @@
         <div class="plain-panel">
           <h3>What streams</h3>
           <ul>
-            <li>Run start, provider request start, complete model turns, tool call start/completion, background task start/completion, retry opportunities, limit warnings, run completion, and run failure.</li>
+            <li>Run start, provider request start, complete model turns, tool call start/completion, retry opportunities, limit warnings, run completion, and run failure.</li>
             <li>Provider calls still return complete model turns. This is workflow progress streaming, not token-delta streaming.</li>
             <li>The final successful event carries the full <code>HarnessResult</code>, including provider responses, tool records, usage, stop reason, output, and resume state.</li>
           </ul>
@@ -223,7 +222,7 @@
         Every model-callable tool is represented by <code>ToolSpec</code>, a dataclass that packages
         the tool definition sent to the model with the Python callable that executes it. A spec includes
         a name, description, JSON schema or Pydantic argument model, handler callable, sequential flag,
-        metadata, optional retry budget, background mode, and approval flag.
+        metadata, optional retry budget, and approval flag.
         The result sent back to the provider is always a JSON envelope with <code>ok</code>, <code>content</code>, and <code>metadata</code>.
       </p>
 
@@ -289,7 +288,7 @@
               <td>Custom</td>
               <td>Caller-provided <code>ToolSpec</code></td>
               <td>Registered at construction with <code>tools=[...]</code> or later with <code>add_tool()</code>; both populate the same runtime tool map.</td>
-              <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Background behavior is opt-in through <code>ToolSpec.background</code>; human approval is opt-in through <code>requires_approval=True</code>.</td>
+              <td>Sync handlers run in worker threads. Async handlers run directly. Pydantic args turn validation failures into retry envelopes. Human approval is opt-in through <code>requires_approval=True</code>.</td>
             </tr>
           </tbody>
         </table>
@@ -315,56 +314,6 @@
             <li>Ordinary handler exceptions become failed tool results but are not retryable unless metadata says so.</li>
             <li>Tool retry budgets are per tool name per run, not per individual call id.</li>
             <li><code>after_tool_call</code> hooks can rewrite output text, but retry control flow is captured before that mutation.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section id="background-mode">
-      <h2>Background Mode</h2>
-      <p>
-        Background mode lets a long-running tool call return a start notice immediately while its handler keeps
-        running inside the same harness run. It is a tool-execution policy, not a detached queue or host-level job
-        system.
-      </p>
-      <table>
-        <thead><tr><th>Mode</th><th>Model-facing behavior</th><th>Runtime behavior</th></tr></thead>
-        <tbody>
-          <tr>
-            <td><code>background="never"</code></td>
-            <td>No background argument is exposed.</td>
-            <td>The default: the handler result is returned before the next provider request.</td>
-          </tr>
-          <tr>
-            <td><code>background="model"</code></td>
-            <td>The model can opt into background execution with <code>_background: true</code>, except when all tool-call batches are configured to run serially.</td>
-            <td>In serial batch execution, the private switch is hidden so a batch cannot advance before the handler completes.</td>
-          </tr>
-          <tr>
-            <td><code>background="always"</code></td>
-            <td>No switch is exposed to the model.</td>
-            <td>Every call starts as background work. This mode is rejected when all tool-call batches are configured to run serially.</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="grid cols-2 grid-spaced">
-        <div class="plain-panel">
-          <h3>Execution ownership</h3>
-          <ul>
-            <li><code>ToolCallExecutor</code> prepares the start notice and <code>BackgroundToolManager</code> owns the pending task.</li>
-            <li>The start notice is recorded as the original tool output, and streaming emits <code>background_task_started</code>.</li>
-            <li>The real handler still runs with tool context, tracing, and normalized <code>ToolResult</code> envelope behavior.</li>
-            <li>Pending tasks are cancelled and drained if the run is cancelled or fails before completion.</li>
-          </ul>
-        </div>
-        <div class="plain-panel">
-          <h3>Completion handoff</h3>
-          <ul>
-            <li>When a background task completes, streaming emits <code>background_task_completed</code>.</li>
-            <li>The completion is delivered at the next legal provider request, usually as a <code>background_completion</code> notice on the same continuation as foreground tool outputs.</li>
-            <li>If the model reaches the final branch before the task is done, the harness waits for completion, sends it back to the provider, and asks the model to produce the final answer again.</li>
-            <li>If a structured-output <code>final_result</code> tool call was waiting, the completion is sent as a tool output so the provider transcript is repaired before finalization.</li>
-            <li>The agent can continue independent work, but the run cannot finish while owned background work still needs to be delivered.</li>
           </ul>
         </div>
       </div>
@@ -655,7 +604,7 @@
               </tr>
               <tr>
                 <td><code>RunContext.pause_for_approval()</code></td>
-                <td>Captures provider resume payload, pending tool batch, usage, responses, tool records, emitted limit-warning keys, metadata, and any background-task cancellations before emitting <code>RunCompletedEvent</code>.</td>
+                <td>Captures provider resume payload, pending tool batch, usage, responses, tool records, emitted limit-warning keys, and metadata before emitting <code>RunCompletedEvent</code>.</td>
               </tr>
               <tr>
                 <td><code>Harness.resume_approvals()</code></td>
@@ -663,7 +612,7 @@
               </tr>
               <tr>
                 <td><code>ToolBatchExecutor</code></td>
-                <td>Runs approved calls and normal sibling calls through the standard hook, tracing, retry, background, and output-ordering machinery.</td>
+                <td>Runs approved calls and normal sibling calls through the standard hook, tracing, retry, and output-ordering machinery.</td>
               </tr>
             </tbody>
           </table>
@@ -703,14 +652,6 @@
             <li>Tracing records one tool span per call, while <code>tool_call_records</code> and provider-facing <code>ToolOutput</code> values preserve the original model order.</li>
           </ul>
           <p>
-            Background-capable tools use the same execution path with one extra ownership layer. The top-level
-            <a href="#background-mode">Background Mode</a> section covers the public contract; internally,
-            <code>ToolCallExecutor</code> returns a start notice, <code>BackgroundToolManager</code> owns the pending task,
-            and the completion later re-enters the provider conversation at the next legal request. Ready completions
-            are coalesced with foreground tool outputs when possible; if the model tries to finalize first, the harness
-            waits if needed, delivers the completion, and requires the final answer again.
-          </p>
-          <p>
             These are the main branches after a model asks for a tool call. They determine whether ThinHarness asks the
             model to repair its request, reports a normal tool failure, or continues the provider conversation.
           </p>
@@ -741,11 +682,6 @@
                 <td>Any called tool has <code>sequential=True</code></td>
                 <td>The whole current batch runs serially in model order.</td>
                 <td>Mutating tools avoid race conditions without partitioning the batch into smaller dependency groups.</td>
-              </tr>
-              <tr>
-                <td>Tool runs in background</td>
-                <td>The original call returns a start notice, the handler keeps running, and completion is delivered at the next legal provider request.</td>
-                <td>The agent can keep using independent tools without losing the eventual result or leaving detached work behind.</td>
               </tr>
             </tbody>
           </table>
@@ -904,7 +840,7 @@
               <tr>
                 <td>Approval pause state</td>
                 <td>Harness-level <code>approval_pause</code> envelope copied into <code>HarnessResult.resume_state</code> when <code>stop_reason="approval_required"</code>.</td>
-                <td>Wraps provider transcript state plus pending batch, run history, usage, emitted limit-warning keys, metadata, and background cancellations. It must be resumed with <code>resume_approvals()</code>, not <code>resume_from</code>.</td>
+                <td>Wraps provider transcript state plus pending batch, run history, usage, emitted limit-warning keys, and metadata. It must be resumed with <code>resume_approvals()</code>, not <code>resume_from</code>.</td>
               </tr>
             </tbody>
           </table>

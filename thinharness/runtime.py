@@ -27,7 +27,6 @@ from .projections import (
     stream_tool_calls_from_assistant,
 )
 from .providers import ModelNotice, ModelSession, ModelTurn, StructuredOutputRequest, ToolOutput
-from .tool_execution import BackgroundToolCompletion, background_completion_message
 from .tracing import (
     RunTracer,
     _trace_output_mode,
@@ -39,12 +38,10 @@ from .types import HarnessError, HarnessResult, Json, LimitNoticeKey, RunUsage, 
 
 if TYPE_CHECKING:
     from .core import Harness, HarnessConfig
-    from .tool_execution import BackgroundToolManager
     from .tracing import _TraceSpan
 
 
 ModelRequest = Callable[[list[ModelNotice]], Awaitable[ModelTurn]]
-BACKGROUND_COMPLETION_SEPARATOR = "\n\n---\n\n"
 
 
 class TurnDriver:
@@ -102,9 +99,8 @@ class TurnDriver:
         self,
         outputs: list[ToolOutput],
         *,
-        kind: Literal["tool_outputs", "approval_resume", "output_retry_tool", "background_completion"] = "tool_outputs",
+        kind: Literal["tool_outputs", "approval_resume", "output_retry_tool"] = "tool_outputs",
         output_retry: bool = False,
-        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue the model run with tool outputs."""
         return await self._run_model_request(
@@ -114,19 +110,18 @@ class TurnDriver:
                 tools=self._harness.tool_schemas(),
                 metadata=self._metadata,
                 structured_output=self._structured_output,
-                notices=[*notices, *(extra_notices or [])],
+                notices=notices,
             ),
             request_kind=kind,
             tool_outputs=outputs,
             output_retry=output_retry,
-            extra_notices=extra_notices,
         )
 
     async def send_user_message(
         self,
         message: str,
         *,
-        kind: Literal["correction", "background_completion"],
+        kind: Literal["correction"],
         output_retry: bool = False,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue the model run with a user message."""
@@ -152,7 +147,6 @@ class TurnDriver:
         prompt: str | None = None,
         tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
-        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Delegate to RunContext model advancement."""
         return await self._run_ctx.advance_model(
@@ -162,7 +156,6 @@ class TurnDriver:
             tool_outputs=tool_outputs,
             structured_output=self._output_mode,
             output_retry=output_retry,
-            extra_notices=extra_notices,
         )
 
 
@@ -302,10 +295,8 @@ class RunContext:
     run_end_fired: bool = False
     finalized_via_output_tool: bool = False
     agent_span: _TraceSpan | None = None
-    background: BackgroundToolManager | None = None
     stream: RunStreamContext | None = None
     emitter: StreamEmitter | None = None
-    ready_background_completion_messages: list[str] = field(default_factory=list)
 
     def stream_base(self) -> dict[str, Any]:
         """Return common event metadata for this run."""
@@ -386,7 +377,6 @@ class RunContext:
         prompt: str | None = None,
         tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
-        extra_notices: list[ModelNotice] | None = None,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Run one provider request with limit, usage, and tracing ceremony."""
         assert self.tracer is not None
@@ -397,14 +387,13 @@ class RunContext:
             self.emitted_limit_warnings,
             final_result_tool_available=self.harness.output_schema is not None and self.harness.output_schema.mode == "tool",
         )
-        all_notices = [*notices, *(extra_notices or [])]
         self.emit(ModelRequestStartedEvent(
             **self.stream_base(),
             request_kind=request_kind,
             model=self.harness.model_ref,
             provider=getattr(self.harness.model.provider, "name", None),
         ))
-        for notice in all_notices:
+        for notice in notices:
             if notice.kind != "limit_warning":
                 continue
             assert notice.limit_kind is not None and notice.remaining is not None
@@ -419,19 +408,19 @@ class RunContext:
         with self.tracer.model(self.harness.model) as model_span:
             if tool_outputs is None:
                 assert prompt is not None
-                assert request_kind in {"start", "resume", "correction", "background_completion"}
+                assert request_kind in {"start", "resume", "correction"}
                 delta = model_request_delta_from_prompt(
-                    kind=cast(Literal["start", "resume", "correction", "background_completion"], request_kind),
+                    kind=cast(Literal["start", "resume", "correction"], request_kind),
                     prompt=prompt,
-                    notices=all_notices,
+                    notices=notices,
                     structured_output=structured_output,
                 )
             else:
-                assert request_kind in {"tool_outputs", "approval_resume", "output_retry_tool", "background_completion"}
+                assert request_kind in {"tool_outputs", "approval_resume", "output_retry_tool"}
                 delta = model_request_delta_from_tool_outputs(
-                    kind=cast(Literal["tool_outputs", "approval_resume", "output_retry_tool", "background_completion"], request_kind),
+                    kind=cast(Literal["tool_outputs", "approval_resume", "output_retry_tool"], request_kind),
                     outputs=tool_outputs,
-                    notices=all_notices,
+                    notices=notices,
                     structured_output=structured_output,
                 )
             model_span.for_each(
@@ -481,24 +470,11 @@ class RunContext:
             stop_reason=self.stop_reason,
         )
 
-    async def cancel_pending_background(self) -> list[str]:
-        """Cancel and record pending background tasks, returning their ids."""
-        assert self.background is not None
-        cancelled_ids: list[str] = []
-        for completion in await self.background.cancel_and_drain():
-            self.record_background_completion(completion)
-            if completion.event == "cancelled":
-                cancelled_ids.append(completion.task_id)
-            else:
-                self.ready_background_completion_messages.append(background_completion_message(completion))
-        return cancelled_ids
-
     def pause_for_approval(
         self,
         turn: ModelTurn,
         approval_calls: list[Any],
         active_session: ModelSession,
-        cancelled_background_task_ids: list[str],
     ) -> HarnessResult:
         """Build and emit the terminal approval pause result."""
         assert self.agent_span is not None
@@ -511,8 +487,6 @@ class RunContext:
             provider_state=provider_state,
             batch=turn.tool_calls,
             approval_required_ids=approval_ids,
-            cancelled_background_task_ids=cancelled_background_task_ids,
-            ready_background_completion_messages=self.ready_background_completion_messages,
             usage=self.usage,
             responses=self.responses,
             tool_call_records=self.tool_call_records,
@@ -612,32 +586,3 @@ class RunContext:
     def record_tool_batch(self, records: list[Json]) -> None:
         """Append provider-facing tool call records to this run."""
         self.tool_call_records.extend(records)
-
-    def record_background_completion(self, completion: BackgroundToolCompletion) -> None:
-        """Append a background completion record to this run."""
-        self.tool_call_records.append(completion.record())
-
-    def drain_ready_background(self) -> tuple[list[BackgroundToolCompletion], str | None]:
-        """Record and format all ready background completions."""
-        assert self.background is not None
-        completions = self.background.drain_ready()
-        if not completions:
-            return [], None
-        for completion in completions:
-            self.record_background_completion(completion)
-        return completions, _join_background_messages(completions)
-
-    async def drain_next_background_batch(self) -> tuple[list[BackgroundToolCompletion], str]:
-        """Wait for one background completion, then record every ready completion."""
-        assert self.background is not None
-        first = await self.background.wait_next_ready()
-        remaining = self.background.drain_ready()
-        completions = [first, *remaining]
-        for completion in completions:
-            self.record_background_completion(completion)
-        return completions, _join_background_messages(completions)
-
-
-def _join_background_messages(completions: Sequence[BackgroundToolCompletion]) -> str:
-    """Join background completion messages for one model delivery."""
-    return BACKGROUND_COMPLETION_SEPARATOR.join(background_completion_message(completion) for completion in completions)

@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..types import Json
 
-ToolBackgroundMode = Literal["never", "always", "model"]
 ToolKind = Literal["user", "subagent", "parallel_llm", "mcp"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
@@ -31,16 +30,6 @@ class McpToolInfo:
 
 
 @dataclass(frozen=True)
-class BackgroundPolicyDecision:
-    """Framework-owned background policy for a parsed tool call."""
-
-    mode: ToolBackgroundMode
-    known_target: bool = True
-    strip_private_arg: bool = True
-    unsupported_message: str | None = None
-
-
-@dataclass(frozen=True)
 class ToolSpec:
     """A JSON-schema-described callable exposed to the model."""
 
@@ -52,30 +41,20 @@ class ToolSpec:
     metadata: Json = field(default_factory=dict)
     max_retries: int | None = None
     instructions: str | None = None
-    background: ToolBackgroundMode = "never"
     requires_approval: bool = False
     kind: ToolKind = "user"
-    background_policy: Callable[[Json], BackgroundPolicyDecision] | None = None
     mcp: McpToolInfo | None = None
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
-        if self.background not in {"never", "always", "model"}:
-            raise ValueError(f"unknown background mode: {self.background}")
         if self.kind not in {"user", "subagent", "parallel_llm", "mcp"}:
             raise ValueError(f"unknown tool kind: {self.kind}")
-        if self.sequential and self.background != "never":
-            raise ValueError("sequential tools cannot run in background")
-        if self.requires_approval and self.background != "never":
-            raise ValueError("approval-required tools cannot use background execution")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
 
-    def response_tool(self, *, include_background: bool = False) -> Json:
+    def response_tool(self) -> Json:
         """Return an OpenAI Responses API function tool definition."""
         parameters = copy.deepcopy(tool_parameters(self.parameters))
-        if include_background:
-            _add_background_parameter(parameters)
         return {
             "type": "function",
             "name": self.name,
@@ -366,21 +345,6 @@ def tool_parameters(parameters: Json | type[BaseModel]) -> Json:
     schema.setdefault("type", "object")
     schema.setdefault("additionalProperties", False)
     return schema
-
-
-def _add_background_parameter(schema: Json) -> None:
-    """Add the model-facing background opt-in parameter to a copied schema."""
-    schema.setdefault("type", "object")
-    properties = schema.setdefault("properties", {})
-    if not isinstance(properties, dict):
-        raise ValueError("background-capable tool schemas must have object properties")
-    if "_background" in properties:
-        raise ValueError("tool schema already defines reserved _background argument")
-    properties["_background"] = {
-        "type": "boolean",
-        "description": "Start this tool in the background and continue other work; omit or set false for normal synchronous execution.",
-        "default": False,
-    }
 
 
 def coerce_args(args: T | Json, model: type[T]) -> T:

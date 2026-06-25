@@ -19,7 +19,7 @@ from .providers import (
 )
 from .types import Json
 
-ModelRequestKind = Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool", "background_completion"]
+ModelRequestKind = Literal["start", "resume", "tool_outputs", "approval_resume", "correction", "output_retry_tool"]
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class ModelRequestDelta:
 
 def model_request_delta_from_prompt(
     *,
-    kind: Literal["start", "resume", "correction", "background_completion"],
+    kind: Literal["start", "resume", "correction"],
     prompt: str,
     notices: list[ModelNotice],
     structured_output: str | None,
@@ -50,7 +50,7 @@ def model_request_delta_from_prompt(
 
 def model_request_delta_from_tool_outputs(
     *,
-    kind: Literal["tool_outputs", "approval_resume", "output_retry_tool", "background_completion"],
+    kind: Literal["tool_outputs", "approval_resume", "output_retry_tool"],
     outputs: list[ToolOutput],
     notices: list[ModelNotice],
     structured_output: str | None,
@@ -117,8 +117,6 @@ def model_request_input_from_delta(delta: ModelRequestDelta) -> Json | None:
             return {"prompt": content}
         if delta.kind == "correction":
             return {"correction": content}
-        if delta.kind == "background_completion":
-            return {"background_completion": content}
 
     tool_outputs = [
         {"call_id": entry.call_id, "output": entry.output}

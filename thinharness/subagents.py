@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -12,7 +11,7 @@ from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .providers import infer_model, same_provider_model_ref
-from .tools.base import BackgroundPolicyDecision, Json, ToolBackgroundMode, ToolResult, ToolSpec
+from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
 from .tracing import TracingOptions
 
@@ -43,7 +42,14 @@ class SubAgentConfig(BaseModel):
     output_mode: Literal["auto", "native", "tool", "prompted"] = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
-    background: ToolBackgroundMode = "never"
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_fields(cls, data: object) -> object:
+        """Fail loudly when callers pass fields removed from the public API."""
+        if isinstance(data, dict) and "background" in data:
+            raise ValueError("SubAgentConfig.background has been removed")
+        return data
 
     @model_validator(mode="after")
     def validate_subagent(self) -> SubAgentConfig:
@@ -89,12 +95,10 @@ def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> Tool
 
     return ToolSpec(
         "subagent",
-        _subagent_tool_description(configs, background_available=parent.config.tool_execution != "sequential"),
+        _subagent_tool_description(configs),
         SubAgentArgs,
         handler,
-        background="model",
         kind="subagent",
-        background_policy=_subagent_background_policy(configs),
     )
 
 
@@ -356,26 +360,7 @@ def _same_provider(parent: Harness, child_model_ref: str) -> bool:
     return same_provider_model_ref(parent.model, child_model_ref)
 
 
-def _subagent_background_policy(configs: list[SubAgentConfig]) -> Callable[[Json], BackgroundPolicyDecision]:
-    """Return a typed background policy for subagent delegation calls."""
-    policies: dict[str, ToolBackgroundMode] = {config.name: config.background for config in configs}
-
-    def decide(args: Json) -> BackgroundPolicyDecision:
-        agent = args.get("agent")
-        if agent is None:
-            return BackgroundPolicyDecision(mode="model")
-        if isinstance(agent, str) and agent in policies:
-            mode = policies[agent]
-            return BackgroundPolicyDecision(
-                mode=mode,
-                unsupported_message="selected subagent does not support background execution" if mode == "never" else None,
-            )
-        return BackgroundPolicyDecision(mode="never", known_target=False)
-
-    return decide
-
-
-def _subagent_tool_description(configs: list[SubAgentConfig], *, background_available: bool) -> str:
+def _subagent_tool_description(configs: list[SubAgentConfig]) -> str:
     """Render the parent-facing subagent tool description."""
     lines = [
         "Delegate one self-contained task to a sub-helper. Each subagent runs in isolated context.",
@@ -386,8 +371,6 @@ def _subagent_tool_description(configs: list[SubAgentConfig], *, background_avai
         lines.extend(f"- {config.name}: {config.description}" for config in configs)
         lines.append("")
     lines.append("Omit `agent` to use the framework default subagent.")
-    if background_available:
-        lines.append("For long independent delegation, `_background: true` may be used when the selected subagent supports background execution.")
     return "\n".join(lines)
 
 

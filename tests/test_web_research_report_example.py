@@ -235,12 +235,3 @@ def test_build_harness_uses_default_trace_dir(tmp_path: Path, monkeypatch: pytes
     assert str(trace_dir).startswith(str(home / ".thinharness" / "traces"))
     assert not str(trace_dir).startswith(str(root))
 
-
-def test_build_harness_keeps_critical_path_tools_synchronous(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("EXA_API_KEY", "exa-key")
-    harness = build_harness(tmp_path, model="openrouter:deepseek/deepseek-v4-pro")
-
-    schemas = {schema["name"]: schema for schema in harness.tool_schemas()}
-
-    assert "_background" not in schemas["parallel_llm"]["parameters"]["properties"]
-    assert "_background" not in schemas["subagent"]["parameters"]["properties"]

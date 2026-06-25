@@ -7,8 +7,6 @@ import pytest
 from fakes import FailingSession, ScriptedModel, ScriptedSession, echo_tool
 
 from thinharness import (
-    BackgroundTaskCompletedEvent,
-    BackgroundTaskStartedEvent,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -272,31 +270,6 @@ async def test_stream_close_after_early_break_cleans_up(tmp_path: Path) -> None:
 
     release.set()
     assert (await harness.run("again")).text == "again"
-
-
-async def test_stream_background_events(tmp_path: Path) -> None:
-    session = SequenceSession(
-        ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="slow", arguments='{"_background":true}')], raw={"id": "start"}),
-        ModelTurn(text="early", raw={"id": "early"}),
-        ModelTurn(text="done", raw={"id": "done"}),
-    )
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([session]),
-        tools=[ToolSpec("slow", "Slow", {"type": "object", "properties": {}}, lambda args: "late", background="model")],
-    )
-
-    events = await _collect_events(harness, "go")
-
-    tool_done = next(event for event in events if isinstance(event, ToolCallCompletedEvent))
-    assert tool_done.background_task_id == "bg_1"
-    assert tool_done.background_status == "running"
-    background_done = next(event for event in events if isinstance(event, BackgroundTaskCompletedEvent))
-    assert background_done.status == "completed"
-    assert background_done.output is not None
-    assert "late" in background_done.output
-    assert any(isinstance(event, BackgroundTaskStartedEvent) and event.background_task_id == "bg_1" for event in events)
-    assert any(isinstance(event, ModelRequestStartedEvent) and event.request_kind == "background_completion" for event in events)
 
 
 async def test_stream_structured_output_retry_event(tmp_path: Path) -> None:
