@@ -314,7 +314,7 @@ Approval happens over Telegram, and it can be simple accept/reject or involve mu
 
 Pre-1.0. APIs may shift, but I don't expect dramatic changes. Forking is a real option, not just a theoretical one: the codebase is small enough that pulling upstream changes into your fork by hand stays cheap. Each major feature (MCP, subagents, jsonl_search, parallel_llm, skills) lives in its own file with no hidden dependencies. If you don't use one, that's even less code to worry about. If you want to delete it entirely, that's a one-shot 10-word prompt to a coding agent.
 
-ThinHarness was built with coding agents, but isn't vibe-coded. I have used it, iterated on it, and reviewed its design + behavior. The [docs site](https://ryanbbrown.com/thinharness/) includes a [codebase explainer](https://ryanbbrown.com/thinharness/explainer.html) that I iterated on to understand the library, and the [web research example](https://ryanbbrown.com/thinharness/examples.html) has the transcript from a non-trivial agent run to show that it works effectively.
+ThinHarness was built with coding agents, but isn't vibe-coded. I have used it, iterated on it, and reviewed its design + behavior. The [website](https://ryanbbrown.com/thinharness/) includes a [codebase explainer](https://ryanbbrown.com/thinharness/explainer) that has gone through many versions so my mental model of the codebase stays up-to-date.
 
 ## License
 
