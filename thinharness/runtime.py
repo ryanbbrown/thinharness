@@ -19,21 +19,20 @@ from .events import (
     StreamEmitter,
 )
 from .hooks import LimitReachedContext, RunEndContext
-from .output import OutputTurnDecision, resolve_turn_output
 from .projections import (
     ModelRequestKind,
     model_request_delta_from_prompt,
     model_request_delta_from_tool_outputs,
     stream_tool_calls_from_assistant,
 )
-from .providers import ModelNotice, ModelSession, ModelTurn, RequestConstants, ToolOutput
+from .providers import ModelNotice, ModelSession, ModelTurn, ToolOutput
 from .tracing import (
     RunTracer,
-    _trace_output_mode,
     annotate_agent_result,
     annotate_model_request,
     annotate_model_span,
 )
+from .turns import OutputTurnDecision, resolve_turn_output
 from .types import HarnessError, HarnessResult, Json, LimitNoticeKey, RunUsage, StopReason
 
 if TYPE_CHECKING:
@@ -42,89 +41,6 @@ if TYPE_CHECKING:
 
 
 ModelRequest = Callable[[list[ModelNotice]], Awaitable[ModelTurn]]
-
-
-class TurnDriver:
-    """Owns one active ModelSession plus the per-run request constants."""
-
-    def __init__(
-        self,
-        *,
-        session: ModelSession,
-        run_ctx: RunContext,
-        harness: Harness,
-        constants: RequestConstants,
-    ) -> None:
-        self._session = session
-        self._run_ctx = run_ctx
-        self._harness = harness
-        self._constants = constants
-        self._output_mode = _trace_output_mode(harness.output_schema)
-
-    async def start(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Start a model run."""
-        return await self._run_model_request(
-            lambda notices: self._session.start(prompt, self._constants, notices=notices),
-            request_kind="start",
-            prompt=prompt,
-        )
-
-    async def resume(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Continue a resumed model run with a new prompt."""
-        return await self._run_model_request(
-            lambda notices: self._session.continue_with_user_text(prompt, self._constants, notices=notices),
-            request_kind="resume",
-            prompt=prompt,
-        )
-
-    async def send_tool_outputs(
-        self,
-        outputs: list[ToolOutput],
-        *,
-        kind: Literal["tool_outputs", "approval_resume", "output_retry_tool"] = "tool_outputs",
-        output_retry: bool = False,
-    ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Continue the model run with tool outputs."""
-        return await self._run_model_request(
-            lambda notices: self._session.continue_with_tools(outputs, self._constants, notices=notices),
-            request_kind=kind,
-            tool_outputs=outputs,
-            output_retry=output_retry,
-        )
-
-    async def send_user_message(
-        self,
-        message: str,
-        *,
-        kind: Literal["correction"],
-        output_retry: bool = False,
-    ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Continue the model run with a user message."""
-        return await self._run_model_request(
-            lambda notices: self._session.continue_with_user_text(message, self._constants, notices=notices),
-            request_kind=kind,
-            prompt=message,
-            output_retry=output_retry,
-        )
-
-    async def _run_model_request(
-        self,
-        request: ModelRequest,
-        *,
-        request_kind: ModelRequestKind,
-        prompt: str | None = None,
-        tool_outputs: list[ToolOutput] | None = None,
-        output_retry: bool = False,
-    ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Delegate to RunContext model advancement."""
-        return await self._run_ctx.advance_model(
-            request,
-            request_kind=request_kind,
-            prompt=prompt,
-            tool_outputs=tool_outputs,
-            structured_output=self._output_mode,
-            output_retry=output_retry,
-        )
 
 
 def _limit_notice_dedup_key(notice: ModelNotice) -> LimitNoticeKey:
@@ -291,6 +207,19 @@ class RunContext:
             call_id=call_id,
         ))
 
+    def emit_model_message(self, turn: ModelTurn, *, finalized_mode: str | None) -> None:
+        """Emit the public model-message event for one completed provider turn."""
+        self.emit(ModelMessageEvent(
+            **self.stream_base(),
+            text=turn.text,
+            tool_calls=stream_tool_calls_from_assistant(turn),
+            finalized_output_mode=finalized_mode,
+        ))
+
+    def record_response(self, turn: ModelTurn) -> None:
+        """Record one provider turn's raw response for the terminal result."""
+        self.responses.append(turn.raw)
+
     def fire_run_end_once(self) -> None:
         """Emit run_end exactly once for this run."""
         if self.run_end_fired:
@@ -413,18 +342,12 @@ class RunContext:
                 )
             )
             decision = resolve_turn_output(turn, self.harness.output_schema)
-            if finalized_mode := decision.finalized_mode:
-                turn.finalized_output_mode = finalized_mode
+            if decision.finalized_mode:
                 model_span.set_attributes({
-                    "thinharness.output.mode": finalized_mode,
+                    "thinharness.output.mode": decision.finalized_mode,
                     "gen_ai.output.finalized": True,
                 })
-            self.emit(ModelMessageEvent(
-                **self.stream_base(),
-                text=turn.text,
-                tool_calls=stream_tool_calls_from_assistant(turn),
-                finalized_output_mode=turn.finalized_output_mode,
-            ))
+            self.emit_model_message(turn, finalized_mode=decision.finalized_mode)
             return turn, decision
 
     def build_terminal_result(self, text: str, output: Any | None = None) -> HarnessResult:

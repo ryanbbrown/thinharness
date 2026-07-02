@@ -18,12 +18,11 @@ from ..output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
-    OutputTurnDecision,
     resolve_output_schema_for_model,
-    resolve_turn_output,
     structured_instructions,
     structured_retry_prompt,
 )
+from ..turns import OutputTurnDecision, resolve_turn_output
 from .base import Json, PathPolicy, PathValidationError, StrictArgs, ToolResult, ToolSpec, coerce_args
 
 if TYPE_CHECKING:

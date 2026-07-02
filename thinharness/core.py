@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -27,8 +26,6 @@ from .events import (
     RunStartedEvent,
     StreamEmitter,
     StreamOptions,
-    ToolCallCompletedEvent,
-    ToolCallStartedEvent,
     create_stream_context,
 )
 from .hooks import (
@@ -43,7 +40,6 @@ from .output import (
     OutputMode,
     OutputSchema,
     OutputSpec,
-    OutputTurnDecision,
     resolve_output_schema_for_model,
     structured_instructions,
 )
@@ -51,17 +47,15 @@ from .providers import (
     Model,
     ModelSession,
     ModelToolCall,
-    ModelTurn,
     ProviderError,
     RequestConstants,
     ResumableModel,
     StructuredOutputRequest,
-    ToolOutput,
     infer_model,
     model_capabilities,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import ToolResult, ToolSpec
+from .tools.base import ToolSpec
 from .tools.filesystem import builtin_tools as make_builtin_tools
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
@@ -72,8 +66,8 @@ from .tracing import (
     TracingOptions,
     annotate_agent_start,
     create_local_tracing,
-    serialize_attribute_value,
 )
+from .turns import TurnStart, advance_until_terminal
 from .types import ApprovalDecision, HarnessError, HarnessResult, Json, PendingApproval, RunUsage, UnexpectedModelBehavior
 
 DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
@@ -491,72 +485,14 @@ class Harness:
                             metadata=run_metadata,
                             structured_output=self._structured_output_request(),
                         )
-                        if first_turn_kind == "approval_resume":
-                            assert approval_pause is not None
-                            assert approval_decision_map is not None
-                            assert session is not None
-                            driver = self._turn_driver(
-                                session=session,
-                                constants=constants,
-                                run_ctx=run_ctx,
-                            )
-                            active_session = session
-                            turn, decision = await self._resume_approval_batch(
-                                approval_pause,
-                                approval_decision_map,
-                                driver,
-                                run_ctx,
-                                tool_executor,
-                            )
-                        else:
-                            active_session, driver, turn, decision = await self._start_or_resume_turn(
-                                first_turn_kind=cast(Literal["start", "resume"], first_turn_kind),
-                                session=session,
-                                effective_prompt=effective_prompt,
-                                constants=constants,
-                                run_ctx=run_ctx,
-                                agent_span=agent_span,
-                            )
-                        while True:
-                            run_ctx.responses.append(turn.raw)
-                            if decision.kind == "final":
-                                return run_ctx.finalize(
-                                    decision.text,
-                                    active_session,
-                                    output=decision.output,
-                                    finalized_via_output_tool_value=decision.finalized_via_output_tool,
-                                    require_dump_state=model_supports_resume,
-                                )
-                            if decision.kind == "retry_tool_output":
-                                run_ctx.retry_or_fail()
-                                final_id = decision.retry_call_id
-                                assert final_id, "tool-mode final_result retry requires a tool call id"
-                                retry_message = decision.retry_message
-                                run_ctx.emit_retry_event("structured_output", retry_message, final_id)
-                                turn, decision = await driver.send_tool_outputs(
-                                    [ToolOutput(final_id, retry_message)],
-                                    kind="output_retry_tool",
-                                    output_retry=True,
-                                )
-                                continue
-                            if decision.kind == "retry_user_message":
-                                run_ctx.retry_or_fail()
-                                retry_message = decision.retry_message
-                                run_ctx.emit_retry_event("structured_output", retry_message, decision.retry_call_id)
-                                turn, decision = await driver.send_user_message(
-                                    retry_message,
-                                    kind="correction",
-                                    output_retry=True,
-                                )
-                                continue
-                            if decision.kind == "unexpected":
-                                raise UnexpectedModelBehavior(decision.unexpected_message)
-                            approval_calls = self._approval_required_calls(turn.tool_calls)
-                            if approval_calls:
-                                run_ctx.check_tool_limit(len(turn.tool_calls))
-                                run_ctx.usage.tool_calls += len(turn.tool_calls)
-                                return run_ctx.pause_for_approval(turn, approval_calls, active_session)
-                            turn, decision = await self._execute_tool_turn(turn, driver, run_ctx, tool_executor)
+                        active_session = session if session is not None else self.model.new_session()
+                        start = TurnStart(
+                            kind=cast(Literal["start", "resume", "approval_resume"], first_turn_kind),
+                            prompt=effective_prompt,
+                            approval_pause=approval_pause,
+                            approval_decisions=approval_decision_map,
+                        )
+                        return await advance_until_terminal(start, active_session, constants, self, run_ctx, tool_executor)
                     except asyncio.CancelledError as exc:
                         run_ctx.stop_reason = "cancelled"
                         run_ctx.terminal_error = exc
@@ -627,64 +563,6 @@ class Harness:
         )
         return effective_prompt, instructions
 
-    async def _start_or_resume_turn(
-        self,
-        *,
-        first_turn_kind: Literal["start", "resume"],
-        session: ModelSession | None,
-        effective_prompt: str,
-        constants: RequestConstants,
-        run_ctx: Any,
-        agent_span: Any,
-    ) -> tuple[ModelSession, Any, ModelTurn, OutputTurnDecision]:
-        """Create the turn driver and make the initial model request."""
-        from .runtime import TurnDriver
-
-        if first_turn_kind == "start":
-            try:
-                active_session = self.model.new_session()
-            except Exception as exc:
-                run_ctx.stop_reason = "error"
-                run_ctx.terminal_error = exc
-                agent_span.record_exception(exc)
-                agent_span.set_error(str(exc), type(exc).__name__)
-                raise
-            driver = TurnDriver(
-                session=active_session,
-                run_ctx=run_ctx,
-                harness=self,
-                constants=constants,
-            )
-            turn, decision = await driver.start(effective_prompt)
-            return active_session, driver, turn, decision
-
-        assert session is not None
-        driver = TurnDriver(
-            session=session,
-            run_ctx=run_ctx,
-            harness=self,
-            constants=constants,
-        )
-        turn, decision = await driver.resume(effective_prompt)
-        return session, driver, turn, decision
-
-    def _turn_driver(
-        self,
-        *,
-        session: ModelSession,
-        constants: RequestConstants,
-        run_ctx: Any,
-    ) -> Any:
-        """Create a TurnDriver for an already prepared session."""
-        from .runtime import TurnDriver
-
-        return TurnDriver(
-            session=session,
-            run_ctx=run_ctx,
-            harness=self,
-            constants=constants,
-        )
-
     def _resume_approval_session(self, provider_state: Json) -> ModelSession:
         """Resume a provider session for an approval envelope with approval-specific errors."""
         try:
@@ -695,136 +573,9 @@ class Harness:
                 message = f"approval state provider_state{message[len('resume_from'):]}"
             raise HarnessError(message) from exc
 
-    async def _resume_approval_batch(
-        self,
-        approval_pause: ApprovalPause,
-        decisions: dict[str, ApprovalDecision],
-        driver: Any,
-        run_ctx: Any,
-        tool_executor: Any,
-    ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Execute or reject the paused batch, then continue the model."""
-        self._validate_approval_resume_tools(approval_pause)
-        batch = [
-            ModelToolCall(id=call.id, name=call.name, arguments=call.arguments)
-            for call in approval_pause.batch
-        ]
-        executed: list[tuple[int, ModelToolCall]] = [
-            (index, call)
-            for index, call in enumerate(batch)
-            if call.id not in approval_pause.approval_required_ids or decisions[call.id].approved
-        ]
-        executed_indices = [index for index, _call in executed]
-        executed_calls = [call for _index, call in executed]
-        executed_by_id: dict[str, tuple[Json, ToolOutput, Any]] = {}
-        if executed_calls:
-            recorded, outputs, executions = await tool_executor.execute_batch(executed_calls, tool_indices=executed_indices)
-            run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
-            for call, record, output, execution in zip(executed_calls, recorded, outputs, executions, strict=True):
-                if call.id in approval_pause.approval_required_ids:
-                    record["approval"] = {"approved": True}
-                executed_by_id[call.id] = (record, output, execution)
-            run_ctx.check_tool_retry_limits(executed_calls, executions)
-
-        ordered_records: list[Json] = []
-        ordered_outputs: list[ToolOutput] = []
-        for index, call in enumerate(batch):
-            decision = decisions.get(call.id)
-            if decision is not None and not decision.approved:
-                record, output = self._reject_approval_call(call, index, decision, run_ctx)
-                ordered_records.append(record)
-                ordered_outputs.append(output)
-                continue
-            record, output, _execution = executed_by_id[call.id]
-            ordered_records.append(record)
-            ordered_outputs.append(output)
-        run_ctx.record_tool_batch(ordered_records)
-        return await driver.send_tool_outputs(ordered_outputs, kind="approval_resume")
-
-    def _reject_approval_call(
-        self,
-        call: ModelToolCall,
-        index: int,
-        decision: ApprovalDecision,
-        run_ctx: Any,
-    ) -> tuple[Json, ToolOutput]:
-        """Create model-visible rejection output without running hooks."""
-        message = "Tool call was rejected by a human reviewer."
-        if decision.reason:
-            message = f"{message}\nReason: {decision.reason}"
-        output = ToolResult(False, message, {"error_type": "ApprovalRejected"}).to_json()
-        start = time.perf_counter()
-        with run_ctx.tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
-            run_ctx.emit(ToolCallStartedEvent(
-                **run_ctx.stream_base(),
-                call_id=call.id,
-                tool_name=call.name,
-                tool_index=index,
-                arguments=call.arguments,
-            ))
-            span.set_attribute_where(
-                lambda option: option.capture_tool_results,
-                "gen_ai.tool.call.result",
-                serialize_attribute_value(output),
-            )
-            span.set_error("Tool call rejected by human reviewer", "ApprovalRejected")
-            run_ctx.emit(ToolCallCompletedEvent(
-                **run_ctx.stream_base(),
-                call_id=call.id,
-                tool_name=call.name,
-                ok=False,
-                error_type="ApprovalRejected",
-                message=message,
-                duration_ms=(time.perf_counter() - start) * 1000,
-                output=output,
-            ))
-        return (
-            {
-                "call": {"id": call.id, "name": call.name, "arguments": call.arguments},
-                "output": output,
-                "approval": {"approved": False, "reason": decision.reason},
-            },
-            ToolOutput(call.id, output),
-        )
-
-    def _validate_approval_resume_tools(self, approval_pause: ApprovalPause) -> None:
-        """Require approval-required tools to still be configured before execution."""
-        current_required_ids: set[str] = set()
-        for call in approval_pause.batch:
-            spec = self._tool_map.get(str(call.name))
-            if call.id in approval_pause.approval_required_ids and spec is None:
-                raise HarnessError(f"approval-required tool {call.name!r} is not configured")
-            if spec is not None and spec.requires_approval:
-                current_required_ids.add(call.id)
-        if current_required_ids != set(approval_pause.approval_required_ids):
-            raise HarnessError("approval state approval_required_ids do not match configured approval-required tools")
-
-    def _approval_required_calls(self, calls: list[ModelToolCall]) -> list[ModelToolCall]:
-        """Return approval-required calls from a model batch."""
-        return [
-            call for call in calls
-            if (spec := self._tool_map.get(str(call.name))) is not None and spec.requires_approval
-        ]
-
     def _pending_approval_record(self, call: ModelToolCall) -> PendingApproval:
         """Return the host-facing pending approval shape for one call."""
         return PendingApproval(call_id=call.id, tool_name=call.name, arguments=call.arguments)
-
-    async def _execute_tool_turn(
-        self,
-        turn: ModelTurn,
-        driver: Any,
-        run_ctx: Any,
-        tool_executor: Any,
-    ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Execute a normal tool-call turn and continue with its outputs."""
-        run_ctx.check_tool_limit(len(turn.tool_calls))
-        run_ctx.usage.tool_calls += len(turn.tool_calls)
-        recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
-        run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
-        run_ctx.record_tool_batch(recorded)
-        run_ctx.check_tool_retry_limits(turn.tool_calls, executions)
-        return await driver.send_tool_outputs(outputs)
 
     def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""

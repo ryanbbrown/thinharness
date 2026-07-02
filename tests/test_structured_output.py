@@ -28,10 +28,11 @@ from thinharness import (
     build_child_harness,
     create_subagent_tool,
 )
-from thinharness.output import OutputSchema, resolve_turn_output
+from thinharness.output import OutputSchema
 from thinharness.providers import ProviderError
 from thinharness.runtime import _compute_limit_notices
 from thinharness.subagents import SubAgentArgs, run_subagent_tool
+from thinharness.turns import resolve_turn_output
 
 
 class Person(BaseModel):

@@ -52,7 +52,6 @@ class ModelTurn:
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     raw: Json = field(default_factory=dict)
     reasoning: list[ReasoningPart] = field(default_factory=list)
-    finalized_output_mode: str | None = None
 
 
 @dataclass
