@@ -36,24 +36,27 @@ class SequenceSession:
         self.continue_turns = list(continue_turns)
         self.tool_outputs = []
         self.user_messages = []
+        self.requests_made = 0
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Return the scripted first turn."""
+        self.requests_made += 1
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Record tool outputs and return the next scripted turn."""
+        self.requests_made += 1
         self.tool_outputs.append(outputs)
         return self._next_turn()
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-        """Record user-message continuations and return the next scripted turn."""
-        self.user_messages.append(message)
+    async def continue_with_user_text(self, text, constants, *, notices=None):
+        """Return the first turn for a resume or record a correction and continue."""
+        is_resume = self.requests_made == 0
+        self.requests_made += 1
+        if is_resume:
+            return self.start_turn
+        self.user_messages.append(text)
         return self._next_turn()
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
-        """Return the scripted first turn for resumed prompts."""
-        return self.start_turn
 
     def dump_state(self):
         """Return scripted resume state."""

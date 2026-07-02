@@ -32,24 +32,20 @@ class SequenceSession:
         self.continue_turns = list(continue_turns)
         self.tool_outputs = []
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Return the scripted first turn."""
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Record tool outputs and return the next scripted turn."""
         self.tool_outputs.append(outputs)
         if not self.continue_turns:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-        """No tests in this file expect user-message continuations."""
-        raise AssertionError("unexpected user-message continuation")
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
-        """No tests in this file expect resumed user prompts."""
-        raise AssertionError("unexpected resumed prompt")
+    async def continue_with_user_text(self, text, constants, *, notices=None):
+        """No tests in this file expect user-text continuations."""
+        raise AssertionError("unexpected user-text continuation")
 
     def dump_state(self):
         """Return no resume state for retry-specific scripted sessions."""

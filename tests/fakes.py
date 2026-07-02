@@ -209,52 +209,46 @@ class ScriptedSession:
         self.notice_calls: list[tuple[str, list[ModelNotice]]] = []
         self._dump_state = dump_state if dump_state is not None else {"kind": "scripted", "version": 1, "model": SCRIPTED_MODEL_NAME}
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Return the scripted start turn."""
         self.notice_calls.append(("start", list(notices or [])))
         if self.on_start:
-            self.on_start(prompt, instructions, tools, metadata, previous_response_id)
+            self.on_start(prompt, constants.instructions, constants.tools, constants.metadata, previous_response_id)
         return self.start_turn
 
-    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Return the scripted continuation turn."""
         self.notice_calls.append(("continue_with_tools", list(notices or [])))
         if self.on_continue:
-            self.on_continue(outputs, tools, metadata)
+            self.on_continue(outputs, constants.tools, constants.metadata)
         return self.continue_turn
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-        """Return the scripted continuation turn after a user message."""
-        self.notice_calls.append(("continue_with_user_message", list(notices or [])))
+    async def continue_with_user_text(self, text, constants, *, notices=None):
+        """Return the start turn for a resume (first request on the session) or the continuation turn for a correction."""
+        is_resume = not self.notice_calls
+        self.notice_calls.append(("continue_with_user_text", list(notices or [])))
+        if is_resume:
+            if self.on_start:
+                self.on_start(text, constants.instructions, constants.tools, constants.metadata, None)
+            return self.start_turn
         if self.on_continue:
-            self.on_continue(message, tools, metadata)
+            self.on_continue(text, constants.tools, constants.metadata)
         return self.continue_turn
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
-        """Return the scripted continuation turn after a resumed user prompt."""
-        self.notice_calls.append(("continue_with_user_prompt", list(notices or [])))
-        if self.on_start:
-            self.on_start(prompt, instructions, tools, metadata, None)
-        return self.start_turn
 
     def dump_state(self):
         """Return scripted resume state."""
         return copy.deepcopy(self._dump_state)
 
 class FailingSession:
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Raise a provider failure from the child run."""
         raise ProviderError("child failed")
 
-    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-        """Never continue after a failed start."""
-        raise AssertionError("should not continue")
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_text(self, text, constants, *, notices=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 

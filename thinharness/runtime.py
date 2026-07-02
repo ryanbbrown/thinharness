@@ -26,7 +26,7 @@ from .projections import (
     model_request_delta_from_tool_outputs,
     stream_tool_calls_from_assistant,
 )
-from .providers import ModelNotice, ModelSession, ModelTurn, StructuredOutputRequest, ToolOutput
+from .providers import ModelNotice, ModelSession, ModelTurn, RequestConstants, ToolOutput
 from .tracing import (
     RunTracer,
     _trace_output_mode,
@@ -53,29 +53,18 @@ class TurnDriver:
         session: ModelSession,
         run_ctx: RunContext,
         harness: Harness,
-        instructions: str,
-        metadata: Json | None,
-        structured_output: StructuredOutputRequest | None,
+        constants: RequestConstants,
     ) -> None:
         self._session = session
         self._run_ctx = run_ctx
         self._harness = harness
-        self._instructions = instructions
-        self._metadata = metadata
-        self._structured_output = structured_output
+        self._constants = constants
         self._output_mode = _trace_output_mode(harness.output_schema)
 
     async def start(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
         """Start a model run."""
         return await self._run_model_request(
-            lambda notices: self._session.start(
-                prompt=prompt,
-                instructions=self._instructions,
-                tools=self._harness.tool_schemas(),
-                metadata=self._metadata,
-                structured_output=self._structured_output,
-                notices=notices,
-            ),
+            lambda notices: self._session.start(prompt, self._constants, notices=notices),
             request_kind="start",
             prompt=prompt,
         )
@@ -83,14 +72,7 @@ class TurnDriver:
     async def resume(self, prompt: str) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue a resumed model run with a new prompt."""
         return await self._run_model_request(
-            lambda notices: self._session.continue_with_user_prompt(
-                prompt=prompt,
-                instructions=self._instructions,
-                tools=self._harness.tool_schemas(),
-                metadata=self._metadata,
-                structured_output=self._structured_output,
-                notices=notices,
-            ),
+            lambda notices: self._session.continue_with_user_text(prompt, self._constants, notices=notices),
             request_kind="resume",
             prompt=prompt,
         )
@@ -104,14 +86,7 @@ class TurnDriver:
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue the model run with tool outputs."""
         return await self._run_model_request(
-            lambda notices: self._session.continue_with_tools(
-                outputs,
-                instructions=self._instructions,
-                tools=self._harness.tool_schemas(),
-                metadata=self._metadata,
-                structured_output=self._structured_output,
-                notices=notices,
-            ),
+            lambda notices: self._session.continue_with_tools(outputs, self._constants, notices=notices),
             request_kind=kind,
             tool_outputs=outputs,
             output_retry=output_retry,
@@ -126,14 +101,7 @@ class TurnDriver:
     ) -> tuple[ModelTurn, OutputTurnDecision]:
         """Continue the model run with a user message."""
         return await self._run_model_request(
-            lambda notices: self._session.continue_with_user_message(
-                message,
-                instructions=self._instructions,
-                tools=self._harness.tool_schemas(),
-                metadata=self._metadata,
-                structured_output=self._structured_output,
-                notices=notices,
-            ),
+            lambda notices: self._session.continue_with_user_text(message, self._constants, notices=notices),
             request_kind=kind,
             prompt=message,
             output_retry=output_retry,

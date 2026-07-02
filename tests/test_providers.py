@@ -19,6 +19,7 @@ from thinharness import (
     OpenAIResponsesModel,
     OpenRouterModel,
     OpenRouterProvider,
+    RequestConstants,
     parse_model_ref,
 )
 from thinharness.providers import ModelSettings, ProviderError, StructuredOutputRequest, ToolOutput, append_notices_to_text, render_model_notices
@@ -32,6 +33,14 @@ def _notice() -> ModelNotice:
 def _notice_text() -> str:
     """Return rendered text for the reusable test notice."""
     return '<harness_notice kind="limit_warning">\nFinal request.\n</harness_notice>'
+
+
+def _constants(tools: list | None = None, *, instructions: str = "system", structured_output: StructuredOutputRequest | None = None) -> RequestConstants:
+    """Return reusable per-run request constants."""
+    return RequestConstants(instructions=instructions, tools=tools or [], structured_output=structured_output)
+
+
+ECHO_TOOLS = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
 
 
 def test_model_refs_require_provider_prefix() -> None:
@@ -57,14 +66,14 @@ def test_model_notice_rendering_is_deterministic() -> None:
 async def test_model_sessions_advance_independently() -> None:
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
-    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    constants = _constants(ECHO_TOOLS)
     first = model.new_session()
     second = model.new_session()
 
-    first_turn = await first.start(prompt="first", instructions="system", tools=tools)
-    second_turn = await second.start(prompt="second", instructions="system", tools=tools)
-    await first.continue_with_tools([ToolOutput(first_turn.tool_calls[0].id, "first result")], tools=tools)
-    await second.continue_with_tools([ToolOutput(second_turn.tool_calls[0].id, "second result")], tools=tools)
+    first_turn = await first.start("first", constants)
+    second_turn = await second.start("second", constants)
+    await first.continue_with_tools([ToolOutput(first_turn.tool_calls[0].id, "first result")], constants)
+    await second.continue_with_tools([ToolOutput(second_turn.tool_calls[0].id, "second result")], constants)
 
     assert provider.payloads[2]["messages"][0] == {"role": "user", "content": "first"}
     assert provider.payloads[2]["messages"][-1]["content"][0]["content"] == "first result"
@@ -74,13 +83,13 @@ async def test_model_sessions_advance_independently() -> None:
 async def test_openai_previous_response_id_is_session_scoped() -> None:
     client = FakeClient()
     model = OpenAIResponsesModel("gpt-test", provider=client)
-    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    constants = _constants(ECHO_TOOLS)
     first = model.new_session()
     second = model.new_session()
 
-    await first.start(prompt="first", instructions="system", tools=tools, previous_response_id="existing")
-    await first.continue_with_tools([ToolOutput("call_1", "ok")], instructions="system", tools=tools)
-    await second.start(prompt="second", instructions="system", tools=tools)
+    await first.start("first", constants, previous_response_id="existing")
+    await first.continue_with_tools([ToolOutput("call_1", "ok")], constants)
+    await second.start("second", constants)
 
     assert client.payloads[0]["previous_response_id"] == "existing"
     assert client.payloads[1]["previous_response_id"] == "resp_1"
@@ -91,16 +100,16 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
     client = FakeClient()
     model = OpenAIResponsesModel("gpt-test", provider=client)
     session = model.new_session()
+    constants = _constants()
     notice = _notice()
 
-    first = await session.start(prompt="hi", instructions="system", tools=[], notices=[notice])
+    first = await session.start("hi", constants, notices=[notice])
     await session.continue_with_tools(
         [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("call_2", "second")],
-        instructions="system",
-        tools=[],
+        constants,
         notices=[notice],
     )
-    await session.continue_with_user_message("fix this", instructions="system", tools=[], notices=[notice])
+    await session.continue_with_user_text("fix this", constants, notices=[notice])
     resumed = model.resume_session({
         "kind": "transcript",
         "version": 3,
@@ -108,7 +117,7 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
         "origin_model": "gpt-test",
         "entries": [{"role": "user", "content": "prior", "notice": False}],
     })
-    await resumed.continue_with_user_prompt("follow-up", instructions="system", tools=[], notices=[notice])
+    await resumed.continue_with_user_text("follow-up", constants, notices=[notice])
 
     assert client.payloads[0]["input"].endswith("<harness_notice kind=\"limit_warning\">\nFinal request.\n</harness_notice>")
     assert [item["type"] for item in client.payloads[1]["input"][:-1]] == ["function_call_output", "function_call_output"]
@@ -138,9 +147,10 @@ async def test_openai_no_notice_payloads_are_unchanged() -> None:
     client = FakeClient()
     model = OpenAIResponsesModel("gpt-test", provider=client)
     session = model.new_session()
+    constants = _constants()
 
-    await session.start(prompt="hi", instructions="system", tools=[])
-    await session.continue_with_tools([ToolOutput("call_1", "ok")], tools=[])
+    await session.start("hi", constants)
+    await session.continue_with_tools([ToolOutput("call_1", "ok")], constants)
 
     assert client.payloads[0]["input"] == "hi"
     assert client.payloads[1]["input"] == [{"type": "function_call_output", "call_id": "call_1", "output": "ok"}]
@@ -149,16 +159,17 @@ async def test_anthropic_appends_notices_to_messages() -> None:
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
     session = model.new_session()
+    constants = _constants()
     notice = _notice()
 
-    first = await session.start(prompt="hi\n\n<hook_context>\npolicy\n</hook_context>", instructions="system", tools=[], notices=[notice])
+    first = await session.start("hi\n\n<hook_context>\npolicy\n</hook_context>", constants, notices=[notice])
     await session.continue_with_tools(
         [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("toolu_2", "second")],
-        tools=[],
+        constants,
         notices=[notice],
     )
-    await session.continue_with_user_message("fix this", tools=[], notices=[notice])
-    await session.continue_with_user_prompt("follow-up", instructions="system", tools=[], notices=[notice])
+    await session.continue_with_user_text("fix this", constants, notices=[notice])
+    await session.continue_with_user_text("follow-up", constants, notices=[notice])
 
     assert provider.payloads[0]["messages"][0]["content"] == f"hi\n\n<hook_context>\npolicy\n</hook_context>\n\n{_notice_text()}"
     assert [block["type"] for block in provider.payloads[1]["messages"][-1]["content"][:-1]] == ["tool_result", "tool_result"]
@@ -173,16 +184,17 @@ async def test_openrouter_appends_notices_to_messages() -> None:
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
     session = model.new_session()
+    constants = _constants()
     notice = _notice()
 
-    first = await session.start(prompt="hi\n\n<hook_context>\npolicy\n</hook_context>", instructions="system", tools=[], notices=[notice])
+    first = await session.start("hi\n\n<hook_context>\npolicy\n</hook_context>", constants, notices=[notice])
     await session.continue_with_tools(
         [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("call_2", "second")],
-        tools=[],
+        constants,
         notices=[notice],
     )
-    await session.continue_with_user_message("fix this", tools=[], notices=[notice])
-    await session.continue_with_user_prompt("follow-up", instructions="system", tools=[], notices=[notice])
+    await session.continue_with_user_text("fix this", constants, notices=[notice])
+    await session.continue_with_user_text("follow-up", constants, notices=[notice])
 
     assert provider.payloads[0]["messages"][1]["content"] == f"hi\n\n<hook_context>\npolicy\n</hook_context>\n\n{_notice_text()}"
     continuation_messages = provider.payloads[1]["messages"]
@@ -192,27 +204,27 @@ async def test_openrouter_appends_notices_to_messages() -> None:
     assert provider.payloads[3]["messages"][-1]["content"] == f"follow-up\n\n{_notice_text()}"
 
 async def test_resume_replays_preserved_tool_notices() -> None:
-    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    constants = _constants(ECHO_TOOLS)
     notice = _notice()
 
     anthropic_provider = FakeAnthropicProvider()
     anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_provider).new_session()
-    anthropic_first = await anthropic_session.start(prompt="hi", instructions="system", tools=tools)
-    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], tools=tools, notices=[notice])
+    anthropic_first = await anthropic_session.start("hi", constants)
+    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     assert anthropic_state == json.loads(json.dumps(anthropic_state))
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_provider).resume_session(anthropic_state)
-    await anthropic_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await anthropic_resumed.continue_with_user_text("next", constants)
     assert anthropic_provider.payloads[2]["messages"][2]["content"][-1] == {"type": "text", "text": _notice_text()}
 
     openai_capture = FakeClient()
     openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
-    openai_first = await openai_session.start(prompt="hi", instructions="system", tools=tools)
-    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], instructions="system", tools=tools, notices=[notice])
+    openai_first = await openai_session.start("hi", constants)
+    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
-    await openai_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await openai_resumed.continue_with_user_text("next", constants)
     assert {
         "type": "message",
         "role": "user",
@@ -221,45 +233,45 @@ async def test_resume_replays_preserved_tool_notices() -> None:
 
     openrouter_provider = FakeOpenRouterProvider()
     openrouter_session = OpenRouterModel("openai/test", provider=openrouter_provider).new_session()
-    openrouter_first = await openrouter_session.start(prompt="hi", instructions="system", tools=tools)
-    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], tools=tools, notices=[notice])
+    openrouter_first = await openrouter_session.start("hi", constants)
+    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_provider).resume_session(openrouter_state)
-    await openrouter_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await openrouter_resumed.continue_with_user_text("next", constants)
     assert {"role": "user", "content": _notice_text()} in openrouter_provider.payloads[2]["messages"]
 
 async def test_resume_replays_preserved_user_notices() -> None:
-    tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+    constants = _constants(ECHO_TOOLS)
     notice = _notice()
 
     anthropic_capture = FakeAnthropicProvider()
     anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_capture).new_session()
-    anthropic_first = await anthropic_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
-    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], tools=tools)
+    anthropic_first = await anthropic_session.start("hi", constants, notices=[notice])
+    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], constants)
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     anthropic_replay = FakeAnthropicProvider()
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_replay).resume_session(anthropic_state)
-    await anthropic_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await anthropic_resumed.continue_with_user_text("next", constants)
     assert anthropic_replay.payloads[0]["messages"][0]["content"] == f"hi\n\n{_notice_text()}"
 
     openai_capture = FakeClient()
     openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
-    openai_first = await openai_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
-    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], instructions="system", tools=tools)
+    openai_first = await openai_session.start("hi", constants, notices=[notice])
+    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], constants)
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
-    await openai_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await openai_resumed.continue_with_user_text("next", constants)
     assert openai_replay.payloads[0]["input"][0]["content"][0]["text"] == f"hi\n\n{_notice_text()}"
 
     openrouter_capture = FakeOpenRouterProvider()
     openrouter_session = OpenRouterModel("openai/test", provider=openrouter_capture).new_session()
-    openrouter_first = await openrouter_session.start(prompt="hi", instructions="system", tools=tools, notices=[notice])
-    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], tools=tools)
+    openrouter_first = await openrouter_session.start("hi", constants, notices=[notice])
+    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], constants)
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_replay = FakeOpenRouterProvider()
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_replay).resume_session(openrouter_state)
-    await openrouter_resumed.continue_with_user_prompt("next", instructions="system", tools=tools)
+    await openrouter_resumed.continue_with_user_text("next", constants)
     assert openrouter_replay.payloads[0]["messages"][1]["content"] == f"hi\n\n{_notice_text()}"
 
 def test_openai_native_structured_output_overrides_extra_body_text() -> None:
@@ -296,11 +308,11 @@ async def test_anthropic_provider_model_tool_loop() -> None:
         provider = AnthropicProvider(api_key="key", http_client=client)
         model = AnthropicMessagesModel("claude-test", provider=provider)
         session = model.new_session()
-        tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+        constants = _constants(ECHO_TOOLS)
 
-        first = await session.start(prompt="hi", instructions="system", tools=tools)
+        first = await session.start("hi", constants)
         assert first.tool_calls[0].name == "echo"
-        second = await session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], tools=tools)
+        second = await session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], constants)
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["input_schema"]["type"] == "object"
 
@@ -330,11 +342,11 @@ async def test_openrouter_provider_model_tool_loop() -> None:
         provider = OpenRouterProvider(api_key="key", http_client=client)
         model = OpenRouterModel("openai/test", provider=provider)
         session = model.new_session()
-        tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}}]
+        constants = _constants(ECHO_TOOLS)
 
-        first = await session.start(prompt="hi", instructions="system", tools=tools)
+        first = await session.start("hi", constants)
         assert first.tool_calls[0].id == "call_1"
-        second = await session.continue_with_tools([ToolOutput("call_1", "ok")], tools=tools)
+        second = await session.continue_with_tools([ToolOutput("call_1", "ok")], constants)
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["function"]["name"] == "echo"
 
@@ -356,10 +368,8 @@ async def test_openrouter_native_structured_output_overrides_extra_body_response
         session = model.new_session()
 
         await session.start(
-            prompt="hi",
-            instructions="system",
-            tools=[],
-            structured_output=StructuredOutputRequest(name="final_result", schema={"type": "object", "properties": {}}),
+            "hi",
+            _constants(structured_output=StructuredOutputRequest(name="final_result", schema={"type": "object", "properties": {}})),
         )
 
     assert calls[0]["response_format"]["type"] == "json_schema"
@@ -372,9 +382,8 @@ async def test_openai_notice_payload_live() -> None:
     session = model.new_session()
     try:
         turn = await session.start(
-            prompt="Reply with OK only.",
-            instructions="You are concise.",
-            tools=[],
+            "Reply with OK only.",
+            _constants(instructions="You are concise."),
             notices=[_notice()],
         )
     finally:
@@ -401,7 +410,7 @@ async def test_anthropic_notice_payload_live() -> None:
     ]
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}]
     try:
-        turn = await session.continue_with_tools([ToolOutput("toolu_live", "ok")], tools=tools, notices=[sentinel_notice])
+        turn = await session.continue_with_tools([ToolOutput("toolu_live", "ok")], _constants(tools), notices=[sentinel_notice])
     finally:
         await provider.aclose()
 
@@ -426,7 +435,7 @@ async def test_openrouter_notice_payload_live() -> None:
     ]
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}]
     try:
-        turn = await session.continue_with_tools([ToolOutput("call_live", "ok")], tools=tools, notices=[_notice()])
+        turn = await session.continue_with_tools([ToolOutput("call_live", "ok")], _constants(tools), notices=[_notice()])
     finally:
         await provider.aclose()
 

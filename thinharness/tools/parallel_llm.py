@@ -150,7 +150,7 @@ class ParallelLlmTool:
 
     async def run(self, args: ParallelLlmArgs) -> ToolResult:
         """Run the parallel LLM batch and return either results or a file summary."""
-        from ..providers import ProviderError
+        from ..providers import ProviderError, RequestConstants
 
         prompts = _load_prompts(args, self.read_policy)
         if not prompts:
@@ -163,9 +163,12 @@ class ParallelLlmTool:
         try:
             output_schema = resolve_output_schema_for_model(batch_model, self.output_type, self.output_mode)
             sem = asyncio.Semaphore(args.max_concurrency)
-            instructions = structured_instructions(args.system or "", output_schema)
-            tools = output_schema.synthetic_tools() if output_schema is not None else []
-            structured_output = output_schema.structured_output_request() if output_schema is not None else None
+            constants = RequestConstants(
+                instructions=structured_instructions(args.system or "", output_schema),
+                tools=output_schema.synthetic_tools() if output_schema is not None else [],
+                metadata=None,
+                structured_output=output_schema.structured_output_request() if output_schema is not None else None,
+            )
             model_requests = 0
 
             async def request_turn(request_prompt: str):
@@ -176,12 +179,7 @@ class ParallelLlmTool:
                         async with sem:
                             session = batch_model.new_session()
                             model_requests += 1
-                            return await session.start(
-                                prompt=request_prompt,
-                                instructions=instructions,
-                                tools=tools,
-                                structured_output=structured_output,
-                            )
+                            return await session.start(request_prompt, constants)
                     except ProviderError as exc:
                         if attempt == self.max_attempts - 1 or not _is_retryable(exc):
                             raise

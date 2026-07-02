@@ -91,21 +91,17 @@ class BatchSession:
     def __init__(self, model: BatchModel) -> None:
         self.model = model
 
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Run one batch completion."""
-        return await self.model.complete(prompt, instructions, tools, structured_output)
+        return await self.model.complete(prompt, constants.instructions, constants.tools, constants.structured_output)
 
-    async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_user_text(self, text, constants, *, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
-        """Batch sessions never resume."""
-        raise AssertionError("batch session should not resume")
 
     def dump_state(self):
         """Batch sessions are not resumable."""
@@ -126,7 +122,7 @@ class HybridModel(BatchModel):
 
 
 class MainSession:
-    async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Ask the harness to call parallel_llm."""
         return ModelTurn(
             raw={"id": "first"},
@@ -139,19 +135,15 @@ class MainSession:
             ],
         )
 
-    async def continue_with_tools(self, outputs: list[ToolOutput], *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+    async def continue_with_tools(self, outputs: list[ToolOutput], constants, *, notices=None):
         """Finish after receiving the tool output."""
         parsed = json.loads(outputs[0].output)
         payload = json.loads(parsed["content"])
         return ModelTurn(text=f"done:{payload['succeeded']}", raw={"id": "done"})
 
-    async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-        """Main session never receives corrections."""
-        raise AssertionError("should not correct")
-
-    async def continue_with_user_prompt(self, *, prompt, instructions, tools, metadata=None, structured_output=None, notices=None):
-        """Main session never resumes."""
-        raise AssertionError("should not resume")
+    async def continue_with_user_text(self, text, constants, *, notices=None):
+        """Main session never receives user-text continuations."""
+        raise AssertionError("should not continue with user text")
 
     def dump_state(self):
         """Main session has no resume state."""

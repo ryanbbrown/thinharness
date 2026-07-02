@@ -53,6 +53,7 @@ from .providers import (
     ModelToolCall,
     ModelTurn,
     ProviderError,
+    RequestConstants,
     ResumableModel,
     StructuredOutputRequest,
     ToolOutput,
@@ -484,16 +485,19 @@ class Harness:
                             agent_span,
                             skip_user_prompt=approval_pause is not None,
                         )
-                        structured_output = self._structured_output_request()
+                        constants = RequestConstants(
+                            instructions=instructions,
+                            tools=self.tool_schemas(),
+                            metadata=run_metadata,
+                            structured_output=self._structured_output_request(),
+                        )
                         if first_turn_kind == "approval_resume":
                             assert approval_pause is not None
                             assert approval_decision_map is not None
                             assert session is not None
                             driver = self._turn_driver(
                                 session=session,
-                                instructions=instructions,
-                                metadata=run_metadata,
-                                structured_output=structured_output,
+                                constants=constants,
                                 run_ctx=run_ctx,
                             )
                             active_session = session
@@ -509,9 +513,7 @@ class Harness:
                                 first_turn_kind=cast(Literal["start", "resume"], first_turn_kind),
                                 session=session,
                                 effective_prompt=effective_prompt,
-                                instructions=instructions,
-                                metadata=metadata,
-                                structured_output=structured_output,
+                                constants=constants,
                                 run_ctx=run_ctx,
                                 agent_span=agent_span,
                             )
@@ -631,9 +633,7 @@ class Harness:
         first_turn_kind: Literal["start", "resume"],
         session: ModelSession | None,
         effective_prompt: str,
-        instructions: str,
-        metadata: Json | None,
-        structured_output: StructuredOutputRequest | None,
+        constants: RequestConstants,
         run_ctx: Any,
         agent_span: Any,
     ) -> tuple[ModelSession, Any, ModelTurn, OutputTurnDecision]:
@@ -653,9 +653,7 @@ class Harness:
                 session=active_session,
                 run_ctx=run_ctx,
                 harness=self,
-                instructions=instructions,
-                metadata=metadata,
-                structured_output=structured_output,
+                constants=constants,
             )
             turn, decision = await driver.start(effective_prompt)
             return active_session, driver, turn, decision
@@ -665,9 +663,7 @@ class Harness:
             session=session,
             run_ctx=run_ctx,
             harness=self,
-            instructions=instructions,
-            metadata=metadata,
-            structured_output=structured_output,
+            constants=constants,
         )
         turn, decision = await driver.resume(effective_prompt)
         return session, driver, turn, decision
@@ -676,9 +672,7 @@ class Harness:
         self,
         *,
         session: ModelSession,
-        instructions: str,
-        metadata: Json | None,
-        structured_output: StructuredOutputRequest | None,
+        constants: RequestConstants,
         run_ctx: Any,
     ) -> Any:
         """Create a TurnDriver for an already prepared session."""
@@ -688,9 +682,7 @@ class Harness:
             session=session,
             run_ctx=run_ctx,
             harness=self,
-            instructions=instructions,
-            metadata=metadata,
-            structured_output=structured_output,
+            constants=constants,
         )
 
     def _resume_approval_session(self, provider_state: Json) -> ModelSession:

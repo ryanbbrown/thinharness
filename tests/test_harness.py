@@ -31,6 +31,7 @@ from thinharness import (
     OpenAIProvider,
     OpenAIResponsesModel,
     OpenRouterModel,
+    RequestConstants,
     SubAgentConfig,
     ToolSpec,
     UnexpectedModelBehavior,
@@ -57,7 +58,7 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert client.payloads[1]["input"][0]["type"] == "function_call_output"
     assert "hello" in client.payloads[1]["input"][0]["output"]
 
-def test_session_receives_none_metadata_when_run_has_no_metadata(tmp_path: Path) -> None:
+def test_session_receives_falsy_metadata_when_run_has_no_metadata(tmp_path: Path) -> None:
     captured = {}
     session = ScriptedSession(
         start_turn=ModelTurn(text="done", raw={"id": "done"}),
@@ -67,7 +68,9 @@ def test_session_receives_none_metadata_when_run_has_no_metadata(tmp_path: Path)
 
     assert harness.run_sync("go").text == "done"
 
-    assert captured == {"metadata": None}
+    # Providers guard payloads with `if metadata:`, so the normalized empty dict is
+    # equivalent to None and never reaches the provider payload.
+    assert not captured["metadata"]
 
 
 class _FailureSpan:
@@ -635,14 +638,14 @@ async def test_external_cancellation_records_run_end_and_allows_rerun(tmp_path: 
     events = []
 
     class WaitingSession:
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+        async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
             started.set()
             await asyncio.Event().wait()
 
-        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+        async def continue_with_tools(self, outputs, constants, *, notices=None):
             raise AssertionError("should not continue")
 
-        async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+        async def continue_with_user_text(self, text, constants, *, notices=None):
             raise AssertionError("should not continue")
 
     model = ScriptedModel([
@@ -691,3 +694,33 @@ async def test_after_tool_call_does_not_fire_on_external_tool_cancellation(tmp_p
 def test_harness_config_defaults_to_auto_tool_execution() -> None:
     assert HarnessConfig().tool_execution == "auto"
     assert HarnessConfig(tool_execution="sequential").tool_execution == "sequential"
+
+def test_request_constants_is_exported() -> None:
+    import thinharness
+
+    assert "RequestConstants" in thinharness.__all__
+    assert thinharness.RequestConstants is RequestConstants
+
+def test_toolset_is_frozen_at_run_start(tmp_path: Path) -> None:
+    seen_tools: list[list[str]] = []
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="register", arguments="{}")], raw={"id": "start"}),
+        continue_turn=ModelTurn(text="done", raw={"id": "done"}),
+        on_start=lambda _prompt, _instructions, tools, _metadata, _previous: seen_tools.append([tool["name"] for tool in tools]),
+        on_continue=lambda _outputs, tools, _metadata: seen_tools.append([tool["name"] for tool in tools]),
+    )
+
+    def register(_args):
+        harness.add_tool(ToolSpec("late", "Late", {"type": "object", "properties": {}}, lambda args: "late"))
+        return "registered"
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([session]),
+        tools=[ToolSpec("register", "Register a tool mid-run", {"type": "object", "properties": {}}, register)],
+    )
+
+    assert harness.run_sync("go").text == "done"
+
+    assert seen_tools == [["register"], ["register"]]
+    assert any(tool.name == "late" for tool in harness.tools)

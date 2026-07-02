@@ -465,13 +465,13 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     events = []
 
     class BareHarnessErrorSession:
-        async def start(self, *, prompt, instructions, tools, metadata=None, previous_response_id=None, structured_output=None, notices=None):
+        async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
             return ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="ok", arguments="{}")], raw={"id": "start"})
 
-        async def continue_with_tools(self, outputs, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+        async def continue_with_tools(self, outputs, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
-        async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
+        async def continue_with_user_text(self, text, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
     harness = Harness(

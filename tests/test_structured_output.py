@@ -266,16 +266,9 @@ def test_tool_mode_invalid_args_retry_uses_tool_output(tmp_path) -> None:
     seen_messages = []
 
     class RecordingSession(ScriptedSession):
-        async def continue_with_user_message(self, message, *, instructions=None, tools, metadata=None, structured_output=None, notices=None):
-            seen_messages.append(message)
-            return await super().continue_with_user_message(
-                message,
-                instructions=instructions,
-                tools=tools,
-                metadata=metadata,
-                structured_output=structured_output,
-                notices=notices,
-            )
+        async def continue_with_user_text(self, text, constants, *, notices=None):
+            seen_messages.append(text)
+            return await super().continue_with_user_text(text, constants, notices=notices)
 
     session = RecordingSession(
         start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')], raw={"id": "bad"}),
@@ -361,8 +354,8 @@ def test_limit_notice_dedupes_across_structured_output_retries(tmp_path) -> None
 
     assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in session.notice_calls] == [
         ("start", [("tool_calls", 0)]),
-        ("continue_with_user_message", []),
-        ("continue_with_user_message", []),
+        ("continue_with_user_text", []),
+        ("continue_with_user_text", []),
     ]
     assert session.notice_calls[0][1][0].content == "Tool calls are not available on this run; produce the answer with final_result."
 

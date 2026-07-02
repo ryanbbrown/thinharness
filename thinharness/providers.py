@@ -111,6 +111,20 @@ class StructuredOutputRequest:
     description: str | None = None
 
 
+@dataclass(frozen=True)
+class RequestConstants:
+    """Per-run request constants passed to every ModelSession request.
+
+    Built once per run after run-start hooks and MCP connection, so the
+    toolset and instructions are frozen for the run.
+    """
+
+    instructions: str
+    tools: list[Json]
+    metadata: Json | None = None
+    structured_output: StructuredOutputRequest | None = None
+
+
 class ModelCapabilities(BaseModel):
     """Provider capability flags used by the harness."""
 
@@ -162,13 +176,10 @@ class ModelSession(Protocol):
 
     async def start(
         self,
-        *,
         prompt: str,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
+        constants: RequestConstants,
+        *,
         previous_response_id: str | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start a model run."""
@@ -177,40 +188,21 @@ class ModelSession(Protocol):
     async def continue_with_tools(
         self,
         outputs: list[ToolOutput],
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue a model run with tool outputs."""
         ...
 
-    async def continue_with_user_message(
+    async def continue_with_user_text(
         self,
-        message: str,
+        text: str,
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue a model run with a corrective user message."""
-        ...
-
-    async def continue_with_user_prompt(
-        self,
-        prompt: str,
-        *,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
-        notices: list[ModelNotice] | None = None,
-    ) -> ModelTurn:
-        """Continue a resumed model run with a new user prompt."""
+        """Continue a model run with user text (a correction or a resumed prompt)."""
         ...
 
     def dump_state(self) -> dict[str, Any] | None:
@@ -603,13 +595,10 @@ class OpenAIResponsesSession:
 
     async def start(
         self,
-        *,
         prompt: str,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
+        constants: RequestConstants,
+        *,
         previous_response_id: str | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start a Responses API run."""
@@ -618,10 +607,10 @@ class OpenAIResponsesSession:
         self.transcript = [UserEntry(content=input_text)]
         payload = self.model.build_payload(
             input_payload=input_text,
-            instructions=instructions,
-            tools=tools,
-            metadata=metadata,
-            structured_output=structured_output,
+            instructions=constants.instructions,
+            tools=constants.tools,
+            metadata=constants.metadata,
+            structured_output=constants.structured_output,
         )
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
@@ -630,11 +619,8 @@ class OpenAIResponsesSession:
     async def continue_with_tools(
         self,
         outputs: list[ToolOutput],
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue a Responses API run with function_call_output items."""
@@ -653,58 +639,31 @@ class OpenAIResponsesSession:
         replay_input = self._prepend_replay(input_payload)
         payload = self.model.build_payload(
             input_payload=replay_input,
-            instructions=instructions,
-            tools=tools,
-            metadata=metadata,
-            structured_output=structured_output,
+            instructions=constants.instructions,
+            tools=constants.tools,
+            metadata=constants.metadata,
+            structured_output=constants.structured_output,
         )
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
 
-    async def continue_with_user_message(
+    async def continue_with_user_text(
         self,
-        message: str,
+        text: str,
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue a Responses API run with a corrective user message."""
-        input_text = append_notices_to_text(message, notices)
+        """Continue a Responses API run with user text."""
+        input_text = append_notices_to_text(text, notices)
         self.transcript.append(UserEntry(content=input_text))
         payload = self.model.build_payload(
             input_payload=self._prepend_replay(input_text),
-            instructions=instructions,
-            tools=tools,
-            metadata=metadata,
-            structured_output=structured_output,
-        )
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
-        return await self._complete(payload)
-
-    async def continue_with_user_prompt(
-        self,
-        prompt: str,
-        *,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
-        notices: list[ModelNotice] | None = None,
-    ) -> ModelTurn:
-        """Continue a resumed Responses API run with a new user prompt."""
-        input_text = append_notices_to_text(prompt, notices)
-        self.transcript.append(UserEntry(content=input_text))
-        payload = self.model.build_payload(
-            input_payload=self._prepend_replay(input_text),
-            instructions=instructions,
-            tools=tools,
-            metadata=metadata,
-            structured_output=structured_output,
+            instructions=constants.instructions,
+            tools=constants.tools,
+            metadata=constants.metadata,
+            structured_output=constants.structured_output,
         )
         if self.previous_response_id:
             payload["previous_response_id"] = self.previous_response_id
@@ -787,88 +746,60 @@ class AnthropicMessagesSession:
 
     async def start(
         self,
-        *,
         prompt: str,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
+        constants: RequestConstants,
+        *,
         previous_response_id: str | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start an Anthropic Messages run."""
-        if structured_output is not None:
+        if constants.structured_output is not None:
             raise ProviderError("Anthropic does not support native structured output")
         if previous_response_id:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
-        self.system = instructions
+        self.system = constants.instructions
         content = append_notices_to_text(prompt, notices)
         self.messages = [{"role": "user", "content": content}]
         self.transcript = [UserEntry(content=content)]
-        return await self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata)
 
     async def continue_with_tools(
         self,
         outputs: list[ToolOutput],
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
-        if structured_output is not None:
+        if constants.structured_output is not None:
             raise ProviderError("Anthropic does not support native structured output")
         content = [{"type": "tool_result", "tool_use_id": output.call_id, "content": output.output} for output in outputs]
         notice_text = render_model_notices(notices)
         if notice_text:
             content.append({"type": "text", "text": notice_text})
         _append_tool_results(self.transcript, outputs, notice_text)
-        self._apply_resume(instructions)
+        self._apply_resume(constants.instructions)
         self.messages.append({
             "role": "user",
             "content": content,
         })
-        return await self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata)
 
-    async def continue_with_user_message(
+    async def continue_with_user_text(
         self,
-        message: str,
+        text: str,
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue an Anthropic Messages run with a corrective user message."""
-        if structured_output is not None:
+        """Continue an Anthropic Messages run with user text."""
+        if constants.structured_output is not None:
             raise ProviderError("Anthropic does not support native structured output")
-        content = append_notices_to_text(message, notices)
+        content = append_notices_to_text(text, notices)
         self.transcript.append(UserEntry(content=content))
-        self._apply_resume(instructions)
+        self._apply_resume(constants.instructions)
         self.messages.append({"role": "user", "content": content})
-        return await self._complete(tools=tools, metadata=metadata)
-
-    async def continue_with_user_prompt(
-        self,
-        prompt: str,
-        *,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
-        notices: list[ModelNotice] | None = None,
-    ) -> ModelTurn:
-        """Continue a resumed Anthropic Messages run with a new user prompt."""
-        if structured_output is not None:
-            raise ProviderError("Anthropic does not support native structured output")
-        content = append_notices_to_text(prompt, notices)
-        self.transcript.append(UserEntry(content=content))
-        self._apply_resume(instructions)
-        self.messages.append({"role": "user", "content": content})
-        return await self._complete(tools=tools, metadata=metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata)
 
     def dump_state(self) -> dict[str, Any] | None:
         """Serialize the neutral transcript for resume."""
@@ -955,13 +886,10 @@ class OpenRouterSession:
 
     async def start(
         self,
-        *,
         prompt: str,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
+        constants: RequestConstants,
+        *,
         previous_response_id: str | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start an OpenRouter run."""
@@ -969,65 +897,42 @@ class OpenRouterSession:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
         content = append_notices_to_text(prompt, notices)
         self.messages = [
-            {"role": "system", "content": instructions},
+            {"role": "system", "content": constants.instructions},
             {"role": "user", "content": content},
         ]
         self.transcript = [UserEntry(content=content)]
-        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     async def continue_with_tools(
         self,
         outputs: list[ToolOutput],
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an OpenRouter run with tool messages."""
         notice_text = render_model_notices(notices)
         _append_tool_results(self.transcript, outputs, notice_text)
-        self._apply_resume(instructions)
+        self._apply_resume(constants.instructions)
         for output in outputs:
             self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": output.output})
         if notice_text:
             self.messages.append({"role": "user", "content": notice_text})
-        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
-    async def continue_with_user_message(
+    async def continue_with_user_text(
         self,
-        message: str,
+        text: str,
+        constants: RequestConstants,
         *,
-        instructions: str | None = None,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue an OpenRouter run with a corrective user message."""
-        content = append_notices_to_text(message, notices)
+        """Continue an OpenRouter run with user text."""
+        content = append_notices_to_text(text, notices)
         self.transcript.append(UserEntry(content=content))
-        self._apply_resume(instructions)
+        self._apply_resume(constants.instructions)
         self.messages.append({"role": "user", "content": content})
-        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
-
-    async def continue_with_user_prompt(
-        self,
-        prompt: str,
-        *,
-        instructions: str,
-        tools: list[Json],
-        metadata: Json | None = None,
-        structured_output: StructuredOutputRequest | None = None,
-        notices: list[ModelNotice] | None = None,
-    ) -> ModelTurn:
-        """Continue a resumed OpenRouter run with a new user prompt."""
-        content = append_notices_to_text(prompt, notices)
-        self.transcript.append(UserEntry(content=content))
-        self._apply_resume(instructions)
-        self.messages.append({"role": "user", "content": content})
-        return await self._complete(tools=tools, metadata=metadata, structured_output=structured_output)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     def dump_state(self) -> dict[str, Any] | None:
         """Serialize the neutral transcript for resume."""

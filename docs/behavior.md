@@ -76,8 +76,31 @@ Built-in provider resume state is a self-contained, provider-agnostic transcript
 - RESUME-3: Resuming on the originating provider preserves native reasoning (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`); resuming on a different provider degrades each reasoning part to a leading `<thinking>`-tagged text block and drops the opaque blob. Native re-emit additionally requires the resuming run to be able to accept the block: OpenAI re-emits the native reasoning item only when the resuming model is reasoning-capable, and Anthropic only when extended thinking is enabled; otherwise both use the text fallback. So a reasoning-model capture resumed on a non-reasoning model of the same provider degrades to text.
 - RESUME-4: Built-in provider resume state uses `version` 3; version 1 and version 2 state and old provider-native `kind` values are rejected with a regenerate error.
 - RESUME-5: On resume, the live system prompt from the resuming harness config is re-injected; captured system prompts are not stored or restored.
-- RESUME-6: A session seeded via `OpenAIResponsesSession.start(previous_response_id=...)` captures only new transcript entries, so externally seeded prior turns are not present when later resumed from `resume_state`. This is unrelated to reasoning fidelity and is not changed by RESUME-3/RESUME-7.
+- RESUME-6: A session seeded via `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` captures only new transcript entries, so externally seeded prior turns are not present when later resumed from `resume_state`. This is unrelated to reasoning fidelity and is not changed by RESUME-3/RESUME-7.
 - RESUME-7: For reasoning-capable OpenAI Responses models the harness requests `include=["reasoning.encrypted_content"]` so reasoning survives resume; non-reasoning models are unaffected. Captured `resume_state` therefore contains encrypted reasoning blobs (OpenAI/OpenRouter) and signed thinking (Anthropic) and should be treated as sensitive, consistent with the local-trace sensitivity note.
+
+## Run Toolset Freeze
+
+### Purpose
+
+The set of tools a model can call is fixed when a run starts, so every provider request in one run sees the same tool schemas.
+
+### Requirements
+
+- TOOLSET-FREEZE-1: The run's tool schemas, system instructions, request metadata, and structured-output request are captured once per run after run-start hooks and MCP connection, and every provider request in that run uses that captured set.
+- TOOLSET-FREEZE-2: A tool added with `add_tool` during an in-flight run does not appear in that run's later provider requests; it takes effect on the next run.
+
+## Run Token Accounting
+
+### Purpose
+
+Harness runs report provider token usage as run-level totals so hosts can meter cost without parsing raw provider responses.
+
+### Requirements
+
+- TOKEN-USAGE-1: `RunUsage` exposes `input_tokens` and `output_tokens` run totals accumulated per provider request and surfaced on `HarnessResult.usage`, including retry turns and approval-resume turns in the same logical run.
+- TOKEN-USAGE-2: Provider responses with missing or partial usage contribute only the token counts they report; absent counts add nothing and do not error.
+- TOKEN-USAGE-3: Approval envelopes written before token accounting existed still resume: missing token keys default to 0, while token keys that are present with a wrong type are rejected.
 
 ## Model Observability Projections
 
@@ -93,3 +116,5 @@ Tracing and streaming expose projections of the same neutral per-request model-v
 - MODEL-OBSERVABILITY-4: `ModelMessageEvent.text` always includes assistant text from the completed provider turn; stream text suppression is not part of `StreamOptions`.
 - MODEL-OBSERVABILITY-5: Stream lifecycle events remain operational events and are not stored in durable provider transcript entries.
 - MODEL-OBSERVABILITY-6: Core tracing emits OTel/GenAI-oriented attributes and does not include sink-specific display namespaces.
+- MODEL-OBSERVABILITY-7: Model spans pin `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.total_tokens`, `gen_ai.response.model`, and `gen_ai.response.finish_reasons`. `finish_reasons` is always a list wrapping the normalized reason. `total_tokens` passes through a raw provider `total_tokens` when present and is otherwise computed as input+output only when both are present; partial usage yields no total.
+- MODEL-OBSERVABILITY-8: Custom `Model` implementations that do not populate normalized `ModelTurn` usage fields keep their `gen_ai.usage.*` span attributes via best-effort extraction from the raw response.
