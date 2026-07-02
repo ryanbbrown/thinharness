@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
-from .types import ApprovalDecision, HarnessError, Json, LimitNoticeKey, RunUsage
+from .types import ApprovalDecision, HarnessError, Json, LimitNoticeKey, RunUsage, limit_notice_keys_from_json, limit_notice_keys_to_json
 
 APPROVAL_ENVELOPE_KIND = "approval_pause"
 APPROVAL_ENVELOPE_VERSION = 1
@@ -77,10 +77,10 @@ def build_approval_envelope(
         "provider_state": provider_state,
         "batch": [{"id": call.id, "name": call.name, "arguments": call.arguments} for call in batch],
         "approval_required_ids": approval_required_ids,
-        "usage": asdict(usage),
+        "usage": usage.to_json(),
         "responses": responses,
         "tool_call_records": tool_call_records,
-        "emitted_limit_warnings": list(emitted_limit_warnings),
+        "emitted_limit_warnings": limit_notice_keys_to_json(emitted_limit_warnings),
         "metadata": metadata,
     }
     return json.loads(json.dumps(envelope))
@@ -110,9 +110,9 @@ def validate_approval_pause_state(state: dict[str, Any], *, label: str = "approv
     approval_required_ids = _parse_approval_ids(isolated["approval_required_ids"], batch, label)
     responses = _parse_dict_list(isolated["responses"], "responses", label)
     records = _parse_dict_list(isolated["tool_call_records"], "tool_call_records", label)
-    emitted = _parse_limit_notice_keys(isolated["emitted_limit_warnings"], label)
+    emitted = limit_notice_keys_from_json(isolated["emitted_limit_warnings"], label=label)
     metadata = _expect_dict(isolated["metadata"], "metadata", label)
-    usage = _parse_usage(isolated["usage"], label)
+    usage = RunUsage.from_json(isolated["usage"], label=label)
 
     return ApprovalPause(
         provider_state=provider_state,
@@ -196,53 +196,6 @@ def _parse_approval_ids(value: Any, batch: list[ApprovalToolCall], label: str) -
     if len(set(ids)) != len(ids):
         raise HarnessError(f"{label} field 'approval_required_ids' contains duplicates")
     return frozenset(ids)
-
-
-def _parse_usage(value: Any, label: str) -> RunUsage:
-    usage = _expect_dict(value, "usage", label)
-    retries = usage.get("tool_retries", {})
-    if not isinstance(retries, dict) or not all(isinstance(key, str) and isinstance(val, int) for key, val in retries.items()):
-        raise HarnessError(f"{label} field 'usage' has wrong type")
-    fields = {
-        "model_requests": usage.get("model_requests"),
-        "tool_calls": usage.get("tool_calls"),
-        "cancelled_tool_calls": usage.get("cancelled_tool_calls"),
-        "output_retries": usage.get("output_retries"),
-    }
-    if not all(isinstance(value, int) for value in fields.values()):
-        raise HarnessError(f"{label} field 'usage' has wrong type")
-    model_requests = fields["model_requests"]
-    tool_calls = fields["tool_calls"]
-    cancelled_tool_calls = fields["cancelled_tool_calls"]
-    output_retries = fields["output_retries"]
-    assert isinstance(model_requests, int)
-    assert isinstance(tool_calls, int)
-    assert isinstance(cancelled_tool_calls, int)
-    assert isinstance(output_retries, int)
-    return RunUsage(
-        model_requests=model_requests,
-        tool_calls=tool_calls,
-        cancelled_tool_calls=cancelled_tool_calls,
-        output_retries=output_retries,
-        tool_retries=dict(retries),
-    )
-
-
-def _parse_limit_notice_keys(value: Any, label: str) -> set[LimitNoticeKey]:
-    if not isinstance(value, list):
-        raise HarnessError(f"{label} field 'emitted_limit_warnings' has wrong type")
-    keys: set[LimitNoticeKey] = set()
-    for item in value:
-        if (
-            not isinstance(item, list)
-            or len(item) != 3
-            or item[0] != "limit_warning"
-            or item[1] not in {"model_requests", "tool_calls"}
-            or not isinstance(item[2], int)
-        ):
-            raise HarnessError(f"{label} field 'emitted_limit_warnings' has wrong shape")
-        keys.add((item[0], item[1], item[2]))
-    return keys
 
 
 def _parse_string_list(value: Any, field_name: str, label: str) -> list[str]:

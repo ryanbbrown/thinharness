@@ -22,13 +22,16 @@ from thinharness import (
     PendingApproval,
     RunCompletedEvent,
     RunStartedEvent,
+    RunUsage,
     SubAgentConfig,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
     ToolSpec,
     TracingOptions,
 )
+from thinharness.approvals import build_approval_envelope, validate_approval_pause_state
 from thinharness.tools.base import ToolResult
+from thinharness.types import limit_notice_keys_from_json, limit_notice_keys_to_json
 
 
 def approval_tool(called: list[dict] | None = None, *, name: str = "deploy") -> ToolSpec:
@@ -790,3 +793,156 @@ def test_directed_resume_api_errors(tmp_path: Path) -> None:
     }
     with pytest.raises(HarnessError, match="approval pause state must be resumed with resume_approvals"):
         Harness(HarnessConfig(root=tmp_path / "other", builtin_tools=[]), model=ScriptedModel([])).run_sync("next", resume_from=approval_state)
+
+
+def _codec_envelope(usage: dict | None = None, emitted_limit_warnings: list | None = None) -> dict:
+    """Build a valid approval envelope, optionally overriding codec fields."""
+    envelope = build_approval_envelope(
+        provider_state={"kind": "transcript"},
+        batch=[ModelToolCall(id="call_1", name="deploy", arguments="{}")],
+        approval_required_ids=["call_1"],
+        usage=RunUsage(model_requests=2, tool_calls=1, tool_retries={"deploy": 1}),
+        responses=[{"id": "start"}],
+        tool_call_records=[],
+        emitted_limit_warnings={("limit_warning", "model_requests", 1)},
+        metadata={},
+    )
+    if usage is not None:
+        envelope["usage"] = usage
+    if emitted_limit_warnings is not None:
+        envelope["emitted_limit_warnings"] = emitted_limit_warnings
+    return envelope
+
+
+def test_run_usage_codec_round_trip() -> None:
+    usage = RunUsage(
+        model_requests=3,
+        tool_calls=2,
+        cancelled_tool_calls=1,
+        output_retries=1,
+        input_tokens=10,
+        output_tokens=20,
+        tool_retries={"deploy": 1},
+    )
+
+    assert RunUsage.from_json(usage.to_json(), label="approval state") == usage
+
+
+def test_run_usage_codec_missing_counter_field_raises() -> None:
+    data = RunUsage().to_json()
+    del data["tool_calls"]
+
+    with pytest.raises(HarnessError) as exc_info:
+        RunUsage.from_json(data, label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_run_usage_codec_wrong_type_counter_field_raises() -> None:
+    data = RunUsage().to_json()
+    data["model_requests"] = "2"
+
+    with pytest.raises(HarnessError) as exc_info:
+        RunUsage.from_json(data, label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_run_usage_codec_non_dict_usage_raises() -> None:
+    with pytest.raises(HarnessError) as exc_info:
+        RunUsage.from_json([1, 2], label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_run_usage_codec_omitted_tool_retries_defaults_to_empty() -> None:
+    data = RunUsage().to_json()
+    del data["tool_retries"]
+
+    assert RunUsage.from_json(data, label="approval state").tool_retries == {}
+
+
+def test_run_usage_codec_malformed_tool_retries_raises() -> None:
+    data = RunUsage().to_json()
+    data["tool_retries"] = {"deploy": "1"}
+
+    with pytest.raises(HarnessError) as exc_info:
+        RunUsage.from_json(data, label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_run_usage_codec_unknown_keys_are_ignored() -> None:
+    data = RunUsage(model_requests=1).to_json()
+    data["future_field"] = "anything"
+
+    assert RunUsage.from_json(data, label="approval state") == RunUsage(model_requests=1)
+
+
+def test_run_usage_codec_missing_token_keys_default_to_zero() -> None:
+    data = RunUsage(model_requests=1).to_json()
+    del data["input_tokens"]
+    del data["output_tokens"]
+
+    decoded = RunUsage.from_json(data, label="approval state")
+
+    assert decoded.input_tokens == 0
+    assert decoded.output_tokens == 0
+
+
+def test_run_usage_codec_wrong_type_token_keys_raise() -> None:
+    data = RunUsage().to_json()
+    data["input_tokens"] = "10"
+
+    with pytest.raises(HarnessError) as exc_info:
+        RunUsage.from_json(data, label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_limit_notice_keys_codec_round_trip() -> None:
+    keys = {("limit_warning", "model_requests", 1), ("limit_warning", "tool_calls", 0)}
+
+    assert limit_notice_keys_from_json(limit_notice_keys_to_json(keys), label="approval state") == keys
+
+
+def test_limit_notice_keys_codec_wrong_type_raises() -> None:
+    with pytest.raises(HarnessError) as exc_info:
+        limit_notice_keys_from_json({"not": "a list"}, label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'emitted_limit_warnings' has wrong type"
+
+
+def test_limit_notice_keys_codec_wrong_shape_raises() -> None:
+    with pytest.raises(HarnessError) as exc_info:
+        limit_notice_keys_from_json([["limit_warning", "unknown_kind", 1]], label="approval state")
+
+    assert str(exc_info.value) == "approval state field 'emitted_limit_warnings' has wrong shape"
+
+
+def test_envelope_validation_reports_usage_errors_with_label() -> None:
+    envelope = _codec_envelope(usage={"model_requests": 1})
+
+    with pytest.raises(HarnessError) as exc_info:
+        validate_approval_pause_state(envelope)
+
+    assert str(exc_info.value) == "approval state field 'usage' has wrong type"
+
+
+def test_envelope_validation_accepts_pre_token_usage() -> None:
+    envelope = _codec_envelope(
+        usage={"model_requests": 1, "tool_calls": 1, "cancelled_tool_calls": 0, "output_retries": 0, "tool_retries": {}},
+    )
+
+    pause = validate_approval_pause_state(envelope)
+
+    assert pause.usage == RunUsage(model_requests=1, tool_calls=1)
+
+
+def test_envelope_round_trips_usage_and_limit_notices() -> None:
+    envelope = _codec_envelope()
+
+    pause = validate_approval_pause_state(json.loads(json.dumps(envelope)))
+
+    assert pause.usage == RunUsage(model_requests=2, tool_calls=1, tool_retries={"deploy": 1})
+    assert pause.emitted_limit_warnings == {("limit_warning", "model_requests", 1)}
