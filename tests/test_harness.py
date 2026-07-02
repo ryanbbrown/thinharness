@@ -33,6 +33,7 @@ from thinharness import (
     OpenRouterModel,
     RequestConstants,
     SubAgentConfig,
+    TokenUsage,
     ToolSpec,
     UnexpectedModelBehavior,
     build_child_harness,
@@ -724,3 +725,70 @@ def test_toolset_is_frozen_at_run_start(tmp_path: Path) -> None:
 
     assert seen_tools == [["register"], ["register"]]
     assert any(tool.name == "late" for tool in harness.tools)
+
+async def test_tool_added_mid_run_is_not_executable_in_current_run(tmp_path: Path) -> None:
+    outputs_seen: list[str] = []
+
+    class QueueSession:
+        def __init__(self, *turns: ModelTurn) -> None:
+            self.turns = list(turns)
+
+        async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
+            return self.turns.pop(0)
+
+        async def continue_with_tools(self, outputs, constants, *, notices=None):
+            outputs_seen.extend(output.output for output in outputs)
+            return self.turns.pop(0)
+
+        async def continue_with_user_text(self, text, constants, *, notices=None):
+            raise AssertionError("unexpected user-text continuation")
+
+        def dump_state(self):
+            return None
+
+    def register(_args):
+        harness.add_tool(ToolSpec("late", "Late", {"type": "object", "properties": {}}, lambda args: "late-ran"))
+        return "registered"
+
+    first_run = QueueSession(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="register", arguments="{}")], raw={"id": "one"}),
+        ModelTurn(tool_calls=[ModelToolCall(id="call_2", name="late", arguments="{}")], raw={"id": "two"}),
+        ModelTurn(text="done", raw={"id": "three"}),
+    )
+    second_run = QueueSession(
+        ModelTurn(tool_calls=[ModelToolCall(id="call_3", name="late", arguments="{}")], raw={"id": "four"}),
+        ModelTurn(text="done again", raw={"id": "five"}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([first_run, second_run]),
+        tools=[ToolSpec("register", "Register a tool mid-run", {"type": "object", "properties": {}}, register)],
+    )
+
+    assert (await harness.run("go")).text == "done"
+
+    # The mid-run tool is not executable within the run that registered it.
+    late_output = json.loads(outputs_seen[1])
+    assert late_output["ok"] is False
+    assert "unknown tool late" in late_output["content"]
+
+    assert (await harness.run("again")).text == "done again"
+
+    late_rerun_output = json.loads(outputs_seen[2])
+    assert late_rerun_output["ok"] is True
+    assert late_rerun_output["content"] == "late-ran"
+
+def test_run_usage_token_totals_accumulate_partial_usage(tmp_path: Path) -> None:
+    session = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_1", name="echo", arguments='{"value":"ok"}')],
+            raw={"id": "start"},
+            usage=TokenUsage(input_tokens=5),
+        ),
+        continue_turn=ModelTurn(text="done", raw={"id": "done"}, usage=TokenUsage(output_tokens=7)),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
+
+    result = harness.run_sync("go")
+
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (5, 7)

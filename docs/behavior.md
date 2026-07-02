@@ -89,6 +89,7 @@ The set of tools a model can call is fixed when a run starts, so every provider 
 
 - TOOLSET-FREEZE-1: The run's tool schemas, system instructions, request metadata, and structured-output request are captured once per run after run-start hooks and MCP connection, and every provider request in that run uses that captured set.
 - TOOLSET-FREEZE-2: A tool added with `add_tool` during an in-flight run does not appear in that run's later provider requests; it takes effect on the next run.
+- TOOLSET-FREEZE-3: The executable tool map is frozen with the schemas: a model call naming a tool added mid-run resolves as an unknown tool for the current run, and approval-required detection uses the same frozen map.
 
 ## Run Token Accounting
 

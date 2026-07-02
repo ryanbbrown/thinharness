@@ -484,8 +484,12 @@ def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool
     usage = getattr(turn, "usage", None)
     if usage is None:
         usage = extract_token_usage(raw)
-    finish_reason = getattr(turn, "finish_reason", None) or extract_finish_reason(raw)
-    response_model = getattr(turn, "response_model", None) or extract_response_model(raw)
+    finish_reason = getattr(turn, "finish_reason", None)
+    if finish_reason is None:
+        finish_reason = extract_finish_reason(raw)
+    response_model = getattr(turn, "response_model", None)
+    if response_model is None:
+        response_model = extract_response_model(raw)
     attributes = {
         "gen_ai.response.id": raw.get("id"),
         "gen_ai.response.model": response_model,

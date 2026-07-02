@@ -540,7 +540,7 @@
       </details>
 
       <details>
-        <summary>2. Run Loop Ownership: <code>core.py</code>, <code>runtime.py</code>, and <code>tool_execution.py</code></summary>
+        <summary>2. Run Loop Ownership: <code>core.py</code>, <code>turns.py</code>, <code>runtime.py</code>, and <code>tool_execution.py</code></summary>
         <div class="inside">
           <p>
             The run loop is divided by ownership. <code>core.py</code> coordinates the public run,
@@ -564,7 +564,7 @@
               <tr>
                 <td><code>tool_execution.py</code></td>
                 <td>Batch execution policy, hook/tracing flow for one tool call, current tool-call context, output parsing, retry-kind capture.</td>
-                <td><code>output.py</code> owns structured final-answer validation; <code>core.py</code> chooses whether the next provider call starts, continues with tools, retries output, or stops.</td>
+                <td><code>output.py</code> owns structured final-answer validation; <code>turns.py</code> chooses whether the next provider call starts, continues with tools, retries output, or stops.</td>
               </tr>
               <tr>
                 <td><code>turns.py</code></td>

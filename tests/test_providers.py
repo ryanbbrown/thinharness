@@ -29,6 +29,7 @@ from thinharness.providers import (
     TokenUsage,
     ToolOutput,
     append_notices_to_text,
+    extract_finish_reason,
     extract_token_usage,
     render_model_notices,
 )
@@ -513,6 +514,13 @@ def test_extract_token_usage_tolerates_partial_and_missing_usage() -> None:
     assert extract_token_usage({}) is None
     assert extract_token_usage({"usage": {"input_tokens": 9}}) == TokenUsage(input_tokens=9, output_tokens=None)
     assert extract_token_usage({"usage": {"completion_tokens": 3}}) == TokenUsage(input_tokens=None, output_tokens=3)
+
+def test_extract_finish_reason_precedence() -> None:
+    assert extract_finish_reason({"finish_reason": "length"}) == "length"
+    assert extract_finish_reason({"stop_reason": "end_turn", "finish_reason": "length"}) == "end_turn"
+    assert extract_finish_reason({"finish_reason": "length", "choices": [{"finish_reason": "stop"}]}) == "length"
+    assert extract_finish_reason({"choices": [{"finish_reason": "stop"}, {"finish_reason": "length"}]}) == "stop"
+    assert extract_finish_reason({}) is None
 
 async def test_provider_wraps_transport_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

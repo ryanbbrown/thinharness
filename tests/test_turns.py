@@ -71,18 +71,18 @@ class FakeRunContext:
 class FakeHarness:
     """Minimal harness double exposing what the turn machine reads."""
 
-    def __init__(self, tool_map: dict | None = None) -> None:
+    def __init__(self) -> None:
         self.output_schema = None
-        self._tool_map = tool_map or {}
 
     def _model_supports_approval_resume(self) -> bool:
         return True
 
 
 class FakeToolExecutor:
-    """Tool executor double returning canned outputs per call."""
+    """Tool executor double with a frozen tool map and canned outputs."""
 
-    def __init__(self, cancelled_ids: set[str] | None = None) -> None:
+    def __init__(self, tool_map: dict | None = None, cancelled_ids: set[str] | None = None) -> None:
+        self.tool_map = tool_map or {}
         self.cancelled_ids = cancelled_ids or set()
         self.batches: list[list[str]] = []
 
@@ -107,14 +107,14 @@ def _plain_spec(name: str) -> ToolSpec:
 CONSTANTS = RequestConstants(instructions="system", tools=[])
 
 
-async def _run(script, *, kind="start", harness=None, executor=None, approval_pause=None, approval_decisions=None):
+async def _run(script, *, kind="start", executor=None, approval_pause=None, approval_decisions=None):
     """Drive the machine over a scripted (turn, decision) sequence."""
     run_ctx = FakeRunContext(script)
     result = await advance_until_terminal(
         TurnStart(kind=kind, prompt="go", approval_pause=approval_pause, approval_decisions=approval_decisions),
         object(),
         CONSTANTS,
-        harness or FakeHarness(),
+        FakeHarness(),
         run_ctx,
         executor or FakeToolExecutor(),
     )
@@ -133,11 +133,11 @@ async def test_final_decision_finalizes_and_records_terminal_turn_once() -> None
 async def test_continue_decision_executes_tools_and_spends_tool_budget() -> None:
     tool_turn = ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="echo", arguments="{}")], raw={"id": "tools"})
     final_turn = ModelTurn(text="done", raw={"id": "done"})
-    harness = FakeHarness({"echo": _plain_spec("echo")})
+    executor = FakeToolExecutor({"echo": _plain_spec("echo")})
     run_ctx, result = await _run([
         (tool_turn, OutputTurnDecision(kind="continue")),
         (final_turn, OutputTurnDecision(kind="final", text="done")),
-    ], harness=harness)
+    ], executor=executor)
 
     assert run_ctx.usage.tool_calls == 1
     assert run_ctx.responses == [{"id": "tools"}, {"id": "done"}]
@@ -204,8 +204,8 @@ async def test_approval_pause_counts_full_batch_and_records_paused_turn() -> Non
         ],
         raw={"id": "paused"},
     )
-    harness = FakeHarness({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")})
-    run_ctx, result = await _run([(turn, OutputTurnDecision(kind="continue"))], harness=harness)
+    executor = FakeToolExecutor({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")})
+    run_ctx, result = await _run([(turn, OutputTurnDecision(kind="continue"))], executor=executor)
 
     assert result.stop_reason == "approval_required"
     assert run_ctx.usage.tool_calls == 2
@@ -215,6 +215,18 @@ async def test_approval_pause_counts_full_batch_and_records_paused_turn() -> Non
         ("check_tool_limit", 2),
         ("pause_for_approval", ["call_1"]),
     ]
+
+
+async def test_continue_decision_counts_hook_cancelled_tools() -> None:
+    tool_turn = ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="echo", arguments="{}")], raw={"id": "tools"})
+    final_turn = ModelTurn(text="done", raw={"id": "done"})
+    executor = FakeToolExecutor({"echo": _plain_spec("echo")}, cancelled_ids={"call_1"})
+    run_ctx, _result = await _run([
+        (tool_turn, OutputTurnDecision(kind="continue")),
+        (final_turn, OutputTurnDecision(kind="final", text="done")),
+    ], executor=executor)
+
+    assert run_ctx.usage.cancelled_tool_calls == 1
 
 
 async def test_resume_start_kind_uses_user_text_request() -> None:
@@ -244,12 +256,10 @@ async def test_approval_resume_replay_does_not_recount_tool_calls() -> None:
         {"call_1"},
     )
     decisions = {"call_1": ApprovalDecision(call_id="call_1", approved=True)}
-    harness = FakeHarness({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")})
-    executor = FakeToolExecutor()
+    executor = FakeToolExecutor({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")})
     run_ctx, result = await _run(
         [(ModelTurn(text="done", raw={"id": "done"}), OutputTurnDecision(kind="final", text="done"))],
         kind="approval_resume",
-        harness=harness,
         executor=executor,
         approval_pause=pause,
         approval_decisions=decisions,
@@ -275,12 +285,10 @@ async def test_approval_resume_counts_cancelled_tools_and_rejections() -> None:
         {"call_1"},
     )
     decisions = {"call_1": ApprovalDecision(call_id="call_1", approved=False, reason="too risky")}
-    harness = FakeHarness({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")})
-    executor = FakeToolExecutor(cancelled_ids={"call_2"})
+    executor = FakeToolExecutor({"deploy": _approval_spec("deploy"), "echo": _plain_spec("echo")}, cancelled_ids={"call_2"})
     run_ctx, _result = await _run(
         [(ModelTurn(text="done", raw={"id": "done"}), OutputTurnDecision(kind="final", text="done"))],
         kind="approval_resume",
-        harness=harness,
         executor=executor,
         approval_pause=pause,
         approval_decisions=decisions,

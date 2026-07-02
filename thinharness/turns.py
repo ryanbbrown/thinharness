@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .core import Harness
     from .runtime import RunContext
     from .tool_execution import ToolBatchExecutor
+    from .tools.base import ToolSpec
 
 
 @dataclass(frozen=True)
@@ -163,7 +164,7 @@ async def advance_until_terminal(
     else:
         assert start.approval_pause is not None
         assert start.approval_decisions is not None
-        outputs = await _resolve_approval_batch(start.approval_pause, start.approval_decisions, harness, run_ctx, tool_executor)
+        outputs = await _resolve_approval_batch(start.approval_pause, start.approval_decisions, run_ctx, tool_executor)
         turn, decision = await send_tool_outputs(outputs, kind="approval_resume")
 
     while True:
@@ -197,13 +198,11 @@ async def advance_until_terminal(
         if decision.kind == "unexpected":
             raise UnexpectedModelBehavior(decision.unexpected_message)
         assert decision.kind == "continue"
-        approval_calls = _approval_required_calls(harness, turn.tool_calls)
-        if approval_calls:
-            run_ctx.check_tool_limit(len(turn.tool_calls))
-            run_ctx.usage.tool_calls += len(turn.tool_calls)
-            return run_ctx.pause_for_approval(turn, approval_calls, session)
         run_ctx.check_tool_limit(len(turn.tool_calls))
         run_ctx.usage.tool_calls += len(turn.tool_calls)
+        approval_calls = _approval_required_calls(tool_executor.tool_map, turn.tool_calls)
+        if approval_calls:
+            return run_ctx.pause_for_approval(turn, approval_calls, session)
         recorded, outputs, executions = await tool_executor.execute_batch(turn.tool_calls)
         run_ctx.usage.cancelled_tool_calls += sum(1 for execution in executions if execution.cancelled)
         run_ctx.record_tool_batch(recorded)
@@ -214,7 +213,6 @@ async def advance_until_terminal(
 async def _resolve_approval_batch(
     approval_pause: ApprovalPause,
     decisions: dict[str, ApprovalDecision],
-    harness: Harness,
     run_ctx: RunContext,
     tool_executor: ToolBatchExecutor,
 ) -> list[ToolOutput]:
@@ -223,7 +221,7 @@ async def _resolve_approval_batch(
     The batch's tool calls were counted against limits at pause time, so this
     replay does not re-run check_tool_limit or re-count usage.tool_calls.
     """
-    _validate_approval_resume_tools(harness, approval_pause)
+    _validate_approval_resume_tools(tool_executor.tool_map, approval_pause)
     batch = [
         ModelToolCall(id=call.id, name=call.name, arguments=call.arguments)
         for call in approval_pause.batch
@@ -308,11 +306,11 @@ def _reject_approval_call(
     )
 
 
-def _validate_approval_resume_tools(harness: Harness, approval_pause: ApprovalPause) -> None:
+def _validate_approval_resume_tools(tool_map: dict[str, ToolSpec], approval_pause: ApprovalPause) -> None:
     """Require approval-required tools to still be configured before execution."""
     current_required_ids: set[str] = set()
     for call in approval_pause.batch:
-        spec = harness._tool_map.get(str(call.name))
+        spec = tool_map.get(str(call.name))
         if call.id in approval_pause.approval_required_ids and spec is None:
             raise HarnessError(f"approval-required tool {call.name!r} is not configured")
         if spec is not None and spec.requires_approval:
@@ -321,9 +319,9 @@ def _validate_approval_resume_tools(harness: Harness, approval_pause: ApprovalPa
         raise HarnessError("approval state approval_required_ids do not match configured approval-required tools")
 
 
-def _approval_required_calls(harness: Harness, calls: list[ModelToolCall]) -> list[ModelToolCall]:
+def _approval_required_calls(tool_map: dict[str, ToolSpec], calls: list[ModelToolCall]) -> list[ModelToolCall]:
     """Return approval-required calls from a model batch."""
     return [
         call for call in calls
-        if (spec := harness._tool_map.get(str(call.name))) is not None and spec.requires_approval
+        if (spec := tool_map.get(str(call.name))) is not None and spec.requires_approval
     ]

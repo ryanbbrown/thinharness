@@ -464,13 +464,6 @@ class Harness:
                 conversation_id = str(run_metadata.get("conversation_id")) if run_metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     run_ctx.agent_span = agent_span
-                    tool_executor = ToolBatchExecutor(
-                        harness=self,
-                        run_context=run_ctx,
-                        tool_map=self._tool_map,
-                        run_tracer=run_tracer,
-                        tool_execution=self.config.tool_execution,
-                    )
                     try:
                         effective_prompt, instructions = await self._prepare_run_start(
                             prompt,
@@ -484,6 +477,16 @@ class Harness:
                             tools=self.tool_schemas(),
                             metadata=run_metadata,
                             structured_output=self._structured_output_request(),
+                        )
+                        # Snapshot the executable tool map alongside the frozen
+                        # schemas so a tool added mid-run is neither advertised
+                        # nor executable within this run.
+                        tool_executor = ToolBatchExecutor(
+                            harness=self,
+                            run_context=run_ctx,
+                            tool_map=dict(self._tool_map),
+                            run_tracer=run_tracer,
+                            tool_execution=self.config.tool_execution,
                         )
                         active_session = session if session is not None else self.model.new_session()
                         start = TurnStart(
