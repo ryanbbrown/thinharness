@@ -22,7 +22,16 @@ from thinharness import (
     RequestConstants,
     parse_model_ref,
 )
-from thinharness.providers import ModelSettings, ProviderError, StructuredOutputRequest, ToolOutput, append_notices_to_text, render_model_notices
+from thinharness.providers import (
+    ModelSettings,
+    ProviderError,
+    StructuredOutputRequest,
+    TokenUsage,
+    ToolOutput,
+    append_notices_to_text,
+    extract_token_usage,
+    render_model_notices,
+)
 
 
 def _notice() -> ModelNotice:
@@ -440,6 +449,70 @@ async def test_openrouter_notice_payload_live() -> None:
         await provider.aclose()
 
     assert turn.text or turn.tool_calls
+
+async def test_anthropic_session_normalizes_usage_finish_and_model() -> None:
+    class Provider(AnthropicProvider):
+        def __init__(self) -> None:
+            super().__init__(api_key="key")
+
+        async def create_message(self, payload):
+            return {
+                "model": "claude-live",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "content": [{"type": "text", "text": "done"}],
+            }
+
+    session = AnthropicMessagesModel("claude-test", provider=Provider()).new_session()
+    turn = await session.start("hi", _constants())
+
+    assert turn.usage == TokenUsage(input_tokens=10, output_tokens=5)
+    assert turn.finish_reason == "end_turn"
+    assert turn.response_model == "claude-live"
+
+async def test_openai_session_normalizes_usage_and_model() -> None:
+    class Provider(OpenAIProvider):
+        def __init__(self) -> None:
+            super().__init__(api_key="key")
+
+        async def create_response(self, payload):
+            return {
+                "id": "resp_1",
+                "model": "gpt-live",
+                "output_text": "done",
+                "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            }
+
+    session = OpenAIResponsesModel("gpt-test", provider=Provider()).new_session()
+    turn = await session.start("hi", _constants())
+
+    assert turn.usage == TokenUsage(input_tokens=7, output_tokens=3)
+    assert turn.finish_reason is None
+    assert turn.response_model == "gpt-live"
+
+async def test_openrouter_session_normalizes_chat_keys_and_prefers_top_level_model() -> None:
+    class Provider(OpenRouterProvider):
+        def __init__(self) -> None:
+            super().__init__(api_key="key")
+
+        async def create_chat_completion(self, payload):
+            return {
+                "model": "top-model",
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+                "choices": [{"model": "choice-model", "finish_reason": "stop", "message": {"role": "assistant", "content": "done"}}],
+            }
+
+    session = OpenRouterModel("openai/test", provider=Provider()).new_session()
+    turn = await session.start("hi", _constants())
+
+    assert turn.usage == TokenUsage(input_tokens=4, output_tokens=2)
+    assert turn.finish_reason == "stop"
+    assert turn.response_model == "top-model"
+
+def test_extract_token_usage_tolerates_partial_and_missing_usage() -> None:
+    assert extract_token_usage({}) is None
+    assert extract_token_usage({"usage": {"input_tokens": 9}}) == TokenUsage(input_tokens=9, output_tokens=None)
+    assert extract_token_usage({"usage": {"completion_tokens": 3}}) == TokenUsage(input_tokens=None, output_tokens=3)
 
 async def test_provider_wraps_transport_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

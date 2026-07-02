@@ -28,6 +28,14 @@ class ModelToolCall:
     arguments: str
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Normalized provider token usage; fields are None when unreported."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
 @dataclass
 class ReasoningPart:
     """Provider-neutral carrier for one native reasoning block.
@@ -52,6 +60,9 @@ class ModelTurn:
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     raw: Json = field(default_factory=dict)
     reasoning: list[ReasoningPart] = field(default_factory=list)
+    usage: TokenUsage | None = None
+    finish_reason: str | None = None
+    response_model: str | None = None
 
 
 @dataclass
@@ -681,6 +692,9 @@ class OpenAIResponsesSession:
             tool_calls=_extract_responses_tool_calls(response),
             reasoning=_extract_responses_reasoning(response),
             raw=response,
+            usage=extract_token_usage(response),
+            finish_reason=extract_finish_reason(response),
+            response_model=extract_response_model(response),
         )
         _append_assistant_turn(self.transcript, turn)
         return turn
@@ -825,6 +839,9 @@ class AnthropicMessagesSession:
             tool_calls=_extract_anthropic_tool_calls(response),
             reasoning=_extract_anthropic_reasoning(response),
             raw=response,
+            usage=extract_token_usage(response),
+            finish_reason=extract_finish_reason(response),
+            response_model=extract_response_model(response),
         )
         _append_assistant_turn(self.transcript, turn)
         return turn
@@ -965,6 +982,9 @@ class OpenRouterSession:
             tool_calls=_extract_chat_tool_calls(message),
             reasoning=_extract_openrouter_reasoning(message),
             raw=response,
+            usage=extract_token_usage(response),
+            finish_reason=extract_finish_reason(response),
+            response_model=extract_response_model(response),
         )
         _append_assistant_turn(self.transcript, turn)
         return turn
@@ -1223,6 +1243,56 @@ def _structured_output_to_openrouter_response_format(request: StructuredOutputRe
     if request.description:
         json_schema["description"] = request.description
     return {"type": "json_schema", "json_schema": json_schema}
+
+
+def extract_token_usage(raw: Json) -> TokenUsage | None:
+    """Best-effort normalized token usage from a raw provider response.
+
+    Handles both key styles (input_tokens/output_tokens and
+    prompt_tokens/completion_tokens); missing keys yield None fields.
+    """
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    return TokenUsage(
+        input_tokens=input_tokens if isinstance(input_tokens, int) else None,
+        output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+    )
+
+
+def extract_finish_reason(raw: Json) -> str | None:
+    """Best-effort normalized finish reason from a raw provider response.
+
+    Precedence: stop_reason, then top-level finish_reason, then
+    choices[0].finish_reason; only the first choice is normalized.
+    """
+    if isinstance(raw.get("stop_reason"), str):
+        return raw["stop_reason"]
+    if isinstance(raw.get("finish_reason"), str):
+        return raw["finish_reason"]
+    choices = raw.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if isinstance(reason, str):
+            return reason
+    return None
+
+
+def extract_response_model(raw: Json) -> str | None:
+    """Best-effort normalized response model from a raw provider response.
+
+    Precedence: top-level model, then choices[0].model.
+    """
+    if isinstance(raw.get("model"), str):
+        return raw["model"]
+    choices = raw.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        model = choices[0].get("model")
+        if isinstance(model, str):
+            return model
+    return None
 
 
 def _extract_responses_tool_calls(response: Json) -> list[ModelToolCall]:

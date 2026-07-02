@@ -330,6 +330,9 @@ class RunContext:
             try:
                 turn = await request(notices)
                 self.usage.model_requests += 1
+                if turn.usage is not None:
+                    self.usage.input_tokens += turn.usage.input_tokens or 0
+                    self.usage.output_tokens += turn.usage.output_tokens or 0
             except Exception as exc:
                 model_span.record_exception(exc)
                 model_span.set_error(str(exc), type(exc).__name__)

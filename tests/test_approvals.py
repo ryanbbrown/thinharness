@@ -24,6 +24,7 @@ from thinharness import (
     RunStartedEvent,
     RunUsage,
     SubAgentConfig,
+    TokenUsage,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
     ToolSpec,
@@ -946,3 +947,64 @@ def test_envelope_round_trips_usage_and_limit_notices() -> None:
 
     assert pause.usage == RunUsage(model_requests=2, tool_calls=1, tool_retries={"deploy": 1})
     assert pause.emitted_limit_warnings == {("limit_warning", "model_requests", 1)}
+
+
+class _QueueSession:
+    """Session double returning queued turns for any request kind."""
+
+    def __init__(self, *turns: ModelTurn) -> None:
+        self.turns = list(turns)
+
+    async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
+        return self.turns.pop(0)
+
+    async def continue_with_tools(self, outputs, constants, *, notices=None):
+        return self.turns.pop(0)
+
+    async def continue_with_user_text(self, text, constants, *, notices=None):
+        return self.turns.pop(0)
+
+    def dump_state(self):
+        return {"kind": "scripted", "version": 1, "model": "scripted-model"}
+
+
+async def test_run_usage_token_totals_accumulate_across_retry_and_approval_resume(tmp_path: Path) -> None:
+    class Person(BaseModel):
+        name: str
+        age: int
+
+    pause_turn = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_1", name="deploy", arguments='{"env":"prod"}')],
+        raw={"id": "start"},
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
+    )
+    bad_final = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_final", name="final_result", arguments='{"name":"Ada"}')],
+        raw={"id": "bad"},
+        usage=TokenUsage(input_tokens=4, output_tokens=2),
+    )
+    good_final = ModelTurn(
+        tool_calls=[ModelToolCall(id="call_final_2", name="final_result", arguments='{"name":"Ada","age":37}')],
+        raw={"id": "good"},
+        usage=TokenUsage(input_tokens=6, output_tokens=1),
+    )
+    model = ScriptedModel([_QueueSession(pause_turn), _QueueSession(bad_final, good_final)])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        model=model,
+        tools=[approval_tool()],
+    )
+
+    paused = await harness.run("deploy")
+
+    assert (paused.usage.input_tokens, paused.usage.output_tokens) == (10, 5)
+
+    result = await harness.resume_approvals(
+        json.loads(json.dumps(paused.resume_state)),
+        [ApprovalDecision(call_id="call_1", approved=True)],
+    )
+
+    # Run totals restore from the envelope and keep accumulating across the
+    # approval-resume turn and the structured-output retry turn.
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (20, 8)
+    assert result.usage.output_retries == 1

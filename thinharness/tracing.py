@@ -26,6 +26,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from .projections import ModelRequestDelta, model_request_input_from_delta, trace_input_messages_from_entries, trace_output_messages_from_assistant
+from .providers import TokenUsage, extract_finish_reason, extract_response_model, extract_token_usage
 from .tools.base import Json
 
 try:
@@ -473,14 +474,23 @@ def annotate_model_request(span: _SpanAdapter, delta: ModelRequestDelta, *, capt
 
 
 def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool = False) -> None:
-    """Add model response attributes to a span."""
+    """Add model response attributes to a span.
+
+    Normalized ModelTurn fields are preferred; custom Model implementations
+    that leave them unset fall back to best-effort raw extraction.
+    """
     raw = getattr(turn, "raw", {}) or {}
     text = getattr(turn, "text", "") or ""
+    usage = getattr(turn, "usage", None)
+    if usage is None:
+        usage = extract_token_usage(raw)
+    finish_reason = getattr(turn, "finish_reason", None) or extract_finish_reason(raw)
+    response_model = getattr(turn, "response_model", None) or extract_response_model(raw)
     attributes = {
         "gen_ai.response.id": raw.get("id"),
-        "gen_ai.response.model": _response_model(raw),
-        "gen_ai.response.finish_reasons": _finish_reasons(raw),
-        **_usage_attributes(raw),
+        "gen_ai.response.model": response_model,
+        "gen_ai.response.finish_reasons": [finish_reason] if finish_reason is not None else None,
+        **_usage_attributes(raw, usage),
     }
     output_messages = trace_output_messages_from_assistant(turn)
     if capture_messages and output_messages and output_messages[0]["parts"]:
@@ -548,41 +558,23 @@ def serialize_attribute_value(value: Any) -> str | None:
         return str(value)
 
 
-def _usage_attributes(raw: Json) -> Json:
-    """Extract common token usage attributes from provider responses."""
-    usage = raw.get("usage") or {}
-    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
-    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+def _usage_attributes(raw: Json, usage: TokenUsage | None) -> Json:
+    """Build token usage attributes from normalized usage.
+
+    One total-tokens rule: a raw total_tokens passes through when present,
+    otherwise the total is computed as input+output only when both are known.
+    """
+    input_tokens = usage.input_tokens if usage is not None else None
+    output_tokens = usage.output_tokens if usage is not None else None
+    raw_usage = raw.get("usage")
+    total = raw_usage.get("total_tokens") if isinstance(raw_usage, dict) else None
+    if total is None and input_tokens is not None and output_tokens is not None:
+        total = input_tokens + output_tokens
     return {
         "gen_ai.usage.input_tokens": input_tokens,
         "gen_ai.usage.output_tokens": output_tokens,
-        "gen_ai.usage.total_tokens": usage.get("total_tokens"),
+        "gen_ai.usage.total_tokens": total,
     }
-
-
-def _response_model(raw: Json) -> str | None:
-    """Extract a response model name."""
-    if isinstance(raw.get("model"), str):
-        return raw["model"]
-    choice = ((raw.get("choices") or [{}])[0] or {}) if isinstance(raw.get("choices"), list) else {}
-    return choice.get("model")
-
-
-def _finish_reasons(raw: Json) -> list[str] | None:
-    """Extract provider finish reasons."""
-    if isinstance(raw.get("stop_reason"), str):
-        return [raw["stop_reason"]]
-    if isinstance(raw.get("finish_reason"), str):
-        return [raw["finish_reason"]]
-    choices = raw.get("choices")
-    if isinstance(choices, list):
-        reasons = [
-            reason
-            for choice in choices
-            if isinstance(choice, dict) and isinstance(reason := choice.get("finish_reason"), str)
-        ]
-        return reasons or None
-    return None
 
 
 def _compact(attributes: Json) -> Json:

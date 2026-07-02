@@ -32,7 +32,7 @@ from thinharness import (
     create_subagent_tool,
 )
 from thinharness.projections import model_request_delta_from_prompt, model_request_delta_from_tool_outputs
-from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn, ToolOutput
+from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn, TokenUsage, ToolOutput
 from thinharness.tracing import _SpanAdapter, annotate_model_request, create_local_tracing_options, serialize_attribute_value
 
 
@@ -436,6 +436,68 @@ def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> No
     assert json.loads(correction_chat.attributes["gen_ai.prompt"])["correction"].startswith("The previous response failed")
     resume_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "resume")
     assert json.loads(resume_chat.attributes["gen_ai.prompt"]) == {"prompt": "follow-up"}
+
+def _chat_span_for_turn(tmp_path: Path, turn: ModelTurn) -> FakeSpan:
+    """Run one scripted turn and return its chat span."""
+    tracer = FakeTracer()
+    Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([ScriptedSession(start_turn=turn)]),
+        tracing=[TracingOptions(tracer=tracer)],
+    ).run_sync("go")
+    return next(span for span in tracer.spans if span.name == "chat scripted-model")
+
+def test_model_span_pins_normalized_usage_model_and_finish_reasons(tmp_path: Path) -> None:
+    chat = _chat_span_for_turn(tmp_path, ModelTurn(
+        text="done",
+        raw={"id": "resp", "usage": {"total_tokens": 99}},
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
+        finish_reason="stop",
+        response_model="scripted-pro",
+    ))
+
+    assert chat.attributes["gen_ai.usage.input_tokens"] == 10
+    assert chat.attributes["gen_ai.usage.output_tokens"] == 5
+    assert chat.attributes["gen_ai.usage.total_tokens"] == 99
+    assert chat.attributes["gen_ai.response.model"] == "scripted-pro"
+    assert chat.attributes["gen_ai.response.finish_reasons"] == ["stop"]
+
+def test_model_span_computes_total_tokens_from_input_and_output(tmp_path: Path) -> None:
+    chat = _chat_span_for_turn(tmp_path, ModelTurn(
+        text="done",
+        raw={"id": "resp"},
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
+    ))
+
+    assert chat.attributes["gen_ai.usage.total_tokens"] == 15
+
+def test_model_span_partial_usage_yields_no_total(tmp_path: Path) -> None:
+    chat = _chat_span_for_turn(tmp_path, ModelTurn(
+        text="done",
+        raw={"id": "resp"},
+        usage=TokenUsage(input_tokens=10),
+    ))
+
+    assert chat.attributes["gen_ai.usage.input_tokens"] == 10
+    assert "gen_ai.usage.output_tokens" not in chat.attributes
+    assert "gen_ai.usage.total_tokens" not in chat.attributes
+
+def test_custom_model_turn_without_normalized_fields_falls_back_to_raw(tmp_path: Path) -> None:
+    chat = _chat_span_for_turn(tmp_path, ModelTurn(
+        text="done",
+        raw={
+            "id": "resp",
+            "model": "raw-model",
+            "finish_reason": "stop",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        },
+    ))
+
+    assert chat.attributes["gen_ai.usage.input_tokens"] == 3
+    assert chat.attributes["gen_ai.usage.output_tokens"] == 4
+    assert chat.attributes["gen_ai.usage.total_tokens"] == 7
+    assert chat.attributes["gen_ai.response.model"] == "raw-model"
+    assert chat.attributes["gen_ai.response.finish_reasons"] == ["stop"]
 
 def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None:
     tracer = FakeTracer()
