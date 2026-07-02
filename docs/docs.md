@@ -616,7 +616,7 @@ Each tracing sink owns its capture policy. External spans can exist without reco
 - `output`: parsed structured output, if configured.
 - `responses`: raw provider responses.
 - `tool_call_records`: normalized tool call and output records.
-- `usage`: model request counts, tool call counts, cancellations, and retry counters.
+- `usage`: model request counts, tool call counts, cancellations, retry counters, and run token totals (`input_tokens`/`output_tokens`).
 - `stop_reason`: terminal reason.
 - `resume_state`: opaque continuation state when the run is cleanly resumable.
 - `pending_approvals`: pending human approval records when `stop_reason == "approval_required"`.
