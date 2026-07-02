@@ -155,11 +155,12 @@
 |-- thinharness/
 |   |-- __init__.py                  public API exports
 |   |-- core.py                      HarnessConfig, Harness, run-loop coordination
-|   |-- runtime.py                   RunContext, TurnDriver, and provider-call wrapper
+|   |-- runtime.py                   RunContext and the provider-call wrapper
+|   |-- turns.py                     turn state machine and output turn decisions
 |   |-- types.py                     leaf run result, usage, errors, stop reasons, Json alias
 |   |-- tool_execution.py            tool batch execution and one-call hook/tracing flow
 |   |-- providers.py                 provider transports, model adapters, session state
-|   |-- output.py                    structured-output schemas and turn decisions
+|   |-- output.py                    structured-output schemas and validation
 |   |-- hooks.py                     hook dataclasses, registry, context variables
 |   |-- subagents.py                 subagent tool and child harness construction
 |   |-- tracing.py                   OTel-compatible spans and local JSONL tracing
@@ -191,10 +192,10 @@
             <tbody>
               <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, tool selection, limits, output mode, tracing, MCP, subagents, path policies.</td><td>Configures a <code>Harness</code>.</td></tr>
               <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns tool maps, model object, hooks, skill registry, MCP server list, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
-              <tr><td><code>TurnDriver</code></td><td>Internal runtime helper that owns the active model session plus per-run request constants.</td><td>Builds trace snapshots and delegates every model-session call through <code>RunContext.advance_model()</code>.</td></tr>
+              <tr><td><code>RequestConstants</code></td><td>Frozen per-run request constants: instructions, tool schemas, metadata, and the structured-output request. Built once after run-start hooks and MCP connection, so the toolset is frozen for the run.</td><td>Passed to every <code>ModelSession</code> request by the turn machine in <code>turns.py</code>.</td></tr>
               <tr><td><code>RunContext</code></td><td>Internal state for one <code>Harness.run(...)</code>: responses, tool records, usage, retry/notice state, terminal error, stop reason, tracing span, and final result.</td><td>References the reusable <code>Harness</code>, but is not stored on it after the run.</td></tr>
               <tr><td><code>HarnessResult</code></td><td>Final run result: final text, parsed structured output, raw provider responses, tool call records, usage, stop reason, and resume state.</td><td>Receives finalized state from <code>RunContext</code>.</td></tr>
-              <tr><td><code>RunUsage</code></td><td>Counts model requests, tool calls, cancelled tool calls, output retries, and per-tool retry counts.</td><td>Per-run counter owned by <code>RunContext</code> and returned in <code>HarnessResult</code>.</td></tr>
+              <tr><td><code>RunUsage</code></td><td>Counts model requests, tool calls, cancelled tool calls, output retries, per-tool retry counts, and run token totals (<code>input_tokens</code>/<code>output_tokens</code>).</td><td>Per-run counter owned by <code>RunContext</code> and returned in <code>HarnessResult</code>.</td></tr>
             </tbody>
           </table>
         </div>
@@ -204,8 +205,8 @@
             <thead><tr><th>Name</th><th>Meaning</th></tr></thead>
             <tbody>
               <tr><td><code>Model</code></td><td>Protocol for reusable model configuration. It creates isolated <code>ModelSession</code> objects.</td></tr>
-              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Built-in sessions keep native in-run state plus a parallel neutral transcript; <code>dump_state</code> returns the transcript for provider-agnostic resume. All expose <code>start</code>, continuation, correction, resume, and <code>dump_state</code> methods.</td></tr>
-              <tr><td><code>ModelTurn</code></td><td>Normalized provider response: assistant text, requested <code>ModelToolCall</code> entries, raw provider JSON.</td></tr>
+              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Built-in sessions keep native in-run state plus a parallel neutral transcript; <code>dump_state</code> returns the transcript for provider-agnostic resume. All expose three request methods &mdash; <code>start</code>, <code>continue_with_tools</code>, and <code>continue_with_user_text</code> &mdash; each taking per-run <code>RequestConstants</code>, plus <code>dump_state</code>.</td></tr>
+              <tr><td><code>ModelTurn</code></td><td>Normalized provider response: assistant text, requested <code>ModelToolCall</code> entries, raw provider JSON, plus normalized <code>TokenUsage</code>, finish reason, and response model.</td></tr>
               <tr><td><code>ModelToolCall</code></td><td>Normalized tool request with id, name, and raw JSON argument string.</td></tr>
               <tr><td><code>ToolOutput</code></td><td>Tool result sent back to the provider so the model can continue after a tool call: call id plus model-visible output string.</td></tr>
               <tr><td><code>ModelNotice</code></td><td>Provider-neutral model input notice for run-budget warnings, including remaining model requests and remaining tool calls.</td></tr>
@@ -469,7 +470,7 @@
         <li><code>thinharness/tools/base.py</code> to understand <code>ToolSpec</code>, <code>ToolResult</code>, argument validation, retry envelopes, and path policy.</li>
         <li><code>thinharness/providers.py</code> through the common dataclasses/protocols, then skim each provider session.</li>
         <li><code>thinharness/output.py</code> so final-answer decisions make sense before reading the loop.</li>
-        <li><code>thinharness/core.py</code> and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>TurnDriver</code> and <code>RunContext.advance_model</code>.</li>
+        <li><code>thinharness/core.py</code>, <code>thinharness/turns.py</code>, and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>advance_until_terminal</code> and <code>RunContext.advance_model</code>.</li>
         <li><code>thinharness/tool_execution.py</code> to see how a model-emitted batch becomes ordered provider outputs.</li>
         <li><code>thinharness/tools/filesystem.py</code> to understand the default workspace tools the model can call.</li>
         <li><code>thinharness/hooks.py</code> and <code>thinharness/tracing.py</code> to understand lifecycle callbacks and run observability.</li>
@@ -543,7 +544,8 @@
         <div class="inside">
           <p>
             The run loop is divided by ownership. <code>core.py</code> coordinates the public run,
-            <code>runtime.py</code> owns one run's mutable state, the active-session <code>TurnDriver</code>, and the repeated wrapper around each provider call, and
+            <code>turns.py</code> owns the turn state machine that drives one run to a terminal result,
+            <code>runtime.py</code> owns one run's mutable state and the repeated wrapper around each provider call, and
             <code>tool_execution.py</code> owns model-requested tool batches and the hook/tracing flow for one tool call.
           </p>
           <table>
@@ -551,12 +553,12 @@
             <tbody>
               <tr>
                 <td><code>core.py</code></td>
-                <td>Harness construction, public run API, running/closed checks, provider session selection, and choosing the next action after each model turn: build the final result, run tools, retry structured output, or fail.</td>
-                <td><code>providers.py</code> owns provider API payload details; <code>tool_execution.py</code> owns one tool call's hook/tracing flow; <code>runtime.py</code> owns repeated provider-call wrapper code.</td>
+                <td>Harness construction, public run API, running/closed checks, provider session selection, per-run <code>RequestConstants</code> construction, and run-failure classification.</td>
+                <td><code>turns.py</code> owns the turn dispatch loop; <code>providers.py</code> owns provider API payload details; <code>tool_execution.py</code> owns one tool call's hook/tracing flow; <code>runtime.py</code> owns repeated provider-call wrapper code.</td>
               </tr>
               <tr>
                 <td><code>runtime.py</code></td>
-                <td>One run's mutable state, active-session turn driver, responses, usage, tool records, limit notices, terminal result/error, stop reason, resume attachment, <code>run_end</code> guard.</td>
+                <td>One run's mutable state: responses, usage, tool records, limit notices, terminal result/error, stop reason, resume attachment, <code>run_end</code> guard.</td>
                 <td><code>providers.py</code> owns provider-specific API request formats; <code>tool_execution.py</code> owns individual tool invocation mechanics.</td>
               </tr>
               <tr>
@@ -565,19 +567,19 @@
                 <td><code>output.py</code> owns structured final-answer validation; <code>core.py</code> chooses whether the next provider call starts, continues with tools, retries output, or stops.</td>
               </tr>
               <tr>
-                <td><code>output.py</code></td>
-                <td>Classifies a returned <code>ModelTurn</code> as final, continue with tools, retry via user message, retry via tool output, or unexpected.</td>
-                <td><code>core.py</code> acts on that decision; <code>runtime.py</code> owns retry-budget exhaustion; <code>providers.py</code> owns transport calls.</td>
+                <td><code>turns.py</code></td>
+                <td>Classifies a returned <code>ModelTurn</code> as final, continue with tools, retry via user message, retry via tool output, or unexpected, and dispatches on that decision: it owns the loop that drives a run to a terminal result or approval pause.</td>
+                <td><code>runtime.py</code> owns retry-budget exhaustion; <code>providers.py</code> owns transport calls; <code>core.py</code> owns exception classification around the single machine call.</td>
               </tr>
             </tbody>
           </table>
           <p>
-            The important handoff is <code>TurnDriver</code> plus <code>RunContext.advance_model(request, trace_snapshot, output_retry=False)</code>.
-            <code>core.py</code> chooses whether to start, resume, send tool outputs, or send a correction, and <code>TurnDriver</code>
-            supplies the matching provider-session method call. The run-loop
+            The important handoff is <code>turns.advance_until_terminal(...)</code> plus <code>RunContext.advance_model(...)</code>.
+            The turn machine chooses whether to start, resume, send tool outputs, or send a correction, and
+            supplies the matching provider-session method call with the run's <code>RequestConstants</code>. The run-loop
             diagram may label the second case as "continue" for space, but the code path is <code>continue_with_tools(...)</code>.
             <code>runtime.py</code> wraps that callable with limit checks, usage accounting,
-            model tracing, notice computation, response capture, and output turn resolution.
+            model tracing, notice computation, and output turn resolution.
           </p>
           <p>
             This keeps provider API payload knowledge in <code>providers.py</code> while keeping the repeated provider-call wrapper
@@ -717,7 +719,7 @@
               <tr>
                 <td>ModelSession</td>
                 <td>Yes</td>
-                <td>The per-run conversation object. <code>core.py</code> calls its <code>start(...)</code>, <code>continue_with_tools(...)</code>, correction, resume, and state-dump methods.</td>
+                <td>The per-run conversation object. The turn machine calls its <code>start(...)</code>, <code>continue_with_tools(...)</code>, and <code>continue_with_user_text(...)</code> methods with per-run <code>RequestConstants</code>, plus <code>dump_state()</code>.</td>
               </tr>
               <tr>
                 <td><code>ModelTurn</code></td>

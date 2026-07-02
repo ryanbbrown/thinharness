@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** `ModelSession` narrowed to three request methods — `start(prompt, constants, ...)`, `continue_with_tools(outputs, constants, ...)`, and `continue_with_user_text(text, constants, ...)` — each taking a per-run `RequestConstants` positional parameter; the `continue_with_user_message`/`continue_with_user_prompt` pair is removed.
+- **Breaking:** Removed `ModelTurn.finalized_output_mode`; the finalized mode is carried on `OutputTurnDecision` and `ModelMessageEvent.finalized_output_mode` is unchanged.
+- **Breaking:** `OutputTurnDecision` and `resolve_turn_output` moved from `thinharness.output` to the new `thinharness.turns` module (no compatibility re-export).
+- Changed the run toolset to freeze at run start: tools added with `add_tool` during an in-flight run take effect on the next run.
+- Changed Anthropic model spans to gain `gen_ai.usage.total_tokens`, computed as input+output when the provider reports both and no raw total exists.
+- Added `RunUsage.input_tokens`/`output_tokens` run totals accumulated per provider request and surfaced on `HarnessResult.usage`; approval envelopes written before these fields existed still resume.
+- Added run-state codecs `RunUsage.to_json`/`RunUsage.from_json` and limit-notice key encode/decode in `thinharness.types`.
+- Added normalized `ModelTurn.usage` (`TokenUsage`), `ModelTurn.finish_reason`, and `ModelTurn.response_model`; tracing prefers them and falls back to raw extraction for custom models.
+- Added `RequestConstants` and `TokenUsage` to the public exports.
+
 ## 0.4.0 - 2026-06-25
 
 - Removed background tool execution and background completion semantics, including `ToolSpec.background`/`background_policy`, `SubAgentConfig.background`, `BackgroundTask*Event`, and the approval-envelope background fields.
