@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-07-03
 
 - **Breaking:** `ModelSession` narrowed to three request methods — `start(prompt, constants, ...)`, `continue_with_tools(outputs, constants, ...)`, and `continue_with_user_text(text, constants, ...)` — each taking a per-run `RequestConstants` positional parameter; the `continue_with_user_message`/`continue_with_user_prompt` pair is removed.
 - **Breaking:** Removed `ModelTurn.finalized_output_mode`; the finalized mode is carried on `OutputTurnDecision` and `ModelMessageEvent.finalized_output_mode` is unchanged.
