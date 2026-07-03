@@ -21,6 +21,8 @@
 
 ## Why this exists
 
+*ThinHarness is for building agents with a defined job and a bounded set of tools, using a refreshingly simple framework that's easy to inspect and customize.*
+
 Production agents rarely stop at framework configuration. Things like orchestration, permissions, user/session storage, and deployment become specific to the application and its users.
 
 ThinHarness exists for the gap between building the agent loop yourself and adopting a large agent runtime where the loop comes bundled with assumptions you don’t need and can’t easily change.
