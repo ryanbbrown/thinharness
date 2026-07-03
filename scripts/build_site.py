@@ -33,6 +33,7 @@ def inline_markdown(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", lambda m: m.group(1), text)
     escaped = html.escape(text, quote=False)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", escaped)
     for index, value in enumerate(placeholders):
         escaped = escaped.replace(f"\0{index}\0", value)
     return escaped
