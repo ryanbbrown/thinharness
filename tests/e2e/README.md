@@ -5,7 +5,7 @@ These scripts run real provider calls against temporary workspaces. They are int
 Run one script with environment from `.env`:
 
 ```bash
-uv run --env-file .env python e2e/workspace_tools_journey.py
+uv run --env-file .env python tests/e2e/workspace_tools_journey.py
 ```
 
 Each script skips when `CI` is set or when the required provider key is missing. Model defaults can be overridden with the per-script `E2E_*_MODEL` environment variable.

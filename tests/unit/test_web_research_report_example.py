@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.web_research_report.agent import (
     ExaFetchSourcesArgs,

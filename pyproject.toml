@@ -79,7 +79,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pyright]
 include = ["thinharness"]
-exclude = ["vendor", "experiments", ".context", "e2e", "tests"]
+exclude = ["vendor", "experiments", ".context", "tests"]
 pythonVersion = "3.11"
 
 [dependency-groups]

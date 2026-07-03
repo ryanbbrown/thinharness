@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from thinharness import Harness, HarnessConfig, Hook
 
