@@ -783,12 +783,12 @@ def test_run_usage_token_totals_accumulate_partial_usage(tmp_path: Path) -> None
         start_turn=ModelTurn(
             tool_calls=[ModelToolCall(id="call_1", name="echo", arguments='{"value":"ok"}')],
             raw={"id": "start"},
-            usage=TokenUsage(input_tokens=5),
+            usage=TokenUsage(input_tokens=5, cached_tokens=3),
         ),
-        continue_turn=ModelTurn(text="done", raw={"id": "done"}, usage=TokenUsage(output_tokens=7)),
+        continue_turn=ModelTurn(text="done", raw={"id": "done"}, usage=TokenUsage(output_tokens=7, cached_tokens=2)),
     )
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
 
     result = harness.run_sync("go")
 
-    assert (result.usage.input_tokens, result.usage.output_tokens) == (5, 7)
+    assert (result.usage.input_tokens, result.usage.output_tokens, result.usage.cached_tokens) == (5, 7, 5)

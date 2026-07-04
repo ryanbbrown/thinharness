@@ -570,6 +570,7 @@ def _usage_attributes(raw: Json, usage: TokenUsage | None) -> Json:
     """
     input_tokens = usage.input_tokens if usage is not None else None
     output_tokens = usage.output_tokens if usage is not None else None
+    cached_tokens = usage.cached_tokens if usage is not None else None
     raw_usage = raw.get("usage")
     total = raw_usage.get("total_tokens") if isinstance(raw_usage, dict) else None
     if total is None and input_tokens is not None and output_tokens is not None:
@@ -577,6 +578,7 @@ def _usage_attributes(raw: Json, usage: TokenUsage | None) -> Json:
     return {
         "gen_ai.usage.input_tokens": input_tokens,
         "gen_ai.usage.output_tokens": output_tokens,
+        "gen_ai.usage.cache_read.input_tokens": cached_tokens,
         "gen_ai.usage.total_tokens": total,
     }
 

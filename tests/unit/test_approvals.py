@@ -823,6 +823,7 @@ def test_run_usage_codec_round_trip() -> None:
         output_retries=1,
         input_tokens=10,
         output_tokens=20,
+        cached_tokens=7,
         tool_retries={"deploy": 1},
     )
 
@@ -884,16 +885,18 @@ def test_run_usage_codec_missing_token_keys_default_to_zero() -> None:
     data = RunUsage(model_requests=1).to_json()
     del data["input_tokens"]
     del data["output_tokens"]
+    del data["cached_tokens"]
 
     decoded = RunUsage.from_json(data, label="approval state")
 
     assert decoded.input_tokens == 0
     assert decoded.output_tokens == 0
+    assert decoded.cached_tokens == 0
 
 
 def test_run_usage_codec_wrong_type_token_keys_raise() -> None:
     data = RunUsage().to_json()
-    data["input_tokens"] = "10"
+    data["cached_tokens"] = "10"
 
     with pytest.raises(HarnessError) as exc_info:
         RunUsage.from_json(data, label="approval state")

@@ -34,6 +34,7 @@ class TokenUsage:
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 @dataclass
@@ -1249,16 +1250,27 @@ def extract_token_usage(raw: Json) -> TokenUsage | None:
     """Best-effort normalized token usage from a raw provider response.
 
     Handles both key styles (input_tokens/output_tokens and
-    prompt_tokens/completion_tokens); missing keys yield None fields.
+    prompt_tokens/completion_tokens), plus provider cache-read breakdowns;
+    missing keys yield None fields.
     """
     usage = raw.get("usage")
     if not isinstance(usage, dict):
         return None
     input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
     output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    cached_tokens = usage.get("cache_read_input_tokens")
+    if not isinstance(cached_tokens, int):
+        input_details = usage.get("input_tokens_details")
+        if isinstance(input_details, dict):
+            cached_tokens = input_details.get("cached_tokens")
+    if not isinstance(cached_tokens, int):
+        prompt_details = usage.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_tokens = prompt_details.get("cached_tokens")
     return TokenUsage(
         input_tokens=input_tokens if isinstance(input_tokens, int) else None,
         output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+        cached_tokens=cached_tokens if isinstance(cached_tokens, int) else None,
     )
 
 

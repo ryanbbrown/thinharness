@@ -515,6 +515,29 @@ def test_extract_token_usage_tolerates_partial_and_missing_usage() -> None:
     assert extract_token_usage({"usage": {"input_tokens": 9}}) == TokenUsage(input_tokens=9, output_tokens=None)
     assert extract_token_usage({"usage": {"completion_tokens": 3}}) == TokenUsage(input_tokens=None, output_tokens=3)
 
+def test_extract_token_usage_carries_cached_input_breakdowns() -> None:
+    assert extract_token_usage({
+        "usage": {
+            "input_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 12},
+            "output_tokens": 5,
+        },
+    }) == TokenUsage(input_tokens=20, output_tokens=5, cached_tokens=12)
+    assert extract_token_usage({
+        "usage": {
+            "prompt_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 11},
+            "completion_tokens": 5,
+        },
+    }) == TokenUsage(input_tokens=20, output_tokens=5, cached_tokens=11)
+    assert extract_token_usage({
+        "usage": {
+            "input_tokens": 20,
+            "cache_read_input_tokens": 10,
+            "output_tokens": 5,
+        },
+    }) == TokenUsage(input_tokens=20, output_tokens=5, cached_tokens=10)
+
 def test_extract_finish_reason_precedence() -> None:
     assert extract_finish_reason({"finish_reason": "length"}) == "length"
     assert extract_finish_reason({"stop_reason": "end_turn", "finish_reason": "length"}) == "end_turn"

@@ -63,6 +63,7 @@ class RunUsage:
     output_retries: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_tokens: int = 0
     tool_retries: dict[str, int] = field(default_factory=dict)
 
     def to_json(self) -> Json:
@@ -89,7 +90,8 @@ class RunUsage:
         output_retries = usage.get("output_retries")
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
-        counters = [model_requests, tool_calls, cancelled_tool_calls, output_retries, input_tokens, output_tokens]
+        cached_tokens = usage.get("cached_tokens", 0)
+        counters = [model_requests, tool_calls, cancelled_tool_calls, output_retries, input_tokens, output_tokens, cached_tokens]
         if not all(isinstance(value, int) for value in counters):
             raise HarnessError(f"{label} field 'usage' has wrong type")
         assert isinstance(model_requests, int)
@@ -98,6 +100,7 @@ class RunUsage:
         assert isinstance(output_retries, int)
         assert isinstance(input_tokens, int)
         assert isinstance(output_tokens, int)
+        assert isinstance(cached_tokens, int)
         return cls(
             model_requests=model_requests,
             tool_calls=tool_calls,
@@ -105,6 +108,7 @@ class RunUsage:
             output_retries=output_retries,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
             tool_retries=dict(retries),
         )
 

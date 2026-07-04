@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-07-04
+
+- Added provider-reported cached input token counts to normalized usage and OTel GenAI model span attributes, including OpenAI Responses, Chat Completions, and Anthropic cache-read usage.
+- Added `RunUsage.cached_tokens` run totals accumulated per provider request; approval envelopes written before this field existed still resume.
+
 ## 0.5.0 - 2026-07-03
 
 - **Breaking:** `ModelSession` narrowed to three request methods — `start(prompt, constants, ...)`, `continue_with_tools(outputs, constants, ...)`, and `continue_with_user_text(text, constants, ...)` — each taking a per-run `RequestConstants` positional parameter; the `continue_with_user_message`/`continue_with_user_prompt` pair is removed.

@@ -40,7 +40,7 @@ I started building ThinHarness after running into this gap in practice. Filesyst
   The exact tokei command + upstream commit hash for each upstream row is in an
   HTML comment above the row, so the number is reproducible. Upstream rows were
   measured 2026-06-22 against the pinned commits; ThinHarness was measured
-  from this working tree on 2026-07-01.
+  from this working tree on 2026-07-04.
 -->
 
 <div align="center">
@@ -58,10 +58,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-01 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-04 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,854</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,873</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
