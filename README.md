@@ -58,10 +58,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-04 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-05 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,873</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,874</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
