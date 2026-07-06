@@ -19,3 +19,4 @@ Current journeys:
 - `mcp_journey.py`: local stdio MCP tool discovery and execution.
 - `parallel_llm_tool_journey.py`: direct `ParallelLlmTool` calls across all configured providers.
 - `parallel_llm_agent_journey.py`: an agent run using both built-in `parallel_llm` and a renamed custom `ParallelLlmTool`.
+- `prompt_caching_journey.py`: Anthropic prompt caching — asserts a multi-request run reports cached input tokens.

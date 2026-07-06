@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 - 2026-07-05
+
+- Changed Anthropic Messages requests to opt into provider prompt caching via top-level `cache_control: {"type": "ephemeral"}` (automatic breakpoint placement); a `cache_control` key in model `extra_body` overrides the default.
+
 ## 0.5.1 - 2026-07-04
 
 - Added provider-reported cached input token counts to normalized usage and OTel GenAI model span attributes, including OpenAI Responses, Chat Completions, and Anthropic cache-read usage.

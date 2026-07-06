@@ -378,7 +378,7 @@ def test_openai_include_is_the_only_in_run_payload_delta() -> None:
 async def test_anthropic_and_openrouter_in_run_payloads_carry_no_reasoning_keys(tmp_path: Path) -> None:
     anthropic = FakeAnthropicProvider()
     await _harness(tmp_path, AnthropicMessagesModel("claude-test", provider=anthropic)).run("first")
-    assert all(set(payload) == {"model", "max_tokens", "system", "messages", "tools"} for payload in anthropic.payloads)
+    assert all(set(payload) == {"model", "max_tokens", "system", "messages", "tools", "cache_control"} for payload in anthropic.payloads)
 
     openrouter = FakeOpenRouterProvider()
     await _harness(tmp_path, OpenRouterModel("openai/test", provider=openrouter)).run("first")

@@ -326,6 +326,25 @@ async def test_anthropic_provider_model_tool_loop() -> None:
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["input_schema"]["type"] == "object"
 
+async def test_anthropic_requests_opt_into_prompt_caching() -> None:
+    provider = FakeAnthropicProvider()
+    session = AnthropicMessagesModel("claude-test", provider=provider).new_session()
+    constants = _constants(ECHO_TOOLS)
+
+    first = await session.start("hi", constants)
+    await session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], constants)
+
+    assert [payload["cache_control"] for payload in provider.payloads] == [{"type": "ephemeral"}] * 2
+
+    override_provider = FakeAnthropicProvider()
+    override_model = AnthropicMessagesModel(
+        "claude-test",
+        provider=override_provider,
+        settings=ModelSettings(extra_body={"cache_control": {"type": "ephemeral", "ttl": "1h"}}),
+    )
+    await override_model.new_session().start("hi", constants)
+    assert override_provider.payloads[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
 async def test_openrouter_provider_model_tool_loop() -> None:
     calls = []
 

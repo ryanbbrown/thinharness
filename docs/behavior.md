@@ -103,6 +103,17 @@ Harness runs report provider token usage as run-level totals so hosts can meter 
 - TOKEN-USAGE-2: Provider responses with missing or partial usage contribute only the token counts they report; absent counts add nothing and do not error.
 - TOKEN-USAGE-3: Approval envelopes written before token accounting existed still resume: missing token keys default to 0, while token keys that are present with a wrong type are rejected.
 
+## Anthropic Prompt Caching
+
+### Purpose
+
+Anthropic Messages requests opt into provider prompt caching by default so multi-request runs reuse the growing prompt prefix instead of paying full input price on every request.
+
+### Requirements
+
+- ANTHROPIC-CACHE-1: Every Anthropic Messages request sends top-level `cache_control: {"type": "ephemeral"}`, letting the API place the cache breakpoint on the last cacheable block automatically; a `cache_control` key in model `extra_body` replaces the default.
+- ANTHROPIC-CACHE-2: Cache reads surface through the existing normalized usage fields (`TokenUsage.cached_tokens`, `RunUsage.cached_tokens`); `input_tokens` remains the provider-reported value, which for Anthropic is the uncached remainder, and cache-write tokens are not separately accounted.
+
 ## Model Observability Projections
 
 ### Purpose

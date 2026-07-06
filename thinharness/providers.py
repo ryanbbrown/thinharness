@@ -827,6 +827,9 @@ class AnthropicMessagesSession:
             "system": self.system,
             "messages": self.messages,
             "tools": [_responses_tool_to_anthropic(tool) for tool in tools],
+            # Top-level auto-caching: the API places the prompt-cache breakpoint
+            # on the last cacheable block, so the growing prefix is reused.
+            "cache_control": {"type": "ephemeral"},
         }
         if metadata:
             payload["metadata"] = metadata
