@@ -149,6 +149,8 @@ class ModelSettings(BaseModel):
     """Common request settings shared across models."""
 
     temperature: float | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    effort: str | None = None
     extra_body: Json = Field(default_factory=dict)
 
 
@@ -542,6 +544,9 @@ def _openai_supports_encrypted_reasoning(model_name: str) -> bool:
     return (thinking_always_enabled or is_gpt_5_1_plus) and not is_gpt_5_3_chat
 
 
+DEFAULT_ANTHROPIC_MAX_TOKENS = 16384
+
+
 class OpenAIResponsesModel:
     """Responses-like model implemented with OpenAI Responses."""
 
@@ -579,7 +584,11 @@ class OpenAIResponsesModel:
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
     ) -> Json:
-        """Build a Responses API payload."""
+        """Build a Responses API payload.
+
+        ``extra_body`` is applied after tuning settings, so callers can override
+        provider request knobs while native structured output remains enforced.
+        """
         payload: Json = {"model": self.model, "input": input_payload, "tools": tools}
         if _openai_supports_encrypted_reasoning(self.model):
             payload["include"] = ["reasoning.encrypted_content"]
@@ -589,6 +598,10 @@ class OpenAIResponsesModel:
             payload["metadata"] = metadata
         if self.settings.temperature is not None:
             payload["temperature"] = self.settings.temperature
+        if self.settings.max_tokens is not None:
+            payload["max_output_tokens"] = self.settings.max_tokens
+        if self.settings.effort is not None:
+            payload["reasoning"] = {"effort": self.settings.effort}
         payload.update(self.settings.extra_body)
         if structured_output is not None:
             payload["text"] = _structured_output_to_openai_text_format(structured_output)
@@ -713,7 +726,7 @@ class OpenAIResponsesSession:
 class AnthropicMessagesModel:
     """Responses-like model implemented with Anthropic Messages."""
 
-    capabilities = ModelCapabilities(supports_json_schema_output=False, default_structured_output_mode="tool")
+    capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     resume_kind = "anthropic"
 
     def __init__(
@@ -722,7 +735,7 @@ class AnthropicMessagesModel:
         *,
         provider: AnthropicProvider | None = None,
         settings: ModelSettings | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> None:
         self.model = model
         self.provider = provider or AnthropicProvider()
@@ -767,15 +780,13 @@ class AnthropicMessagesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start an Anthropic Messages run."""
-        if constants.structured_output is not None:
-            raise ProviderError("Anthropic does not support native structured output")
         if previous_response_id:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
         self.system = constants.instructions
         content = append_notices_to_text(prompt, notices)
         self.messages = [{"role": "user", "content": content}]
         self.transcript = [UserEntry(content=content)]
-        return await self._complete(tools=constants.tools, metadata=constants.metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     async def continue_with_tools(
         self,
@@ -785,8 +796,6 @@ class AnthropicMessagesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
-        if constants.structured_output is not None:
-            raise ProviderError("Anthropic does not support native structured output")
         content = [{"type": "tool_result", "tool_use_id": output.call_id, "content": output.output} for output in outputs]
         notice_text = render_model_notices(notices)
         if notice_text:
@@ -797,7 +806,7 @@ class AnthropicMessagesSession:
             "role": "user",
             "content": content,
         })
-        return await self._complete(tools=constants.tools, metadata=constants.metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     async def continue_with_user_text(
         self,
@@ -807,23 +816,35 @@ class AnthropicMessagesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an Anthropic Messages run with user text."""
-        if constants.structured_output is not None:
-            raise ProviderError("Anthropic does not support native structured output")
         content = append_notices_to_text(text, notices)
         self.transcript.append(UserEntry(content=content))
         self._apply_resume(constants.instructions)
         self.messages.append({"role": "user", "content": content})
-        return await self._complete(tools=constants.tools, metadata=constants.metadata)
+        return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     def dump_state(self) -> dict[str, Any] | None:
         """Serialize the neutral transcript for resume."""
         return _transcript_state(model=self.model, entries=self.transcript)
 
-    async def _complete(self, *, tools: list[Json], metadata: Json | None = None) -> ModelTurn:
-        """Send a Messages API request and normalize the response."""
+    async def _complete(
+        self,
+        *,
+        tools: list[Json],
+        metadata: Json | None = None,
+        structured_output: StructuredOutputRequest | None = None,
+    ) -> ModelTurn:
+        """Send a Messages API request and normalize the response.
+
+        ``extra_body`` overrides tuning keys. Native structured-output format is
+        deep-set afterward so the harness never validates against an omitted schema.
+        """
         payload: Json = {
             "model": self.model.model,
-            "max_tokens": self.model.max_tokens,
+            "max_tokens": self.model.max_tokens
+            if self.model.max_tokens is not None
+            else self.model.settings.max_tokens
+            if self.model.settings.max_tokens is not None
+            else DEFAULT_ANTHROPIC_MAX_TOKENS,
             "system": self.system,
             "messages": self.messages,
             "tools": [_responses_tool_to_anthropic(tool) for tool in tools],
@@ -835,7 +856,16 @@ class AnthropicMessagesSession:
             payload["metadata"] = metadata
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
+        if self.model.settings.effort is not None:
+            payload["output_config"] = {"effort": self.model.settings.effort}
+            payload["thinking"] = {"type": "adaptive"}
         payload.update(self.model.settings.extra_body)
+        if structured_output is not None:
+            output_config = payload.setdefault("output_config", {})
+            if not isinstance(output_config, dict):
+                output_config = {}
+                payload["output_config"] = output_config
+            output_config["format"] = _structured_output_to_anthropic_format(structured_output)
         response = await self.model.provider.create_message(payload)
         self.messages.append({"role": "assistant", "content": response.get("content", [])})
         turn = ModelTurn(
@@ -856,7 +886,7 @@ class AnthropicMessagesSession:
         self.system = instructions or ""
         self.messages = _render_anthropic_transcript(
             self._resume_entries,
-            thinking_enabled=_anthropic_thinking_enabled(self.model.settings),
+            thinking_enabled=_anthropic_thinking_enabled(self.model),
         )
         self._resume_entries = None
 
@@ -965,7 +995,11 @@ class OpenRouterSession:
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
     ) -> ModelTurn:
-        """Send an OpenRouter request and normalize the response."""
+        """Send an OpenRouter request and normalize the response.
+
+        ``extra_body`` is applied after tuning settings, so callers can override
+        provider request knobs while native structured output remains enforced.
+        """
         payload: Json = {
             "model": self.model.model,
             "messages": self.messages,
@@ -975,6 +1009,10 @@ class OpenRouterSession:
             payload["metadata"] = metadata
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
+        if self.model.settings.max_tokens is not None:
+            payload["max_tokens"] = self.model.settings.max_tokens
+        if self.model.settings.effort is not None:
+            payload["reasoning"] = {"effort": self.model.settings.effort}
         payload.update(self.model.settings.extra_body)
         if structured_output is not None:
             payload["response_format"] = _structured_output_to_openrouter_response_format(structured_output)
@@ -1012,11 +1050,13 @@ def infer_model(
     base_url: str | None = None,
     timeout: int = 120,
     temperature: float | None = None,
+    max_tokens: int | None = None,
+    effort: str | None = None,
     extra_body: Json | None = None,
 ) -> Model:
     """Create a model from a provider:model reference."""
     provider_name, model_name = parse_model_ref(model_ref)
-    settings = ModelSettings(temperature=temperature, extra_body=extra_body or {})
+    settings = ModelSettings(temperature=temperature, max_tokens=max_tokens, effort=effort, extra_body=extra_body or {})
     if provider_name == "openai":
         provider = OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout)
         return OpenAIResponsesModel(model_name, provider=provider, settings=settings)
@@ -1087,10 +1127,20 @@ def _thinking_fallback(text: str) -> str:
     return f"<thinking>\n{text}\n</thinking>"
 
 
-def _anthropic_thinking_enabled(settings: ModelSettings) -> bool:
-    """Return whether the resuming Anthropic request enables extended thinking."""
-    thinking = settings.extra_body.get("thinking")
-    return isinstance(thinking, dict) and thinking.get("type") == "enabled"
+_ANTHROPIC_THINKING_DEFAULT_OFF_PREFIXES = ("claude-opus-4", "claude-sonnet-4", "claude-haiku-4", "claude-3")
+
+
+def _anthropic_thinking_on_by_default(model_name: str) -> bool:
+    """Return whether this model runs thinking when the thinking key is omitted."""
+    return not model_name.startswith(_ANTHROPIC_THINKING_DEFAULT_OFF_PREFIXES)
+
+
+def _anthropic_thinking_enabled(model: AnthropicMessagesModel) -> bool:
+    """Return whether the resuming Anthropic request runs extended thinking."""
+    if "thinking" in model.settings.extra_body:
+        thinking = model.settings.extra_body["thinking"]
+        return isinstance(thinking, dict) and thinking.get("type") in ("enabled", "adaptive")
+    return model.settings.effort is not None or _anthropic_thinking_on_by_default(model.model)
 
 
 def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_enabled: bool = False) -> list[Json]:
@@ -1247,6 +1297,11 @@ def _structured_output_to_openrouter_response_format(request: StructuredOutputRe
     if request.description:
         json_schema["description"] = request.description
     return {"type": "json_schema", "json_schema": json_schema}
+
+
+def _structured_output_to_anthropic_format(request: StructuredOutputRequest) -> Json:
+    """Convert neutral structured-output metadata to Anthropic output_config.format."""
+    return {"type": "json_schema", "schema": request.schema}
 
 
 def extract_token_usage(raw: Json) -> TokenUsage | None:

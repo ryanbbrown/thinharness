@@ -279,6 +279,8 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
             base_url=parent_config.base_url if same_provider else None,
             timeout=parent_config.request_timeout,
             temperature=parent_config.temperature,
+            max_tokens=parent_config.max_tokens,
+            effort=parent_config.effort,
             extra_body=parent_config.extra_body,
         )
     return Harness(

@@ -96,7 +96,7 @@ config = HarnessConfig(
 Important groups:
 
 - `root`, `read_paths`, `write_paths`, and `output_dir` define filesystem scope.
-- `model`, `api_key`, `base_url`, `temperature`, `extra_body`, and `request_timeout` define provider settings.
+- `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, and `request_timeout` define provider settings.
 - `builtin_tools`, `tools`, `subagents`, `mcp_servers`, and `skills_dir` define the model-callable surface.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.

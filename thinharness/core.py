@@ -128,6 +128,8 @@ class HarnessConfig(BaseModel):
     read_paths: list[str | Path] | None = None
     write_paths: list[str | Path] | None = None
     temperature: float | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    effort: str | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
     tracing: list[TracingOptions] = Field(default_factory=list)
     local_tracing: bool = True
@@ -181,6 +183,8 @@ class Harness:
             base_url=self.config.base_url,
             timeout=self.config.request_timeout,
             temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            effort=self.config.effort,
             extra_body=self.config.extra_body,
         )
         self._owns_model = _owns_model if _owns_model is not None else model is None

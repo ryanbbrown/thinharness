@@ -73,7 +73,8 @@ Built-in provider resume state is a self-contained, provider-agnostic transcript
 
 - RESUME-1: `resume_state` is a provider-agnostic transcript; resume across built-in providers and across built-in models is supported.
 - RESUME-2: `resume_state` is self-contained and does not depend on provider continuation tokens such as OpenAI `previous_response_id`; an OpenAI run that never received a response id is still resumable.
-- RESUME-3: Resuming on the originating provider preserves native reasoning (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`); resuming on a different provider degrades each reasoning part to a leading `<thinking>`-tagged text block and drops the opaque blob. Native re-emit additionally requires the resuming run to be able to accept the block: OpenAI re-emits the native reasoning item only when the resuming model is reasoning-capable, and Anthropic only when extended thinking is enabled; otherwise both use the text fallback. So a reasoning-model capture resumed on a non-reasoning model of the same provider degrades to text.
+- RESUME-3: Resuming on the originating provider preserves native reasoning (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`); resuming on a different provider degrades each reasoning part to a leading `<thinking>`-tagged text block and drops the opaque blob. Native re-emit additionally requires the resuming run to be able to accept the block: OpenAI re-emits the native reasoning item only when the resuming model is reasoning-capable, and Anthropic uses the thinking gate in RESUME-3A; otherwise both use the text fallback. So a reasoning-model capture resumed on a non-reasoning model of the same provider degrades to text.
+- RESUME-3A: Anthropic resume treats explicit `extra_body["thinking"]` as authoritative: `enabled` and `adaptive` accept signed thinking replay, while `disabled`, unknown, or malformed values suppress native replay. Without an explicit thinking key, `HarnessConfig.effort` implies adaptive thinking; otherwise Anthropic models outside the legacy off-by-default families (`claude-opus-4`, `claude-sonnet-4`, `claude-haiku-4`, and `claude-3`) are assumed to run thinking by default and keep signed thinking blocks on resume.
 - RESUME-4: Built-in provider resume state uses `version` 3; version 1 and version 2 state and old provider-native `kind` values are rejected with a regenerate error.
 - RESUME-5: On resume, the live system prompt from the resuming harness config is re-injected; captured system prompts are not stored or restored.
 - RESUME-6: A session seeded via `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` captures only new transcript entries, so externally seeded prior turns are not present when later resumed from `resume_state`. This is unrelated to reasoning fidelity and is not changed by RESUME-3/RESUME-7.
@@ -113,6 +114,31 @@ Anthropic Messages requests opt into provider prompt caching by default so multi
 
 - ANTHROPIC-CACHE-1: Every Anthropic Messages request sends top-level `cache_control: {"type": "ephemeral"}`, letting the API place the cache breakpoint on the last cacheable block automatically; a `cache_control` key in model `extra_body` replaces the default.
 - ANTHROPIC-CACHE-2: Cache reads surface through the existing normalized usage fields (`TokenUsage.cached_tokens`, `RunUsage.cached_tokens`); `input_tokens` remains the provider-reported value, which for Anthropic is the uncached remainder, and cache-write tokens are not separately accounted.
+
+## Provider Request Settings
+
+### Purpose
+
+Provider-neutral request settings let callers tune output length and reasoning depth without hand-writing each provider's payload dialect.
+
+### Requirements
+
+- PROVIDER-SETTINGS-1: `HarnessConfig.max_tokens` and `ModelSettings.max_tokens` accept positive integers only. OpenAI Responses sends `max_output_tokens` only when configured, OpenRouter sends `max_tokens` only when configured, and Anthropic always sends `max_tokens`, defaulting to 16384 when neither the model constructor nor settings provide a value.
+- PROVIDER-SETTINGS-2: A directly constructed `AnthropicMessagesModel(max_tokens=...)` overrides `ModelSettings.max_tokens`; a top-level `extra_body["max_tokens"]` overrides both because tuning keys are applied before `extra_body`.
+- PROVIDER-SETTINGS-3: `HarnessConfig.effort` and `ModelSettings.effort` pass through as provider-neutral strings. OpenAI Responses and OpenRouter send `reasoning: {"effort": ...}`; Anthropic sends `output_config.effort` and injects adaptive thinking unless `extra_body` supplies its own top-level `thinking` key.
+- PROVIDER-SETTINGS-4: The harness does not client-validate provider/model-specific `effort`, `temperature`, or thinking combinations. Invalid combinations surface as provider API errors.
+
+## Structured Output Provider Modes
+
+### Purpose
+
+Structured output uses the strongest provider-native contract available while preserving explicit fallback modes for older models and provider-specific limits.
+
+### Requirements
+
+- STRUCTURED-PROVIDER-1: Anthropic supports native JSON Schema structured output and defaults `output_mode="auto"` to native, matching OpenAI. Tool and prompted modes remain available explicitly.
+- STRUCTURED-PROVIDER-2: For Anthropic native structured output, provider requests send `output_config.format: {"type": "json_schema", "schema": ...}`. The schema is written after `extra_body` so a caller's `output_config.effort` or other fields survive, but the structured-output schema cannot be silently removed.
+- STRUCTURED-PROVIDER-3: Anthropic model or schema floors are enforced by the API, not by client-side capability sniffing. Callers targeting older Anthropic models can request explicit tool mode.
 
 ## Model Observability Projections
 

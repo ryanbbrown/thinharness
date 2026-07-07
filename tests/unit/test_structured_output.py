@@ -539,18 +539,66 @@ def test_final_result_hook_filter_is_allowed_but_never_fires(tmp_path) -> None:
     assert seen == []
 
 
-def test_anthropic_native_mode_is_rejected(tmp_path) -> None:
+class JsonAnthropicProvider(FakeAnthropicProvider):
+    async def create_message(self, payload):
+        self.payloads.append(json.loads(json.dumps(payload)))
+        return {"content": [{"type": "text", "text": '{"name":"Ada","age":37}'}], "stop_reason": "end_turn"}
+
+
+class TruncatingJsonAnthropicProvider(FakeAnthropicProvider):
+    async def create_message(self, payload):
+        self.payloads.append(json.loads(json.dumps(payload)))
+        if len(self.payloads) == 1:
+            return {"content": [{"type": "text", "text": '{"name":"Ada"'}], "stop_reason": "max_tokens"}
+        return {"content": [{"type": "text", "text": '{"name":"Ada","age":37}'}], "stop_reason": "end_turn"}
+
+
+def test_anthropic_native_mode_constructs_and_defaults_to_native(tmp_path) -> None:
     model = AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider())
 
-    with pytest.raises(ValueError, match="does not support native structured output"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="native"), model=model)
+    explicit = Harness(HarnessConfig(root=tmp_path / "explicit", builtin_tools=[], output_type=Person, output_mode="native"), model=model)
+    auto = Harness(HarnessConfig(root=tmp_path / "auto", builtin_tools=[], output_type=Person), model=model)
+
+    assert explicit.output_schema is not None
+    assert explicit.output_schema.mode == "native"
+    assert auto.output_schema is not None
+    assert auto.output_schema.mode == "native"
 
 
-def test_native_output_marker_respects_provider_capabilities(tmp_path) -> None:
+def test_anthropic_native_output_marker_constructs(tmp_path) -> None:
     model = AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider())
 
-    with pytest.raises(ValueError, match="does not support native structured output"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=NativeOutput(Person)), model=model)
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=NativeOutput(Person)), model=model)
+
+    assert harness.output_schema is not None
+    assert harness.output_schema.mode == "native"
+
+
+def test_anthropic_native_mode_parses_json_text_result(tmp_path) -> None:
+    provider = JsonAnthropicProvider()
+    model = AnthropicMessagesModel("claude-test", provider=provider)
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person), model=model)
+
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
+    assert provider.payloads[0]["output_config"]["format"]["type"] == "json_schema"
+    assert provider.payloads[0]["output_config"]["format"]["schema"]["properties"]["name"]["type"] == "string"
+
+
+def test_anthropic_native_truncated_json_retries_and_succeeds(tmp_path) -> None:
+    provider = TruncatingJsonAnthropicProvider()
+    model = AnthropicMessagesModel("claude-test", provider=provider)
+    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_retries=1), model=model)
+
+    result = harness.run_sync("make a person")
+
+    assert result.output == Person(name="Ada", age=37)
+    assert result.usage.model_requests == 2
+    assert result.usage.output_retries == 1
+    assert result.responses[0]["stop_reason"] == "max_tokens"
+    assert "Return only valid JSON" in provider.payloads[1]["messages"][-1]["content"]
+    assert provider.payloads[1]["output_config"]["format"]["type"] == "json_schema"
 
 
 def test_native_schema_is_strict_normalized_for_openai(tmp_path) -> None:

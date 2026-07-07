@@ -255,7 +255,17 @@ def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypat
 
     monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
     parent = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], model="openai:parent", api_key="parent-key", base_url="https://parent.example"),
+        HarnessConfig(
+            root=tmp_path,
+            builtin_tools=[],
+            model="openai:parent",
+            api_key="parent-key",
+            base_url="https://parent.example",
+            temperature=0.2,
+            max_tokens=4096,
+            effort="low",
+            extra_body={"seed": 1},
+        ),
         model=ScriptedModel([]),
     )
     same_provider = SubAgentConfig(name="same", description="Same provider.", model="openai:child", tools=[echo_tool()])
@@ -268,8 +278,14 @@ def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypat
     assert other_child.config.model == "anthropic:child"
     assert calls[0][1]["api_key"] == "parent-key"
     assert calls[0][1]["base_url"] == "https://parent.example"
+    assert calls[0][1]["temperature"] == 0.2
+    assert calls[0][1]["max_tokens"] == 4096
+    assert calls[0][1]["effort"] == "low"
+    assert calls[0][1]["extra_body"] == {"seed": 1}
     assert calls[1][1]["api_key"] is None
     assert calls[1][1]["base_url"] is None
+    assert calls[1][1]["max_tokens"] == 4096
+    assert calls[1][1]["effort"] == "low"
 
 def test_subagent_model_override_is_used_for_child_run(tmp_path: Path, monkeypatch) -> None:
     child_model = RecordingModel([ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))], model="child-model")

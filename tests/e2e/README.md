@@ -20,3 +20,4 @@ Current journeys:
 - `parallel_llm_tool_journey.py`: direct `ParallelLlmTool` calls across all configured providers.
 - `parallel_llm_agent_journey.py`: an agent run using both built-in `parallel_llm` and a renamed custom `ParallelLlmTool`.
 - `prompt_caching_journey.py`: Anthropic prompt caching — asserts a multi-request run reports cached input tokens.
+- `anthropic_modernization_journey.py`: Anthropic native structured output, max-token/effort payloads, and adaptive/default-on thinking resume.

@@ -638,6 +638,8 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
         base_url="https://example.test",
         request_timeout=7,
         temperature=0.3,
+        max_tokens=2048,
+        effort="medium",
         extra_body={"seed": 1},
     )
 
@@ -651,7 +653,7 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
     assert model.provider.api_key == "key"
     assert model.provider.base_url == "https://example.test"
     assert model.provider.timeout == 7
-    assert model.settings == ModelSettings(temperature=0.3, extra_body={"seed": 1})
+    assert model.settings == ModelSettings(temperature=0.3, max_tokens=2048, effort="medium", extra_body={"seed": 1})
 
 
 async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -669,6 +671,8 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
         BatchModel(),
         api_key="parent-key",
         base_url="https://example.test",
+        max_tokens=4096,
+        effort="low",
         builtin_parallel_llm_model="openai:gpt-cheap",
         builtin_parallel_llm_temperature=0.2,
     )
@@ -680,6 +684,8 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
     assert captured["kwargs"]["api_key"] == "parent-key"
     assert captured["kwargs"]["base_url"] == "https://example.test"
     assert captured["kwargs"]["temperature"] == 0.2
+    assert captured["kwargs"]["max_tokens"] == 4096
+    assert captured["kwargs"]["effort"] == "low"
 
 
 def test_parallel_llm_builtin_selection(tmp_path: Path) -> None:

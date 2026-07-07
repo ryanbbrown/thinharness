@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3 - 2026-07-07
+
+- Added provider-neutral `max_tokens` and `effort` settings, raised Anthropic's default `max_tokens` to 16384, and translated those settings to each built-in provider's payload dialect.
+- Changed Anthropic structured output to support native `output_config.format` by default while preserving explicit tool and prompted modes.
+- Fixed Anthropic resume replay for adaptive and default-on thinking models so signed thinking blocks are preserved when the resumed request can accept them.
+
 ## 0.5.2 - 2026-07-05
 
 - Changed Anthropic Messages requests to opt into provider prompt caching via top-level `cache_control: {"type": "ephemeral"}` (automatic breakpoint placement); a `cache_control` key in model `extra_body` overrides the default.

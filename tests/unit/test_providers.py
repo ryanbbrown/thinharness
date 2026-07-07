@@ -14,6 +14,7 @@ from fakes import (
 from thinharness import (
     AnthropicMessagesModel,
     AnthropicProvider,
+    HarnessConfig,
     ModelNotice,
     OpenAIProvider,
     OpenAIResponsesModel,
@@ -300,6 +301,76 @@ def test_openai_native_structured_output_overrides_extra_body_text() -> None:
     assert payload["text"]["format"]["type"] == "json_schema"
     assert payload["text"]["format"]["name"] == "final_result"
 
+
+def test_model_settings_and_harness_config_validate_max_tokens() -> None:
+    with pytest.raises(ValueError):
+        ModelSettings(max_tokens=0)
+    with pytest.raises(ValueError):
+        ModelSettings(max_tokens=-1)
+    with pytest.raises(ValueError):
+        HarnessConfig(max_tokens=0)
+    with pytest.raises(ValueError):
+        HarnessConfig(max_tokens=-1)
+
+
+def test_openai_payload_translates_max_tokens_and_effort() -> None:
+    model = OpenAIResponsesModel(
+        "gpt-test",
+        provider=OpenAIProvider(api_key="key"),
+        settings=ModelSettings(temperature=0.4, max_tokens=2000, effort="low"),
+    )
+
+    payload = model.build_payload(input_payload="hi", tools=[])
+
+    assert payload["temperature"] == 0.4
+    assert payload["max_output_tokens"] == 2000
+    assert payload["reasoning"] == {"effort": "low"}
+
+
+async def test_anthropic_payload_translates_max_tokens_effort_and_overrides() -> None:
+    constants = _constants(ECHO_TOOLS)
+
+    default_provider = FakeAnthropicProvider()
+    await AnthropicMessagesModel("claude-test", provider=default_provider).new_session().start("hi", constants)
+    assert default_provider.payloads[0]["max_tokens"] == 16384
+
+    settings_provider = FakeAnthropicProvider()
+    settings_model = AnthropicMessagesModel(
+        "claude-test",
+        provider=settings_provider,
+        settings=ModelSettings(max_tokens=4096, effort="high", temperature=0.1),
+    )
+    await settings_model.new_session().start("hi", constants)
+    assert settings_provider.payloads[0]["max_tokens"] == 4096
+    assert settings_provider.payloads[0]["temperature"] == 0.1
+    assert settings_provider.payloads[0]["output_config"] == {"effort": "high"}
+    assert settings_provider.payloads[0]["thinking"] == {"type": "adaptive"}
+
+    ctor_provider = FakeAnthropicProvider()
+    ctor_model = AnthropicMessagesModel(
+        "claude-test",
+        provider=ctor_provider,
+        settings=ModelSettings(max_tokens=4096),
+        max_tokens=2048,
+    )
+    await ctor_model.new_session().start("hi", constants)
+    assert ctor_provider.payloads[0]["max_tokens"] == 2048
+
+    extra_provider = FakeAnthropicProvider()
+    extra_model = AnthropicMessagesModel(
+        "claude-test",
+        provider=extra_provider,
+        settings=ModelSettings(
+            max_tokens=4096,
+            effort="high",
+            extra_body={"max_tokens": 8192, "output_config": {"effort": "low"}, "thinking": {"type": "disabled"}},
+        ),
+    )
+    await extra_model.new_session().start("hi", constants)
+    assert extra_provider.payloads[0]["max_tokens"] == 8192
+    assert extra_provider.payloads[0]["output_config"] == {"effort": "low"}
+    assert extra_provider.payloads[0]["thinking"] == {"type": "disabled"}
+
 async def test_anthropic_provider_model_tool_loop() -> None:
     calls = []
 
@@ -344,6 +415,37 @@ async def test_anthropic_requests_opt_into_prompt_caching() -> None:
     )
     await override_model.new_session().start("hi", constants)
     assert override_provider.payloads[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+async def test_anthropic_native_structured_output_merges_with_output_config_extra_body() -> None:
+    provider = FakeAnthropicProvider()
+    model = AnthropicMessagesModel(
+        "claude-test",
+        provider=provider,
+        settings=ModelSettings(extra_body={"output_config": {"effort": "high"}}),
+    )
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+    await model.new_session().start("hi", _constants(structured_output=StructuredOutputRequest(name="final_result", schema=schema)))
+
+    assert provider.payloads[0]["output_config"] == {
+        "effort": "high",
+        "format": {"type": "json_schema", "schema": schema},
+    }
+
+
+async def test_anthropic_native_structured_output_merges_with_settings_effort() -> None:
+    provider = FakeAnthropicProvider()
+    model = AnthropicMessagesModel("claude-test", provider=provider, settings=ModelSettings(effort="high"))
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+    await model.new_session().start("hi", _constants(structured_output=StructuredOutputRequest(name="final_result", schema=schema)))
+
+    assert provider.payloads[0]["output_config"] == {
+        "effort": "high",
+        "format": {"type": "json_schema", "schema": schema},
+    }
+    assert provider.payloads[0]["thinking"] == {"type": "adaptive"}
 
 async def test_openrouter_provider_model_tool_loop() -> None:
     calls = []
@@ -403,6 +505,17 @@ async def test_openrouter_native_structured_output_overrides_extra_body_response
 
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert calls[0]["response_format"]["json_schema"]["name"] == "final_result"
+
+
+async def test_openrouter_payload_translates_max_tokens_and_effort() -> None:
+    provider = FakeOpenRouterProvider()
+    model = OpenRouterModel("openai/test", provider=provider, settings=ModelSettings(max_tokens=2000, effort="medium", temperature=0.2))
+
+    await model.new_session().start("hi", _constants(ECHO_TOOLS))
+
+    assert provider.payloads[0]["max_tokens"] == 2000
+    assert provider.payloads[0]["reasoning"] == {"effort": "medium"}
+    assert provider.payloads[0]["temperature"] == 0.2
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY is not set")
 async def test_openai_notice_payload_live() -> None:

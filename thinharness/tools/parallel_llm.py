@@ -94,6 +94,8 @@ class ParallelLlmTool:
         base_url: str | None = None,
         request_timeout: int = 120,
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        effort: str | None = None,
         extra_body: dict[str, Any] | None = None,
         output_type: OutputSpec | None = None,
         output_mode: OutputMode = "auto",
@@ -124,6 +126,8 @@ class ParallelLlmTool:
         self.base_url = base_url
         self.request_timeout = request_timeout
         self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.effort = effort
         self.extra_body = extra_body or {}
 
     def spec(self) -> ToolSpec:
@@ -254,6 +258,8 @@ class ParallelLlmTool:
             base_url=self.base_url,
             timeout=self.request_timeout,
             temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            effort=self.effort,
             extra_body=self.extra_body,
         ), True
 
@@ -286,6 +292,8 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         temperature=parent.config.builtin_parallel_llm_temperature
         if parent.config.builtin_parallel_llm_temperature is not None
         else parent.config.temperature,
+        max_tokens=parent.config.max_tokens,
+        effort=parent.config.effort,
         extra_body=parent.config.extra_body,
     ).spec()
 

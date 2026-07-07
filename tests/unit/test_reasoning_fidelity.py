@@ -23,10 +23,20 @@ from thinharness import (
     ToolSpec,
 )
 from thinharness.projections import trace_input_messages_from_entries, trace_output_messages_from_assistant
-from thinharness.providers import AssistantEntry, ModelSettings, ModelToolCall, ReasoningPart, UserEntry, _openai_supports_encrypted_reasoning
+from thinharness.providers import (
+    AssistantEntry,
+    ModelSettings,
+    ModelToolCall,
+    ReasoningPart,
+    UserEntry,
+    _anthropic_thinking_on_by_default,
+    _openai_supports_encrypted_reasoning,
+)
 
 REASONING_OPENAI_MODEL = "gpt-5-mini"
 THINKING_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "enabled", "budget_tokens": 1024}})
+ADAPTIVE_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "adaptive"}})
+DISABLED_THINKING_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "disabled"}})
 
 
 # --- reasoning-emitting fakes (real-provider-backed, per plan §Tests) -----------------------------
@@ -212,6 +222,45 @@ async def test_anthropic_same_provider_reemits_thinking_first(tmp_path: Path) ->
     assert content[1]["type"] == "tool_use"
 
 
+async def test_anthropic_same_provider_reemits_adaptive_thinking(tmp_path: Path) -> None:
+    source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "let me think", "signature": "sig-1"}])
+    state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
+
+    provider = FakeAnthropicProvider()
+    await _harness(tmp_path, AnthropicMessagesModel("claude-test", provider=provider, settings=ADAPTIVE_SETTINGS)).run("follow-up", resume_from=state)
+
+    content = provider.payloads[0]["messages"][1]["content"]
+    assert content[0] == {"type": "thinking", "thinking": "let me think", "signature": "sig-1"}
+
+
+async def test_anthropic_effort_implies_adaptive_thinking_replay(tmp_path: Path) -> None:
+    source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "let me think", "signature": "sig-1"}])
+    state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
+
+    provider = FakeAnthropicProvider()
+    await _harness(tmp_path, AnthropicMessagesModel("claude-opus-4-8", provider=provider, settings=ModelSettings(effort="high"))).run(
+        "follow-up",
+        resume_from=state,
+    )
+
+    content = provider.payloads[0]["messages"][1]["content"]
+    assert content[0] == {"type": "thinking", "thinking": "let me think", "signature": "sig-1"}
+    assert provider.payloads[0]["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.parametrize("model_name", ["claude-sonnet-5", "claude-test"])
+async def test_anthropic_omitted_thinking_replays_for_default_on_models(tmp_path: Path, model_name: str) -> None:
+    source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "let me think", "signature": "sig-1"}])
+    state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
+
+    provider = FakeAnthropicProvider()
+    await _harness(tmp_path, AnthropicMessagesModel(model_name, provider=provider)).run("follow-up", resume_from=state)
+
+    content = provider.payloads[0]["messages"][1]["content"]
+    assert content[0] == {"type": "thinking", "thinking": "let me think", "signature": "sig-1"}
+    assert "thinking" not in provider.payloads[0]
+
+
 async def test_openrouter_same_provider_reattaches_reasoning_details(tmp_path: Path) -> None:
     state = await _capture_state(tmp_path, OpenRouterModel("openai/test", provider=ReasoningOpenRouterProvider()))
 
@@ -285,16 +334,35 @@ async def test_cross_provider_fallback_to_openrouter_text(tmp_path: Path) -> Non
 # --- 4. anthropic thinking-disabled fallback ---------------------------------------------------
 
 
-async def test_anthropic_same_provider_falls_back_when_thinking_disabled(tmp_path: Path) -> None:
+async def test_anthropic_same_provider_falls_back_for_legacy_omitted_thinking(tmp_path: Path) -> None:
     source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "let me think", "signature": "sig-1"}])
     state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
 
     provider = FakeAnthropicProvider()
-    await _harness(tmp_path, AnthropicMessagesModel("claude-test", provider=provider)).run("follow-up", resume_from=state)
+    await _harness(tmp_path, AnthropicMessagesModel("claude-opus-4-8", provider=provider)).run("follow-up", resume_from=state)
 
     content = provider.payloads[0]["messages"][1]["content"]
     assert content[0] == {"type": "text", "text": "<thinking>\nlet me think\n</thinking>"}
     assert content[1]["type"] == "tool_use"
+    assert not any(block["type"] == "thinking" for block in content)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        DISABLED_THINKING_SETTINGS,
+        ModelSettings(extra_body={"thinking": "adaptive"}),
+    ],
+)
+async def test_anthropic_explicit_non_replay_thinking_config_suppresses_native_blocks(tmp_path: Path, settings: ModelSettings) -> None:
+    source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "let me think", "signature": "sig-1"}])
+    state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
+
+    provider = FakeAnthropicProvider()
+    await _harness(tmp_path, AnthropicMessagesModel("claude-sonnet-5", provider=provider, settings=settings)).run("follow-up", resume_from=state)
+
+    content = provider.payloads[0]["messages"][1]["content"]
+    assert content[0] == {"type": "text", "text": "<thinking>\nlet me think\n</thinking>"}
     assert not any(block["type"] == "thinking" for block in content)
 
 
@@ -318,10 +386,22 @@ async def test_redacted_thinking_dropped_when_thinking_disabled(tmp_path: Path) 
     state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
 
     provider = FakeAnthropicProvider()
-    await _harness(tmp_path, AnthropicMessagesModel("claude-test", provider=provider)).run("follow-up", resume_from=state)
+    await _harness(tmp_path, AnthropicMessagesModel("claude-test", provider=provider, settings=DISABLED_THINKING_SETTINGS)).run("follow-up", resume_from=state)
     # redacted_thinking has no text, so a disabled-thinking resume drops it entirely (no native block, no fallback).
     content = provider.payloads[0]["messages"][1]["content"]
     assert [block["type"] for block in content] == ["tool_use"]
+
+
+async def test_empty_text_signed_thinking_replays_natively(tmp_path: Path) -> None:
+    source = ReasoningAnthropicProvider([{"type": "thinking", "thinking": "", "signature": "sig-empty"}])
+    state = await _capture_state(tmp_path, AnthropicMessagesModel("claude-test", provider=source))
+
+    provider = FakeAnthropicProvider()
+    await _harness(tmp_path, AnthropicMessagesModel("claude-sonnet-5", provider=provider)).run("follow-up", resume_from=state)
+
+    content = provider.payloads[0]["messages"][1]["content"]
+    assert content[0] == {"type": "thinking", "thinking": "", "signature": "sig-empty"}
+    assert content[1]["type"] == "tool_use"
 
 
 # --- 6. multi-part turn ------------------------------------------------------------------------
@@ -428,6 +508,21 @@ def test_reasoning_projects_to_otel_thinking_part() -> None:
 )
 def test_openai_reasoning_detection(model_name: str, expected: bool) -> None:
     assert _openai_supports_encrypted_reasoning(model_name) is expected
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("claude-opus-4-8", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-haiku-4-5", False),
+        ("claude-3-5-haiku-latest", False),
+        ("claude-sonnet-5", True),
+        ("claude-test", True),
+    ],
+)
+def test_anthropic_default_thinking_detection(model_name: str, expected: bool) -> None:
+    assert _anthropic_thinking_on_by_default(model_name) is expected
 
 
 # --- guarded live suite (mirrors the plan §Tests smoke verification) ----------------------------
