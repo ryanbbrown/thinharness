@@ -471,7 +471,30 @@ If skills are configured and skill tools are exposed, the system prompt includes
 
 ## MCP
 
-MCP support is optional. Importing ThinHarness does not require the `mcp` package; using MCP requires the `mcp` extra.
+MCP support is optional. Importing ThinHarness does not require the MCP packages; using MCP requires the `mcp` extra, which installs the official `mcp` SDK and the FastMCP client layer (`fastmcp-slim[client]`, pinned to exactly 3.4.4). FastMCP permits compatibility-affecting changes between minor releases, so upgrade the pin deliberately and re-run the MCP test suite.
+
+`MCPServer` accepts a FastMCP `ClientTransport` as its first argument. That includes `FastMCPTransport`, which connects to an MCP server object living in the same Python process — no subprocess or HTTP hop:
+
+```python
+from fastmcp.client.transports import FastMCPTransport
+from thinharness import Harness, HarnessConfig, MCPServer
+
+
+harness = Harness(HarnessConfig(
+    root=".",
+    mcp_servers=[
+        MCPServer(
+            FastMCPTransport(my_server),
+            id="inprocess",
+            include_tools=["step", "reset_session"],
+        )
+    ],
+))
+```
+
+`MCPServer` accepts only a transport object — not a URL, script path, server object, or configuration dictionary. Once a transport is passed to an `MCPServer`, that wrapper owns the client built on it and closes its transport on the final exit; to share one session, reuse the wrapper rather than passing one stateful transport to several wrappers.
+
+The stdio, SSE, and Streamable HTTP wrappers take command- or URL-based constructors and build the matching FastMCP transport when the connection opens:
 
 ```python
 from thinharness import Harness, HarnessConfig, MCPServerStdio
@@ -492,13 +515,14 @@ harness = Harness(HarnessConfig(
 
 MCP servers connect lazily during harness startup. Discovered MCP tools become normal `ToolSpec` objects in the live harness tool map. Name collisions are rejected; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
 
-Available transports:
+Available wrappers:
 
+- `MCPServer` — any FastMCP `ClientTransport`, including `FastMCPTransport` for in-process servers
 - `MCPServerStdio`
 - `MCPServerSSE`
 - `MCPServerStreamableHTTP`
 
-ThinHarness only turns MCP tools into harness tools. MCP prompts, resources, sampling, OAuth flows, and `.mcp.json` discovery are outside the current scope.
+ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
 
 ## Resume
 

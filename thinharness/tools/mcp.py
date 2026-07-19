@@ -6,16 +6,13 @@ import asyncio
 import copy
 import json
 import re
-from abc import ABC, abstractmethod
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from .base import Json, McpToolInfo, ToolResult, ToolSpec
 
-_SHUTDOWN_GRACE_SECONDS = 3
 _INSTALL_HINT = "Install MCP support with: pip install thinharness[mcp]"
 _MCP_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
@@ -32,36 +29,19 @@ class MCPDependencyError(MCPError):
         self.__cause__ = cause
 
 
-@dataclass
-class _SessionState:
-    """Connection state owned by one background session task."""
+class MCPServer:
+    """One MCP server connection that contributes ToolSpecs to a harness.
 
-    session_task: asyncio.Task[None] | None = None
-    ready_event: asyncio.Event | None = None
-    stop_event: asyncio.Event | None = None
-    nesting_counter: int = 0
-    client: Any | None = None
-    connect_error: BaseException | None = None
-
-    async def force_close(self, task: asyncio.Task[None]) -> None:
-        """Cancel a session task and bound cleanup time."""
-        task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=_SHUTDOWN_GRACE_SECONDS)
-        except TimeoutError:
-            return
-        except asyncio.CancelledError:
-            if current_task := asyncio.current_task():
-                if current_task.cancelling():
-                    raise
-            return
-
-
-class MCPServer(ABC):
-    """One MCP server connection that contributes ToolSpecs to a harness."""
+    Accepts a FastMCP ``ClientTransport`` and owns the FastMCP client built on
+    it: connections open lazily, nested and concurrent entries share one
+    session, and the final context exit closes the transport. Do not reuse one
+    stateful transport object across several ``MCPServer`` wrappers; reuse the
+    same wrapper when a session should be shared.
+    """
 
     def __init__(
         self,
+        transport: Any,
         *,
         tool_prefix: str | None = None,
         timeout: float = 5.0,
@@ -77,8 +57,10 @@ class MCPServer(ABC):
         self.exclude_tools = list(exclude_tools) if exclude_tools is not None else None
         self._id = id
         self._resolved_id: str | None = None
-        self._session_state = _SessionState()
-        self._enter_lock = asyncio.Lock()
+        self._transport = transport
+        self._client: Any | None = None
+        if type(self) is MCPServer:
+            _validate_transport(transport)
 
     @property
     def id(self) -> str:
@@ -91,72 +73,51 @@ class MCPServer(ABC):
         existing_counts[base_id] = existing_counts.get(base_id, 0) + 1
         self._resolved_id = base_id if existing_counts[base_id] == 1 else f"{base_id}-{existing_counts[base_id]}"
 
-    @abstractmethod
     def _default_id(self) -> str:
-        """Return a readable default id for this transport."""
+        """Derive a readable default id from the transport class name."""
+        return _MCP_NAME_RE.sub("_", type(self._transport).__name__) or "mcp"
 
-    @abstractmethod
-    def _client_streams(self) -> AbstractAsyncContextManager[Any]:
-        """Return the transport streams context manager."""
+    def _resolve_transport(self) -> Any:
+        """Return the FastMCP transport backing this server."""
+        _validate_transport(self._transport)
+        return self._transport
+
+    def _ensure_client(self) -> Any:
+        """Build the FastMCP client on first use and reuse it afterwards."""
+        if self._client is None:
+            client_type = _import_fastmcp_client()
+            self._client = client_type(self._resolve_transport(), timeout=self.read_timeout, init_timeout=self.timeout)
+        return self._client
 
     async def __aenter__(self) -> MCPServer:
-        """Open or share the MCP session."""
-        async with self._enter_lock:
-            state = self._session_state
-            if state.session_task is None or state.session_task.done():
-                state.stop_event = asyncio.Event()
-                state.ready_event = asyncio.Event()
-                state.connect_error = None
-                state.client = None
-                state.session_task = asyncio.create_task(self._session_runner())
-                try:
-                    await state.ready_event.wait()
-                except BaseException:
-                    task = state.session_task
-                    if state.stop_event is not None:
-                        state.stop_event.set()
-                    await state.force_close(task)
-                    state.session_task = None
-                    state.client = None
-                    raise
-                if state.connect_error is not None:
-                    state.session_task = None
-                    err = state.connect_error
-                    state.connect_error = None
-                    raise err
-            state.nesting_counter += 1
+        """Open or share the FastMCP client connection."""
+        await self._ensure_client().__aenter__()
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        """Release one MCP session reference and close on the last exit."""
-        task: asyncio.Task[None] | None = None
-        async with self._enter_lock:
-            state = self._session_state
-            if state.nesting_counter == 0:
-                raise ValueError("MCPServer.__aexit__ called more times than __aenter__")
-            state.nesting_counter -= 1
-            if state.nesting_counter > 0 or state.session_task is None:
-                return
-            if state.stop_event is not None:
-                state.stop_event.set()
-            task = state.session_task
-            state.session_task = None
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=_SHUTDOWN_GRACE_SECONDS)
-        except TimeoutError:
-            await self._session_state.force_close(task)
-        except asyncio.CancelledError:
-            await self._session_state.force_close(task)
-            raise
+    async def __aexit__(self, exc_type: object = None, exc_val: object = None, exc_tb: object = None) -> None:
+        """Release one connection reference; the final exit closes the transport.
+
+        The final-close time bound lives in FastMCP's ``client_disconnect_timeout``
+        setting (default 5s); re-check it when bumping the fastmcp pin.
+        """
+        client = self._client
+        if client is None:
+            return
+        task = asyncio.current_task()
+        pending_cancels = task.cancelling() if task is not None else 0
+        await client.__aexit__(exc_type, exc_val, exc_tb)
+        # FastMCP suppresses a CancelledError delivered while it awaits shutdown;
+        # detect the new cancel request after cleanup and honor it.
+        if task is not None and task.cancelling() > pending_cancels:
+            raise asyncio.CancelledError
 
     async def list_tools(self) -> list[ToolSpec]:
         """Discover and convert the MCP server's current tool snapshot."""
         async with self:
-            session = self._session()
-            result = await session.list_tools()
+            tools = await self._ensure_client().list_tools()
         seen: dict[str, str] = {}
         specs: list[ToolSpec] = []
-        for tool in result.tools:
+        for tool in tools:
             original_name = str(tool.name)
             if self.exclude_tools is not None and original_name in self.exclude_tools:
                 continue
@@ -184,14 +145,19 @@ class MCPServer(ABC):
     async def call_tool(self, name: str, arguments: Json) -> ToolResult:
         """Call one MCP tool and normalize its result."""
         base_metadata = {"source": "mcp", "mcp_server_id": self.id, "mcp_tool_name": name}
+        failure_types = _mcp_failure_types()
         try:
             async with self:
-                result = await self._session().call_tool(name, arguments=arguments)
-        except MCPDependencyError:
-            raise
-        except _mcp_error_type() as exc:
+                result = await self._ensure_client().call_tool_mcp(name, arguments)
+        except failure_types as exc:
             return ToolResult(False, str(exc), {**base_metadata, "error_type": "MCPError"})
-        except _mcp_transport_error_types() as exc:
+        except (RuntimeError, ExceptionGroup) as exc:
+            # FastMCP wraps transport failures; normalize only when the cause
+            # chain contains a known failure so programming bugs still propagate.
+            # ExceptionGroup (not BaseExceptionGroup) keeps groups that carry
+            # cancellation or other BaseExceptions propagating structurally.
+            if _find_known_failure(exc, failure_types) is None:
+                raise
             return ToolResult(False, str(exc), {**base_metadata, "error_type": "MCPError"})
         if result.isError is True:
             return ToolResult(
@@ -206,49 +172,13 @@ class MCPServer(ABC):
             content = _content_to_text(result.content)
         return ToolResult(True, content, base_metadata)
 
-    async def _session_runner(self) -> None:
-        """Own transport and ClientSession lifecycle from a single task."""
-        state = self._session_state
-        ready_event = state.ready_event
-        stop_event = state.stop_event
-        assert ready_event is not None
-        assert stop_event is not None
-        client = None
-        try:
-            ClientSession = _client_session_type()
-            async with AsyncExitStack() as stack:
-                streams = await stack.enter_async_context(self._client_streams())
-                read_stream, write_stream = streams[0], streams[1]
-                session = ClientSession(
-                    read_stream=read_stream,
-                    write_stream=write_stream,
-                    read_timeout_seconds=timedelta(seconds=self.read_timeout),
-                )
-                client = await stack.enter_async_context(session)
-                async with asyncio.timeout(self.timeout):
-                    await client.initialize()
-                state.client = client
-                ready_event.set()
-                await stop_event.wait()
-        except BaseException as exc:
-            # Post-ready shutdown errors are harmless; the next first-entry path resets connect_error before respawning.
-            if state.session_task is asyncio.current_task():
-                state.connect_error = exc
-        finally:
-            if state.client is client:
-                state.client = None
-            ready_event.set()
-
-    def _session(self) -> Any:
-        """Return the active ClientSession or raise if disconnected."""
-        client = self._session_state.client
-        if client is None:
-            raise MCPError(f"{type(self).__name__} is not connected")
-        return client
-
 
 class MCPServerStdio(MCPServer):
-    """MCP server reached through a stdio subprocess."""
+    """MCP server reached through a stdio subprocess.
+
+    The final context exit terminates the child process; entering again
+    starts a new one.
+    """
 
     def __init__(
         self,
@@ -259,7 +189,7 @@ class MCPServerStdio(MCPServer):
         cwd: str | Path | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(None, **kwargs)
         self.command = command
         self.args = list(args or [])
         self.env = dict(env) if env is not None else None
@@ -269,20 +199,18 @@ class MCPServerStdio(MCPServer):
         """Return command and args as the default id."""
         return " ".join([self.command, *self.args])
 
-    def _client_streams(self) -> AbstractAsyncContextManager[Any]:
-        """Create stdio streams for this server."""
-        try:
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-        except ImportError as exc:
-            raise MCPDependencyError(exc) from exc
-        return stdio_client(StdioServerParameters(command=self.command, args=self.args, env=self.env, cwd=self.cwd))
+    def _resolve_transport(self) -> Any:
+        """Build a stdio transport whose final exit terminates the child."""
+        transports = _import_fastmcp_transports()
+        cwd = str(self.cwd) if self.cwd is not None else None
+        return transports.StdioTransport(self.command, self.args, env=self.env, cwd=cwd, keep_alive=False)
 
 
 class MCPServerSSE(MCPServer):
     """MCP server reached through SSE."""
 
     def __init__(self, url: str, *, headers: dict[str, str] | None = None, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+        super().__init__(None, **kwargs)
         self.url = url
         self.headers = dict(headers) if headers is not None else None
 
@@ -290,20 +218,22 @@ class MCPServerSSE(MCPServer):
         """Return the URL as the default id."""
         return self.url
 
-    def _client_streams(self) -> AbstractAsyncContextManager[Any]:
-        """Create SSE streams for this server."""
-        try:
-            from mcp.client.sse import sse_client
-        except ImportError as exc:
-            raise MCPDependencyError(exc) from exc
-        return sse_client(self.url, headers=self.headers, timeout=self.timeout, sse_read_timeout=self.read_timeout)
+    def _resolve_transport(self) -> Any:
+        """Build an SSE transport with separate connect and read limits."""
+        transports = _import_fastmcp_transports()
+        return transports.SSETransport(
+            self.url,
+            headers=self.headers,
+            sse_read_timeout=self.read_timeout,
+            httpx_client_factory=_httpx_factory(self.timeout, self.read_timeout),
+        )
 
 
 class MCPServerStreamableHTTP(MCPServer):
     """MCP server reached through streamable HTTP."""
 
     def __init__(self, url: str, *, headers: dict[str, str] | None = None, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+        super().__init__(None, **kwargs)
         self.url = url
         self.headers = dict(headers) if headers is not None else None
 
@@ -311,42 +241,100 @@ class MCPServerStreamableHTTP(MCPServer):
         """Return the URL as the default id."""
         return self.url
 
-    def _client_streams(self) -> AbstractAsyncContextManager[Any]:
-        """Create streamable HTTP streams for this server."""
-        try:
-            from mcp.client.streamable_http import streamablehttp_client
-        except ImportError as exc:
-            raise MCPDependencyError(exc) from exc
-        return streamablehttp_client(self.url, headers=self.headers, timeout=self.timeout, sse_read_timeout=self.read_timeout)
+    def _resolve_transport(self) -> Any:
+        """Build a streamable HTTP transport with separate connect and read limits."""
+        # Streamable HTTP read limits come from the httpx factory and the
+        # client-level MCP request timeout; the transport has no read parameter.
+        transports = _import_fastmcp_transports()
+        return transports.StreamableHttpTransport(
+            self.url,
+            headers=self.headers,
+            httpx_client_factory=_httpx_factory(self.timeout, self.read_timeout),
+        )
 
 
-def _client_session_type() -> type[Any]:
-    """Import ClientSession lazily."""
+def _validate_transport(transport: Any) -> None:
+    """Reject non-transport inputs once the optional dependency is available."""
     try:
-        from mcp import ClientSession
+        from fastmcp.client.transports import ClientTransport
+    except ImportError:
+        return
+    if not isinstance(transport, ClientTransport):
+        raise TypeError(
+            f"MCPServer requires a fastmcp ClientTransport, got {type(transport).__name__}; "
+            "wrap an in-process server with fastmcp.client.transports.FastMCPTransport"
+        )
+
+
+def _import_fastmcp_client() -> type[Any]:
+    """Import the FastMCP Client class lazily."""
+    try:
+        from fastmcp import Client
     except ImportError as exc:
         raise MCPDependencyError(exc) from exc
-    return ClientSession
+    return Client
 
 
-def _mcp_error_type() -> type[BaseException]:
-    """Import McpError lazily."""
+def _import_fastmcp_transports() -> Any:
+    """Import the FastMCP client transports module lazily."""
     try:
+        from fastmcp.client import transports
+    except ImportError as exc:
+        raise MCPDependencyError(exc) from exc
+    return transports
+
+
+def _httpx_factory(connect_timeout: float, read_timeout: float) -> Any:
+    """Build an httpx client factory carrying separate connect and read limits."""
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: Any = None,
+        auth: Any = None,
+        follow_redirects: bool = True,
+    ) -> httpx.AsyncClient:
+        """Create the transport HTTP client with this server's timeouts."""
+        return httpx.AsyncClient(
+            headers=headers,
+            auth=auth,
+            follow_redirects=follow_redirects,
+            timeout=httpx.Timeout(connect_timeout, read=read_timeout),
+        )
+
+    return factory
+
+
+def _mcp_failure_types() -> tuple[type[BaseException], ...]:
+    """Return the MCP protocol and transport failure types to normalize."""
+    try:
+        from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
         from mcp.shared.exceptions import McpError
     except ImportError as exc:
         raise MCPDependencyError(exc) from exc
-    return McpError
+    return (McpError, ConnectionError, TimeoutError, BrokenResourceError, ClosedResourceError, EndOfStream, httpx.HTTPError)
 
 
-def _mcp_transport_error_types() -> tuple[type[BaseException], ...]:
-    """Return transport exceptions that should become MCP tool errors."""
-    errors: list[type[BaseException]] = [ConnectionError, TimeoutError]
-    try:
-        from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
-    except ImportError:
-        return tuple(errors)
-    errors.extend([BrokenResourceError, ClosedResourceError, EndOfStream])
-    return tuple(errors)
+def _find_known_failure(exc: BaseException, failure_types: tuple[type[BaseException], ...]) -> BaseException | None:
+    """Return the first known MCP failure in an exception's group and cause tree.
+
+    Deliberately walks explicit ``__cause__`` links only, not ``__context__``:
+    a bug raised while handling a transport failure keeps that failure as
+    implicit context, and normalizing it would hide the programming error.
+    """
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, failure_types):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+    return None
 
 
 def _make_tool_handler(server: MCPServer, tool_name: str) -> Any:

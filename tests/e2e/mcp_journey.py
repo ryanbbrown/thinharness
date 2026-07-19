@@ -74,7 +74,7 @@ def _should_skip(model: str) -> bool:
     if os.getenv("CI"):
         print("SKIP mcp_journey: CI is set")
         return True
-    if importlib.util.find_spec("mcp") is None:
+    if importlib.util.find_spec("mcp") is None or importlib.util.find_spec("fastmcp") is None:
         print("SKIP mcp_journey: install MCP support with `uv sync --extra mcp`")
         return True
     provider = model.split(":", 1)[0]

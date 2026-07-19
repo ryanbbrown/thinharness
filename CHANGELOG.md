@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.4 - 2026-07-19
+
+- Added in-process MCP server support: `MCPServer` is now a concrete class that accepts any FastMCP `ClientTransport`, including `FastMCPTransport` for an MCP server object in the same Python process.
+- Changed the MCP connection layer to the FastMCP client (`fastmcp-slim[client]==3.4.4`, added to the `mcp` extra); ThinHarness no longer maintains its own MCP session lifecycle. `MCPServerStdio`, `MCPServerSSE`, and `MCPServerStreamableHTTP` keep their existing constructors, ids, timeout semantics, tool filtering, and error envelopes. The final-close bound now comes from FastMCP's `client_disconnect_timeout` setting (default 5 seconds, previously a fixed 3 seconds).
+
 ## 0.5.3 - 2026-07-07
 
 - Added provider-neutral `max_tokens` and `effort` settings, raised Anthropic's default `max_tokens` to 16384, and translated those settings to each built-in provider's payload dialect.

@@ -40,7 +40,7 @@ I started building ThinHarness after running into this gap in practice. Filesyst
   The exact tokei command + upstream commit hash for each upstream row is in an
   HTML comment above the row, so the number is reproducible. Upstream rows were
   measured 2026-06-22 against the pinned commits; ThinHarness was measured
-  from this working tree on 2026-07-07.
+  from this working tree on 2026-07-19.
 -->
 
 <div align="center">
@@ -58,10 +58,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-07 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-19 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,935</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>7,912</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -281,7 +281,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 - **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and retry settings.
 - **Skills:** explicit `skill_read` and `skill_run` tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.
 - **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
-- **MCP:** optional MCP client support with lazy tool discovery and collision checks.
+- **MCP:** optional MCP support built on the FastMCP client, including in-process servers via `FastMCPTransport`, with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Human approvals:** mark custom tools as approval-required so a run pauses before side effects, returns pending call details plus resume state, then continues after an approve/reject decision.
 - **Event streaming:** async coarse-grained run, model, tool, retry, limit, and subagent events for workflow visibility.
