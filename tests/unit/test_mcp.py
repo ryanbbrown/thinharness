@@ -814,7 +814,9 @@ def slow() -> str:
 if __name__ == "__main__":
     mcp.run()
 """
-    server = MCPServerStdio(sys.executable, ["-c", server_code], read_timeout=0.5)
+    # The session read timeout also bounds the MCP initialize request, so it
+    # must leave room for child startup on slow CI runners.
+    server = MCPServerStdio(sys.executable, ["-c", server_code], read_timeout=3.0)
 
     async with server:
         started = time.monotonic()
@@ -823,7 +825,7 @@ if __name__ == "__main__":
 
     assert result.ok is False
     assert result.metadata["error_type"] == "MCPError"
-    assert elapsed < 5
+    assert elapsed < 15
 
 
 async def test_stdio_init_stall_is_bounded() -> None:
