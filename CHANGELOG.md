@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-08-07
 
 - Added automatic retries with bounded exponential backoff, jitter, and `Retry-After` support for transient OpenAI, Anthropic, and OpenRouter request failures. Configure retries with `HarnessConfig.request_retries` and `request_retry_backoff`.
 - **Breaking:** Removed the separate `parallel_llm_max_attempts` and `ParallelLlmTool.max_attempts` settings. Parallel LLM requests now use the shared provider transport retry policy without multiplying attempt budgets.
