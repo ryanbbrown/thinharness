@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 from fakes import FailingSession, ScriptedModel, ScriptedSession, echo_tool
 
@@ -15,6 +16,8 @@ from thinharness import (
     ModelRequestStartedEvent,
     ModelRetry,
     ModelRetryEvent,
+    OpenAIProvider,
+    OpenAIResponsesModel,
     RunCompletedEvent,
     RunFailedEvent,
     RunStartedEvent,
@@ -166,6 +169,34 @@ async def test_stream_options_keep_model_text_visible(tmp_path: Path) -> None:
 
     message = next(event for event in events if isinstance(event, ModelMessageEvent))
     assert message.text == "visible"
+
+
+async def test_recovered_provider_retry_is_one_logical_stream_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="temporary", request=request)
+        return httpx.Response(200, json={"id": "resp_1", "output_text": "done"}, request=request)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        model = OpenAIResponsesModel(
+            "test-model",
+            provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
+        )
+        harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model)
+        events = await _collect_events(harness, "go")
+
+    assert calls == 2
+    assert len([event for event in events if isinstance(event, ModelRequestStartedEvent)]) == 1
+    assert len([event for event in events if isinstance(event, ModelMessageEvent)]) == 1
+    assert next(event.result for event in events if isinstance(event, RunCompletedEvent)).usage.model_requests == 1
 
 
 async def test_stream_limit_warning_events(tmp_path: Path) -> None:

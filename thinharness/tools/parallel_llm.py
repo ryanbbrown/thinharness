@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import random
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -27,10 +26,9 @@ from .base import Json, PathPolicy, PathValidationError, StrictArgs, ToolResult,
 
 if TYPE_CHECKING:
     from ..core import Harness
-    from ..providers import Model, ProviderError
+    from ..providers import Model
 
 
-RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 PROMPTS_FILE_ERROR = "source.path must point to a non-empty JSON array of strings"
 DEFAULT_PARALLEL_LLM_DESCRIPTION = _defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION
 DEFAULT_PARALLEL_LLM_INSTRUCTIONS = _defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS
@@ -75,7 +73,7 @@ class ParallelLlmArgs(StrictArgs):
 
 
 class ParallelLlmTool:
-    """Configurable normal ToolSpec wrapper for parallel one-shot LLM calls."""
+    """Configurable one-shot LLM tool; supplied model objects own their provider settings."""
 
     def __init__(
         self,
@@ -89,10 +87,11 @@ class ParallelLlmTool:
         read_paths: list[str | Path] | None = None,
         write_paths: list[str | Path] | None = None,
         max_prompts: int = 100,
-        max_attempts: int = 4,
         api_key: str | None = None,
         base_url: str | None = None,
         request_timeout: int = 120,
+        request_retries: int = 3,
+        request_retry_backoff: float = 1.0,
         temperature: float | None = None,
         max_tokens: int | None = None,
         effort: str | None = None,
@@ -101,6 +100,9 @@ class ParallelLlmTool:
         output_mode: OutputMode = "auto",
         output_retries: int = 1,
     ) -> None:
+        from ..providers import _validate_retry_settings
+
+        _validate_retry_settings(request_retries, request_retry_backoff)
         self.name = name
         self.description = description
         self.instructions = instructions
@@ -109,14 +111,11 @@ class ParallelLlmTool:
         self.write_policy = PathPolicy(self.root, write_paths, "write")
         if max_prompts < 1:
             raise ValueError("max_prompts must be >= 1")
-        if max_attempts < 1 or max_attempts > 10:
-            raise ValueError("max_attempts must be between 1 and 10")
         if output_retries < 0:
             raise ValueError("output_retries must be >= 0")
         if output_mode not in OUTPUT_MODES:
             raise ValueError(f"unknown output_mode: {output_mode}")
         self.max_prompts = max_prompts
-        self.max_attempts = max_attempts
         self.output_type: OutputSpec | None = output_type
         self.output_mode: OutputMode = output_mode
         self.output_retries = output_retries
@@ -125,6 +124,8 @@ class ParallelLlmTool:
         self.api_key = api_key
         self.base_url = base_url
         self.request_timeout = request_timeout
+        self.request_retries = request_retries
+        self.request_retry_backoff = request_retry_backoff
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.effort = effort
@@ -175,19 +176,12 @@ class ParallelLlmTool:
             model_requests = 0
 
             async def request_turn(request_prompt: str):
-                """Run one provider request with provider-level retry."""
+                """Run one logical provider request."""
                 nonlocal model_requests
-                for attempt in range(self.max_attempts):
-                    try:
-                        async with sem:
-                            session = batch_model.new_session()
-                            model_requests += 1
-                            return await session.start(request_prompt, constants)
-                    except ProviderError as exc:
-                        if attempt == self.max_attempts - 1 or not _is_retryable(exc):
-                            raise
-                        await _sleep_retry(_retry_delay(attempt))
-                raise AssertionError("unreachable parallel_llm provider retry loop exit")
+                async with sem:
+                    session = batch_model.new_session()
+                    model_requests += 1
+                    return await session.start(request_prompt, constants)
 
             async def run_one(index: int, prompt: str) -> Json:
                 """Run one prompt with retry and return a sparse result entry."""
@@ -257,6 +251,8 @@ class ParallelLlmTool:
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.request_timeout,
+            request_retries=self.request_retries,
+            request_retry_backoff=self.request_retry_backoff,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             effort=self.effort,
@@ -284,11 +280,12 @@ def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
         read_paths=parent.config.read_paths,
         write_paths=parent.config.write_paths,
         max_prompts=parent.config.parallel_llm_max_prompts,
-        max_attempts=parent.config.parallel_llm_max_attempts,
         instructions=_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
         api_key=api_key,
         base_url=base_url,
         request_timeout=parent.config.request_timeout,
+        request_retries=parent.config.request_retries,
+        request_retry_backoff=parent.config.request_retry_backoff,
         temperature=parent.config.builtin_parallel_llm_temperature
         if parent.config.builtin_parallel_llm_temperature is not None
         else parent.config.temperature,
@@ -337,24 +334,6 @@ def _failure_entry(index: int, decision: OutputTurnDecision) -> Json:
     """Build one structured-output validation failure entry."""
     assert decision.error is not None, "structured-output validation failure requires error text"
     return {"index": index, "ok": False, "error": f"output validation failed: {decision.error}"}
-
-
-def _is_retryable(exc: ProviderError) -> bool:
-    """Return whether a provider error should be retried."""
-    if exc.status_code is None:
-        return str(exc).startswith("provider request failed:")
-    return exc.status_code in RETRYABLE_STATUS
-
-
-def _retry_delay(attempt: int) -> float:
-    """Return seconds to wait before the next attempt."""
-    base = 2 ** attempt
-    return base + random.uniform(0, base * 0.25)
-
-
-async def _sleep_retry(delay: float) -> None:
-    """Sleep for the computed retry delay."""
-    await asyncio.sleep(delay)
 
 
 def _atomic_write_json(output_path: Path, file_text: str) -> None:

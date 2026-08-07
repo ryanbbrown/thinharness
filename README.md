@@ -40,7 +40,7 @@ I started building ThinHarness after running into this gap in practice. Filesyst
   The exact tokei command + upstream commit hash for each upstream row is in an
   HTML comment above the row, so the number is reproducible. Upstream rows were
   measured 2026-06-22 against the pinned commits; ThinHarness was measured
-  from this working tree on 2026-07-19.
+  from this working tree on 2026-08-07.
 -->
 
 <div align="center">
@@ -58,10 +58,10 @@ I started building ThinHarness after running into this gap in practice. Filesyst
     </tr>
   </thead>
   <tbody>
-    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-07-19 -->
+    <!-- LOC: tokei thinharness/ -t Python  ·  ryanbbrown/thinharness working tree, measured 2026-08-07 -->
     <tr>
       <td align="left" bgcolor="#f6f8fa"><b>ThinHarness</b></td>
-      <td align="right" bgcolor="#f6f8fa"><b>7,912</b></td>
+      <td align="right" bgcolor="#f6f8fa"><b>8,035</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
       <td align="center" bgcolor="#f6f8fa"><b>✅</b></td>
@@ -254,6 +254,10 @@ asyncio.run(main())
 
 There's a synchronous wrapper too: `Harness(...).run_sync(...)`.
 
+Built-in provider requests retry transient HTTP failures three times by default. Configure the shared policy with `request_retries` and `request_retry_backoff` on `HarnessConfig`.
+
+If an injected `http_client` owns retries, set `request_retries=0` on the provider. This prevents nested retry policies from multiplying attempts.
+
 For workflow visibility, use `Harness.stream(...)`:
 
 ```python
@@ -278,7 +282,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
-- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and retry settings.
+- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and provider request settings.
 - **Skills:** explicit `skill_read` and `skill_run` tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.
 - **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
 - **MCP:** optional MCP support built on the FastMCP client, including in-process servers via `FastMCPTransport`, with lazy tool discovery and collision checks.

@@ -67,7 +67,6 @@ def main() -> None:
             model=CUSTOM_TOOL_MODEL,
             root=root,
             max_prompts=4,
-            max_attempts=1,
             output_type=ColorCount,
             output_mode="prompted",
         ).spec()

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added automatic retries with bounded exponential backoff, jitter, and `Retry-After` support for transient OpenAI, Anthropic, and OpenRouter request failures. Configure retries with `HarnessConfig.request_retries` and `request_retry_backoff`.
+- **Breaking:** Removed the separate `parallel_llm_max_attempts` and `ParallelLlmTool.max_attempts` settings. Parallel LLM requests now use the shared provider transport retry policy without multiplying attempt budgets.
+
 ## 0.5.4 - 2026-07-19
 
 - Added in-process MCP server support: `MCPServer` is now a concrete class that accepts any FastMCP `ClientTransport`, including `FastMCPTransport` for an MCP server object in the same Python process.

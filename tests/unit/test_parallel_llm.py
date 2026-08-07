@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ToolOutput
-from thinharness.providers import ModelSettings, OpenAIResponsesModel, ProviderError
+from thinharness.providers import ModelSettings, OpenAIProvider, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
 from thinharness.tools.parallel_llm import (
     DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
@@ -17,8 +18,6 @@ from thinharness.tools.parallel_llm import (
     ParallelLlmArgs,
     ParallelLlmTool,
     _atomic_write_json,
-    _is_retryable,
-    _retry_delay,
     create_parallel_llm_tool,
 )
 
@@ -282,41 +281,14 @@ async def test_parallel_llm_enforces_path_policies_and_prompt_cap(tmp_path: Path
     assert model.calls == []
 
 
-async def test_parallel_llm_retries_retryable_errors_and_counts_attempts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    sleeps: list[float] = []
-
-    async def fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr("thinharness.tools.parallel_llm._sleep_retry", fake_sleep)
-    monkeypatch.setattr("thinharness.tools.parallel_llm._retry_delay", lambda attempt: float(attempt + 1))
-    model = BatchModel(outcomes=[
-        ProviderError("provider error 429: slow", status_code=429),
-        ProviderError("provider request failed: offline"),
-        "ok",
-    ])
-    parent = _parent(tmp_path, model, parallel_llm_max_attempts=3)
+async def test_parallel_llm_does_not_retry_custom_model_sessions(tmp_path: Path) -> None:
+    model = BatchModel(outcomes=[ProviderError("provider error 429: slow", status_code=429), "unused"])
+    parent = _parent(tmp_path, model)
 
     result = await _call_parallel(parent, _inline(["x"]))
 
-    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": "ok"}]
-    assert result["payload"]["model_requests"] == 3
-    assert result["metadata"]["model_requests"] == 3
-    assert sleeps == [1.0, 2.0]
-    assert model.session_requests == 3
-
-
-async def test_parallel_llm_fast_fails_non_retryable_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    async def fail_sleep(delay: float) -> None:
-        raise AssertionError("should not sleep")
-
-    monkeypatch.setattr("thinharness.tools.parallel_llm._sleep_retry", fail_sleep)
-    model = BatchModel(outcomes=[ProviderError("provider error 401: auth", status_code=401)])
-    parent = _parent(tmp_path, model, parallel_llm_max_attempts=3)
-
-    result = await _call_parallel(parent, _inline(["x"]))
-
-    assert result["payload"]["results"] == [{"index": 0, "ok": False, "error": "provider error 401: auth"}]
+    assert result["payload"]["results"] == [{"index": 0, "ok": False, "error": "provider error 429: slow"}]
+    assert result["payload"]["model_requests"] == 1
     assert model.session_requests == 1
 
 
@@ -615,15 +587,49 @@ def test_atomic_write_json_cleans_temp_file_on_error(monkeypatch: pytest.MonkeyP
     assert list(tmp_path.glob(".results.json.*.tmp")) == []
 
 
-def test_retry_classification_and_delay_bounds() -> None:
-    assert _is_retryable(ProviderError("provider error 429", status_code=429))
-    assert _is_retryable(ProviderError("provider error 503", status_code=503))
-    assert _is_retryable(ProviderError("provider request failed: offline"))
-    assert not _is_retryable(ProviderError("provider error 401", status_code=401))
-    assert not _is_retryable(ProviderError("OPENAI_API_KEY is required for OpenAI"))
-    for attempt in range(3):
-        delay = _retry_delay(attempt)
-        assert 2**attempt <= delay <= 2**attempt * 1.25
+def test_parallel_llm_tool_validates_request_retry_settings(tmp_path: Path) -> None:
+    for kwargs in (
+        {"request_retries": -1},
+        {"request_retries": 11},
+        {"request_retry_backoff": -0.1},
+        {"request_retry_backoff": float("inf")},
+        {"request_retry_backoff": float("nan")},
+    ):
+        with pytest.raises(ValueError):
+            ParallelLlmTool(model="openai:test", root=tmp_path, **kwargs)
+
+    assert ParallelLlmTool(model="openai:test", root=tmp_path, request_retries=0).request_retries == 0
+    assert ParallelLlmTool(model="openai:test", root=tmp_path, request_retries=10).request_retries == 10
+
+
+async def test_parallel_llm_builtin_provider_uses_one_transport_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, text="temporary", request=request)
+        return httpx.Response(200, json={"id": "response", "output_text": "done"}, request=request)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        model = OpenAIResponsesModel(
+            "test-model",
+            provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
+        )
+        tool = ParallelLlmTool(model=model, root=tmp_path)
+        result = await _call_custom_tool(tool, _inline(["x"]))
+
+    assert calls == 2
+    assert result["payload"]["results"] == [{"index": 0, "ok": True, "result": "done"}]
+    assert result["payload"]["model_requests"] == 1
 
 
 def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> None:
@@ -637,6 +643,8 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
         api_key="key",
         base_url="https://example.test",
         request_timeout=7,
+        request_retries=2,
+        request_retry_backoff=0.5,
         temperature=0.3,
         max_tokens=2048,
         effort="medium",
@@ -653,6 +661,8 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
     assert model.provider.api_key == "key"
     assert model.provider.base_url == "https://example.test"
     assert model.provider.timeout == 7
+    assert model.provider.request_retries == 2
+    assert model.provider.request_retry_backoff == 0.5
     assert model.settings == ModelSettings(temperature=0.3, max_tokens=2048, effort="medium", extra_body={"seed": 1})
 
 
@@ -673,6 +683,8 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
         base_url="https://example.test",
         max_tokens=4096,
         effort="low",
+        request_retries=2,
+        request_retry_backoff=0.25,
         builtin_parallel_llm_model="openai:gpt-cheap",
         builtin_parallel_llm_temperature=0.2,
     )
@@ -686,6 +698,8 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
     assert captured["kwargs"]["temperature"] == 0.2
     assert captured["kwargs"]["max_tokens"] == 4096
     assert captured["kwargs"]["effort"] == "low"
+    assert captured["kwargs"]["request_retries"] == 2
+    assert captured["kwargs"]["request_retry_backoff"] == 0.25
 
 
 def test_parallel_llm_builtin_selection(tmp_path: Path) -> None:

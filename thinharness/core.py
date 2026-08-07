@@ -119,6 +119,8 @@ class HarnessConfig(BaseModel):
     max_tool_calls: int | None = None
     strict_hooks: bool = False
     request_timeout: int = 120
+    request_retries: int = Field(default=3, ge=0, le=10)
+    request_retry_backoff: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     max_read_chars: int = 40_000
     max_read_bytes: int = 1_000_000
     max_tool_chars: int = 40_000
@@ -143,7 +145,6 @@ class HarnessConfig(BaseModel):
     builtin_parallel_llm_model: str | None = None
     builtin_parallel_llm_temperature: float | None = None
     parallel_llm_max_prompts: int = Field(default=100, ge=1)
-    parallel_llm_max_attempts: int = Field(default=4, ge=1, le=10)
     mcp_servers: list[MCPServer] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -182,6 +183,8 @@ class Harness:
             api_key=self.config.api_key,
             base_url=self.config.base_url,
             timeout=self.config.request_timeout,
+            request_retries=self.config.request_retries,
+            request_retry_backoff=self.config.request_retry_backoff,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             effort=self.config.effort,

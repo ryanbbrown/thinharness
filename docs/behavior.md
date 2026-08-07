@@ -127,6 +127,24 @@ Provider-neutral request settings let callers tune output length and reasoning d
 - PROVIDER-SETTINGS-2: A directly constructed `AnthropicMessagesModel(max_tokens=...)` overrides `ModelSettings.max_tokens`; a top-level `extra_body["max_tokens"]` overrides both because tuning keys are applied before `extra_body`.
 - PROVIDER-SETTINGS-3: `HarnessConfig.effort` and `ModelSettings.effort` pass through as provider-neutral strings. OpenAI Responses and OpenRouter send `reasoning: {"effort": ...}`; Anthropic sends `output_config.effort` and injects adaptive thinking unless `extra_body` supplies its own top-level `thinking` key.
 - PROVIDER-SETTINGS-4: The harness does not client-validate provider/model-specific `effort`, `temperature`, or thinking combinations. Invalid combinations surface as provider API errors.
+- PROVIDER-SETTINGS-5: `HarnessConfig.request_timeout` applies independently to every built-in provider transport attempt, including retry attempts.
+
+## Provider Request Retries
+
+### Purpose
+
+Built-in provider requests recover from transient HTTP failures without repeating model-session mutations or consuming another logical model request.
+
+### Requirements
+
+- PROVIDER-RETRY-1: Every built-in OpenAI, Anthropic, and OpenRouter HTTP request permits three retries by default after the first attempt. `request_retries` accepts 0 through 10, and `request_retry_backoff` accepts non-negative seconds; direct provider constructors enforce the same bounds as `HarnessConfig`.
+- PROVIDER-RETRY-2: HTTP 408, 409, 425, 429, all 5xx responses, `httpx.TimeoutException`, `httpx.NetworkError`, and `httpx.RemoteProtocolError` are retryable. Other 4xx responses, other HTTP errors, authentication failures, invalid JSON, response validation failures, and arbitrary custom model failures are not retryable.
+- PROVIDER-RETRY-3: Retry delay uses `request_retry_backoff * 2**retry_index` plus up to 25 percent positive jitter. A valid numeric or HTTP-date `Retry-After` can increase that delay, and every delay is capped at 60 seconds.
+- PROVIDER-RETRY-4: Cancellation during a request or delay propagates immediately. Exhaustion raises the final attempt's `ProviderError`, preserving provider-error run classification.
+- PROVIDER-RETRY-5: Transport attempts stay inside one logical model request. They do not increase model request limits, usage counts, stream event counts, trace span counts, parallel completion request counts, or provider session history.
+- PROVIDER-RETRY-6: Named subagent override models and inferred parallel completion models inherit the parent request retry settings. The parallel LLM tool has no separate provider retry loop or attempt budget.
+- PROVIDER-RETRY-7: Retries use at-least-once HTTP delivery. A transport failure after provider acceptance can cause duplicate provider work or charges because built-in providers do not share a portable idempotency-key contract.
+- PROVIDER-RETRY-8: A custom `http_client` can apply its own retry policy below the provider retry loop. Callers set `request_retries=0` when the custom client owns retries to avoid multiplying attempt budgets.
 
 ## Structured Output Provider Modes
 

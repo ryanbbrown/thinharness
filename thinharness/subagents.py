@@ -278,6 +278,8 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
             api_key=parent_config.api_key if same_provider else None,
             base_url=parent_config.base_url if same_provider else None,
             timeout=parent_config.request_timeout,
+            request_retries=parent_config.request_retries,
+            request_retry_backoff=parent_config.request_retry_backoff,
             temperature=parent_config.temperature,
             max_tokens=parent_config.max_tokens,
             effort=parent_config.effort,

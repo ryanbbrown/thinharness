@@ -53,7 +53,6 @@ async def _run_provider(provider: str, model: str) -> None:
             read_paths=["prompts.json"],
             write_paths=["outputs"],
             max_prompts=4,
-            max_attempts=1,
         ).spec()
 
         output = await _invoke_tool(spec, {

@@ -265,6 +265,8 @@ def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypat
             max_tokens=4096,
             effort="low",
             extra_body={"seed": 1},
+            request_retries=2,
+            request_retry_backoff=0.25,
         ),
         model=ScriptedModel([]),
     )
@@ -282,10 +284,14 @@ def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypat
     assert calls[0][1]["max_tokens"] == 4096
     assert calls[0][1]["effort"] == "low"
     assert calls[0][1]["extra_body"] == {"seed": 1}
+    assert calls[0][1]["request_retries"] == 2
+    assert calls[0][1]["request_retry_backoff"] == 0.25
     assert calls[1][1]["api_key"] is None
     assert calls[1][1]["base_url"] is None
     assert calls[1][1]["max_tokens"] == 4096
     assert calls[1][1]["effort"] == "low"
+    assert calls[1][1]["request_retries"] == 2
+    assert calls[1][1]["request_retry_backoff"] == 0.25
 
 def test_subagent_model_override_is_used_for_child_run(tmp_path: Path, monkeypatch) -> None:
     child_model = RecordingModel([ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))], model="child-model")

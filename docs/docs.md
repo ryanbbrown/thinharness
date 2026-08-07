@@ -96,7 +96,7 @@ config = HarnessConfig(
 Important groups:
 
 - `root`, `read_paths`, `write_paths`, and `output_dir` define filesystem scope.
-- `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, and `request_timeout` define provider settings.
+- `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
 - `builtin_tools`, `tools`, `subagents`, `mcp_servers`, and `skills_dir` define the model-callable surface.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
@@ -405,7 +405,8 @@ harness = Harness(HarnessConfig(
     builtin_parallel_llm_model="openai:gpt-5.5-mini",
     builtin_parallel_llm_temperature=0,
     parallel_llm_max_prompts=100,
-    parallel_llm_max_attempts=4,
+    request_retries=3,
+    request_retry_backoff=1.0,
 ))
 ```
 
@@ -418,7 +419,7 @@ The model-facing prompt source is structurally discriminated:
 
 Use `output_file` when combined results may be large. Inline output returns compact JSON in `ToolResult.content`; file output writes pretty JSON under the write path policy and returns a summary.
 
-`max_concurrency` is model-controlled per tool call and only limits in-flight attempts. `parallel_llm_max_prompts` and `parallel_llm_max_attempts` are host-controlled `HarnessConfig` fields. Internal parallel attempts are reported in the tool payload and metadata; they do not consume `max_model_requests`, while the `parallel_llm` invocation itself still counts as one tool call.
+`max_concurrency` is model-controlled per tool call and limits in-flight requests. `parallel_llm_max_prompts` is a host-controlled `HarnessConfig` field. Built-in provider retries use the same `request_retries` and `request_retry_backoff` policy as normal agent requests. Transport attempts do not increase the tool's `model_requests` count or consume `max_model_requests`; the `parallel_llm` invocation still counts as one tool call.
 
 For a custom, renameable version, construct `ParallelLlmTool` directly:
 
@@ -441,7 +442,8 @@ extract_tool = ParallelLlmTool(
     read_paths=["inputs"],
     write_paths=["outputs"],
     max_prompts=50,
-    max_attempts=2,
+    request_retries=2,
+    request_retry_backoff=1.0,
     output_type=InvoiceFields,
     output_mode="auto",
     output_retries=1,
@@ -580,6 +582,10 @@ Hard limits stop runs:
 - `max_tool_calls`: maximum model-requested ordinary tool calls in one run.
 - `tool_retries`: default retry budget per tool name.
 - `output_retries`: structured-output retry budget.
+
+`request_retries` is a transport retry budget for each logical built-in provider request. It does not increase `max_model_requests`. The default allows three retries after the first attempt. `request_retry_backoff` sets the exponential base delay in seconds. Delays include positive jitter, honor a larger valid `Retry-After`, and never exceed 60 seconds. `request_timeout` applies to each attempt.
+
+An injected `http_client` can have its own retry policy. Set `request_retries=0` on the provider when the custom client owns retries. This prevents the two attempt budgets from multiplying.
 
 Near-limit notices are deterministic model input emitted before some limits are exhausted. They are not hooks, and they do not replace hard limit enforcement. Parent and child runs compute notices from their own local budgets.
 

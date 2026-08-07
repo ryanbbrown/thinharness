@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from fakes import (
     ContextFakeTracer,
@@ -24,6 +25,8 @@ from thinharness import (
     HarnessConfig,
     HarnessError,
     ModelMessageEvent,
+    OpenAIProvider,
+    OpenAIResponsesModel,
     SubAgentConfig,
     ToolResult,
     ToolSpec,
@@ -254,6 +257,44 @@ def test_capture_messages_false_omits_content_attributes(tmp_path: Path) -> None
     }
     for span in tracer.spans:
         assert forbidden.isdisjoint(span.attributes)
+
+async def test_recovered_provider_retry_uses_one_successful_model_span(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="temporary", request=request)
+        return httpx.Response(200, json={"id": "response", "output_text": "done"}, request=request)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    tracer = FakeTracer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        model = OpenAIResponsesModel(
+            "test-model",
+            provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
+        )
+        harness = Harness(
+            HarnessConfig(root=tmp_path, builtin_tools=[]),
+            model=model,
+            tracing=[TracingOptions(tracer=tracer)],
+        )
+        result = await harness.run("go")
+
+    model_spans = [span for span in tracer.spans if span.name == "chat test-model"]
+    assert calls == 2
+    assert result.usage.model_requests == 1
+    assert len(model_spans) == 1
+    assert model_spans[0].exceptions == []
+    assert model_spans[0].status is None
+
 
 def test_tool_tracing_marks_normalized_failures(tmp_path: Path) -> None:
     failing = ToolSpec("fail", "Returns failure.", {"type": "object", "properties": {}}, lambda args: ToolResult(False, "nope"))
