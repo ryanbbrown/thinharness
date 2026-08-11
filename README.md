@@ -15,7 +15,6 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ryanbbrown/thinharness/ci.yml?branch=main&label=CI)](https://github.com/ryanbbrown/thinharness/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ryanbbrown/thinharness/blob/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/thinharness.svg)](https://pypi.org/project/thinharness/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/thinharness.svg)](https://pypistats.org/packages/thinharness)
 
 </div>
 
