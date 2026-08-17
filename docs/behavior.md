@@ -80,6 +80,40 @@ Built-in provider resume state is a self-contained, provider-agnostic transcript
 - RESUME-6: A session seeded via `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` captures only new transcript entries, so externally seeded prior turns are not present when later resumed from `resume_state`. This is unrelated to reasoning fidelity and is not changed by RESUME-3/RESUME-7.
 - RESUME-7: For reasoning-capable OpenAI Responses models the harness requests `include=["reasoning.encrypted_content"]` so reasoning survives resume; non-reasoning models are unaffected. Captured `resume_state` therefore contains encrypted reasoning blobs (OpenAI/OpenRouter) and signed thinking (Anthropic) and should be treated as sensitive, consistent with the local-trace sensitivity note.
 
+## Plugin Composition
+
+### Purpose
+
+Callers compose optional harness behavior explicitly while independent custom tools and hooks stay direct constructor inputs.
+
+### Requirements
+
+- PLUGIN-1: `Harness` accepts plugins in caller order through `plugins=`; no plugin is loaded through entry points, directories, manifests, or implicit defaults.
+- PLUGIN-2: Plugin names are non-empty and unique within one harness. A duplicate name fails before either plugin binds.
+- PLUGIN-3: Plugin binding is synchronous and performs no file or network I/O. Static tools, instructions, and hooks are validated and visible immediately after harness construction.
+- PLUGIN-4: `Harness.connect()` or the first run opens connected plugin bindings once in caller order. Concurrent connection calls share that attempt, and connection completes before `run_start` hooks fire.
+- PLUGIN-5: Dynamic tools, instructions, and hooks are staged and receive the same complete validation as static contributions. ThinHarness commits the full dynamic set only after every binding opens successfully.
+- PLUGIN-6: A connection failure, including cancellation, closes entered bindings in reverse order, installs no dynamic contribution, and leaves connection retryable. `run_start` and `run_end` do not fire for an attempt that fails during connection.
+- PLUGIN-7: Closing a harness closes plugin bindings in reverse order before closing a model owned by the harness. Repeated close calls have no effect.
+- PLUGIN-8: Contribution order is plugin static contributions, direct `tools=` and `hooks=`, then plugin dynamic contributions. System instructions are the configured system prompt, plugin instructions, the transitional skill summary, and per-tool instructions; structured-output instructions are added through the existing output path.
+- PLUGIN-9: ThinHarness copies caller-supplied hook registries before adding plugin hooks. Plugin composition never mutates a caller-owned registry.
+- PLUGIN-10: Plugins are trusted in-process code. ThinHarness does not isolate them or resolve dependencies between them.
+
+## Filesystem Plugin
+
+### Purpose
+
+Callers opt into root-scoped workspace tools without making filesystem behavior part of the core harness.
+
+### Requirements
+
+- FILESYSTEM-PLUGIN-1: `Harness` has no implicit filesystem tools. `FilesystemPlugin` provides `read`, `write`, `edit`, `search`, `list`, and `glob` by default; callers select an ordered subset explicitly.
+- FILESYSTEM-PLUGIN-2: `jsonl_search` is an opt-in tool of `FilesystemPlugin` and shares its root, read policy, search process, truncation, and spill-output handling.
+- FILESYSTEM-PLUGIN-3: `HarnessConfig.root` is the one run root. `FilesystemPlugin` uses that root and cannot configure a different root.
+- FILESYSTEM-PLUGIN-4: Harness construction and plugin binding do not create the root. A harness without `FilesystemPlugin` adds no workspace-root instruction and has no filesystem side effect.
+- FILESYSTEM-PLUGIN-5: Filesystem limits, output location, search settings, and path policies belong to `FilesystemPlugin`. `HarnessConfig.read_paths` and `write_paths` remain temporarily as parallel-LLM policy and do not configure filesystem plugin tools.
+- FILESYSTEM-PLUGIN-6: Independent custom tools continue to use `tools=[ToolSpec(...)]`; callers do not need to wrap one tool in a plugin.
+
 ## Run Toolset Freeze
 
 ### Purpose
@@ -88,7 +122,7 @@ The set of tools a model can call is fixed when a run starts, so every provider 
 
 ### Requirements
 
-- TOOLSET-FREEZE-1: The run's tool schemas, system instructions, request metadata, and structured-output request are captured once per run after run-start hooks and MCP connection, and every provider request in that run uses that captured set.
+- TOOLSET-FREEZE-1: The run's tool schemas, system instructions, request metadata, and structured-output request are captured once per run after harness connection and run-start hooks, and every provider request in that run uses that captured set.
 - TOOLSET-FREEZE-2: A tool added with `add_tool` during an in-flight run does not appear in that run's later provider requests; it takes effect on the next run.
 - TOOLSET-FREEZE-3: The executable tool map is frozen with the schemas: a model call naming a tool added mid-run resolves as an unknown tool for the current run, and approval-required detection uses the same frozen map.
 
