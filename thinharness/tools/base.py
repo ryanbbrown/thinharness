@@ -22,6 +22,15 @@ T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True)
+class ToolOrigin:
+    """Plugin provenance for one model-callable tool."""
+
+    plugin: str
+    source: str | None = None
+    attributes: Json = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class McpToolInfo:
     """Framework-owned identity for an MCP-backed tool."""
 
@@ -42,6 +51,7 @@ class ToolSpec:
     max_retries: int | None = None
     instructions: str | None = None
     requires_approval: bool = False
+    origin: ToolOrigin | None = None
     kind: ToolKind = "user"
     mcp: McpToolInfo | None = None
 

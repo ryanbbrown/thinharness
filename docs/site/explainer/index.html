@@ -257,11 +257,11 @@
           </p>
         </div>
         <div class="plain-panel">
-          <h3>Built-in selection</h3>
+          <h3>Plugin composition</h3>
           <p>
-            <code>builtin_tools</code> is a list of tool names. When omitted, ThinHarness exposes the default filesystem
-            tools. When provided, it selects from built-in candidates such as filesystem tools, <code>skill_read</code>,
-            <code>skill_run</code>, <code>subagent</code>, and <code>parallel_llm</code>.
+            ThinHarness has no implicit filesystem tools. <code>plugins=[FilesystemPlugin(...)]</code> contributes an ordered
+            filesystem tool set, workspace instructions, and plugin origin data. <code>builtin_tools</code> remains temporarily
+            for <code>skill_read</code>, <code>skill_run</code>, <code>subagent</code>, and <code>parallel_llm</code>.
           </p>
         </div>
       </div>
@@ -275,9 +275,9 @@
           <tbody>
             <tr>
               <td>Filesystem</td>
-              <td><code>FileTools</code></td>
-              <td><code>builtin_tools(root, ...)</code> returns <code>FileTools(root).specs()</code>.</td>
-              <td>Default exposed set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>. Mutating tools are marked <code>sequential=True</code>.</td>
+              <td><code>FilesystemPlugin</code> over <code>FileTools</code></td>
+              <td><code>plugins=[FilesystemPlugin(...)]</code> binds static <code>ToolSpec</code> values without importing filesystem code into core.</td>
+              <td>The default set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>; <code>jsonl_search</code> is opt-in. Mutating tools are sequential.</td>
             </tr>
             <tr>
               <td>Framework-provided</td>

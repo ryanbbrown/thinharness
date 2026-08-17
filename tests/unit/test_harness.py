@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from thinharness import (
     AfterToolCallContext,
     AnthropicMessagesModel,
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -50,7 +51,11 @@ from thinharness.tools.base import _invoke_tool
 def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
     client = FakeClient()
-    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model"), model=_fake_openai(client))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
+        model=_fake_openai(client),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    )
     result = harness.run_sync("read hello", metadata={"case": "test"})
     assert result.text == "done"
     assert client.payloads[0]["tools"]
@@ -288,22 +293,33 @@ def test_custom_tool_invalid_json_is_structured(tmp_path: Path) -> None:
     assert output["metadata"]["retry"] is True
     assert "invalid JSON arguments" in output["content"]
 
-def test_builtin_tool_selection_is_explicit(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read", "search"]), model=_fake_openai(FakeClient()))
+def test_filesystem_plugin_tool_selection_is_explicit(tmp_path: Path) -> None:
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read", "search"])],
+    )
     assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "search"]
 
-def test_default_builtin_tools_are_minimal_filesystem_surface(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path), model=_fake_openai(FakeClient()))
-    assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "write", "edit", "search", "list", "glob"]
 
-def test_specialized_builtin_tools_are_explicit_opt_ins(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["jsonl_search", "subagent"]), model=_fake_openai(FakeClient()))
+def test_harness_has_no_implicit_filesystem_tools(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path), model=_fake_openai(FakeClient()))
+    assert harness.tool_schemas() == []
+
+
+def test_specialized_filesystem_tools_are_explicit_opt_ins(tmp_path: Path) -> None:
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=["subagent"]),
+        model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["jsonl_search"])],
+    )
     assert [tool["name"] for tool in harness.tool_schemas()] == ["jsonl_search", "subagent"]
 
 def test_enabled_tool_instructions_are_appended_after_base_instructions(tmp_path: Path) -> None:
     harness = Harness(
         HarnessConfig(root=tmp_path, builtin_tools=["parallel_llm"], system_prompt="Caller instructions."),
         model=ScriptedModel([]),
+        plugins=[FilesystemPlugin(tools=[])],
     )
 
     instructions = harness.system_instructions()
@@ -313,7 +329,11 @@ def test_enabled_tool_instructions_are_appended_after_base_instructions(tmp_path
     assert "It does not inherit the parent system prompt" in instructions
 
 def test_disabled_tool_instructions_are_omitted(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read"]), model=ScriptedModel([]))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    )
 
     assert "parallel_llm usage:" not in harness.system_instructions()
 
@@ -336,8 +356,9 @@ def test_tool_instructions_follow_skill_summary(tmp_path: Path) -> None:
 
 def test_builtin_tool_instructions_are_appended(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=["search"]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
+        plugins=[FilesystemPlugin(tools=["search"])],
     )
 
     assert DEFAULT_SEARCH_INSTRUCTIONS in harness.system_instructions()
@@ -352,7 +373,7 @@ def test_blank_tool_instructions_are_omitted(tmp_path: Path) -> None:
     )
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
 
-    assert harness.system_instructions() == f"{harness.config.system_prompt}\n\nWorkspace root: {tmp_path}"
+    assert harness.system_instructions() == harness.config.system_prompt
 
 def test_tool_instructions_do_not_change_tool_schema(tmp_path: Path) -> None:
     custom = ToolSpec(
@@ -385,7 +406,7 @@ def test_skill_dirs_require_selected_skill_tools(tmp_path: Path) -> None:
     )
     assert "skill_read" in [tool["name"] for tool in harness.tool_schemas()]
     with pytest.raises(ValueError, match="skill_read or skill_run"):
-        Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["read"]), model=_fake_openai(FakeClient()))
+        Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=[]), model=_fake_openai(FakeClient()))
 
 def test_skills_are_not_discovered_without_explicit_skills_dir(tmp_path: Path) -> None:
     skill = tmp_path / ".agents" / "skills" / "demo"
@@ -410,9 +431,10 @@ def test_selected_skills_are_exposed_when_skill_tool_is_selected(tmp_path: Path)
             root=tmp_path,
             skills_dir=tmp_path / "skills",
             selected_skills=["demo"],
-            builtin_tools=["read", "skill_read"],
+            builtin_tools=["skill_read"],
         ),
         model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read"])],
     )
 
     assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "skill_read"]
@@ -442,7 +464,12 @@ def test_child_harness_tool_surfaces_follow_subagent_policy(tmp_path: Path) -> N
 def test_duplicate_tool_names_are_rejected(tmp_path: Path) -> None:
     duplicate = ToolSpec("read", "Duplicate read", {"type": "object", "properties": {}}, lambda args: "ok")
     with pytest.raises(ValueError, match="duplicate tool name: read"):
-        Harness(HarnessConfig(root=tmp_path), model=_fake_openai(FakeClient()), tools=[duplicate])
+        Harness(
+            HarnessConfig(root=tmp_path),
+            model=_fake_openai(FakeClient()),
+            plugins=[FilesystemPlugin(tools=["read"])],
+            tools=[duplicate],
+        )
 
 def test_after_tool_call_fires_for_handler_exception(tmp_path: Path) -> None:
     client = MultiCallClient([("boom", "{}")])

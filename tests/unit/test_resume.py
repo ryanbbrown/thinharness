@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from thinharness import (
     AnthropicMessagesModel,
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -56,7 +57,11 @@ class _MultiToolAnthropicProvider(FakeAnthropicProvider):
 async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
     client = FakeClient()
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["read"]), model=OpenAIResponsesModel("gpt-test", provider=client))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=OpenAIResponsesModel("gpt-test", provider=client),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    )
 
     first = await harness.run("first")
     state = json.loads(json.dumps(first.resume_state))

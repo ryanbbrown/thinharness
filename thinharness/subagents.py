@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
+from .plugins.base import Plugin
 from .providers import infer_model, same_provider_model_ref
 from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
@@ -33,6 +34,7 @@ class SubAgentConfig(BaseModel):
     inherit_parent_tools: bool = False
     inherit_mcp_servers: bool = False
     builtin_tools: list[str] = Field(default_factory=list)
+    plugins: list[Plugin] = Field(default_factory=list)
     tools: list[ToolSpec] = Field(default_factory=list)
     mcp_servers: list[MCPServer] = Field(default_factory=list)
     model: str | None = None
@@ -65,16 +67,17 @@ class SubAgentConfig(BaseModel):
             raise ValueError("subagent cannot be exposed inside a child subagent")
         if any(tool.requires_approval for tool in self.tools):
             raise ValueError("approval-required tools are not supported inside subagents")
-        if self.inherit_parent_tools and (self.builtin_tools or self.tools):
-            raise ValueError("inherit_parent_tools cannot be combined with builtin_tools or tools")
+        if self.inherit_parent_tools and (self.builtin_tools or self.plugins or self.tools):
+            raise ValueError("inherit_parent_tools cannot be combined with builtin_tools, plugins, or tools")
         if not (
             self.inherit_parent_tools
             or self.builtin_tools
+            or self.plugins
             or self.tools
             or self.inherit_mcp_servers
             or self.mcp_servers
         ):
-            raise ValueError("named subagents must define builtin_tools, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers")
+            raise ValueError("named subagents must define builtin_tools, plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers")
         return self
 
 
@@ -288,6 +291,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
     return Harness(
         child_config,
         model=child_model,
+        plugins=[] if inherit_tools or config is None else config.plugins,
         tools=_effective_custom_tools(parent, config),
         tracing=_child_tracing(parent, config),
         skills=parent.skills if inherit_tools else None,

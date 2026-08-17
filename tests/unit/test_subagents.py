@@ -18,6 +18,7 @@ from thinharness import (
     DEFAULT_SUBAGENT_NAME,
     AfterSubagentRunContext,
     BeforeSubagentRunContext,
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     Hook,
@@ -51,7 +52,7 @@ def test_subagent_config_validation_accepts_tool_specs() -> None:
     assert config.tools == [spec, sequential_tool]
     assert inherited.inherit_parent_tools is True
     with pytest.raises(ValueError, match="inherit_parent_tools"):
-        SubAgentConfig(name="bad", description="Bad helper.", inherit_parent_tools=True, builtin_tools=["read"])
+        SubAgentConfig(name="bad", description="Bad helper.", inherit_parent_tools=True, plugins=[FilesystemPlugin(tools=["read"])])
     with pytest.raises(ValueError, match="cannot be exposed"):
         SubAgentConfig(name="recursive", description="Recursive helper.", builtin_tools=["subagent"])
     with pytest.raises(ValueError, match="cannot be exposed"):
@@ -63,13 +64,13 @@ def test_subagent_config_validation_accepts_tool_specs() -> None:
     with pytest.raises(ValueError, match="must define"):
         SubAgentConfig(name="empty", description="No tools.")
     with pytest.raises(ValueError):
-        SubAgentConfig(name="bad name", description="Bad helper.", builtin_tools=["read"])
+        SubAgentConfig(name="bad name", description="Bad helper.", plugins=[FilesystemPlugin(tools=["read"])])
     with pytest.raises(ValueError, match="non-empty single line"):
-        SubAgentConfig(name="ok", description="   ", builtin_tools=["read"])
+        SubAgentConfig(name="ok", description="   ", plugins=[FilesystemPlugin(tools=["read"])])
     with pytest.raises(ValueError, match="non-empty single line"):
-        SubAgentConfig(name="ok", description="Bad\nhelper.", builtin_tools=["read"])
+        SubAgentConfig(name="ok", description="Bad\nhelper.", plugins=[FilesystemPlugin(tools=["read"])])
     with pytest.raises(ValueError, match="SubAgentConfig.background has been removed"):
-        SubAgentConfig(name="old-background", description="Old helper.", builtin_tools=["read"], background="always")
+        SubAgentConfig(name="old-background", description="Old helper.", plugins=[FilesystemPlugin(tools=["read"])], background="always")
 
 def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     default = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))
@@ -406,7 +407,7 @@ def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> N
 
 def test_unknown_named_subagent_returns_structured_error(tmp_path: Path) -> None:
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    tool = create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", builtin_tools=["read"])])
+    tool = create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", plugins=[FilesystemPlugin(tools=["read"])])])
 
     output = tool_output(asyncio.run(tool.handler(tool.parse_args({"task": "x", "agent": "missing"}))).as_json())
 
@@ -552,4 +553,4 @@ def test_subagent_hook_can_cancel_default_agent_without_child_run(tmp_path: Path
 
 def test_default_subagent_name_is_reserved() -> None:
     with pytest.raises(ValueError, match="reserved"):
-        SubAgentConfig(name=DEFAULT_SUBAGENT_NAME, description="Reserved.", builtin_tools=["read"])
+        SubAgentConfig(name=DEFAULT_SUBAGENT_NAME, description="Reserved.", plugins=[FilesystemPlugin(tools=["read"])])

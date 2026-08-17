@@ -241,10 +241,13 @@ Requires Python 3.11+.
 
 ```python
 import asyncio
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 async def main():
-    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.5")) as harness:
+    async with Harness(
+        HarnessConfig(root=".", model="openai:gpt-5.5"),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    ) as harness:
         result = await harness.run("Read README.md and summarize it.")
         print(result.text)
 
@@ -273,7 +276,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 
 ## Features
 
-- **Filesystem tools:** `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
+- **Filesystem plugin:** explicit `FilesystemPlugin` composition for `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
 - **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
 - **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.

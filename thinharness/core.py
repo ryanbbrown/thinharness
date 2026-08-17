@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -43,6 +44,7 @@ from .output import (
     resolve_output_schema_for_model,
     structured_instructions,
 )
+from .plugins.base import Plugin, PluginBinding, PluginContext, PluginContribution
 from .providers import (
     Model,
     ModelSession,
@@ -55,8 +57,7 @@ from .providers import (
     model_capabilities,
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import ToolSpec
-from .tools.filesystem import builtin_tools as make_builtin_tools
+from .tools.base import ToolOrigin, ToolSpec
 from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
@@ -69,8 +70,6 @@ from .tracing import (
 )
 from .turns import TurnStart, advance_until_terminal
 from .types import ApprovalDecision, HarnessError, HarnessResult, Json, PendingApproval, RunUsage, UnexpectedModelBehavior
-
-DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
 
 
 def _local_tracing_enabled(configured: bool) -> bool:
@@ -114,19 +113,12 @@ class HarnessConfig(BaseModel):
     skills_dir: str | Path | list[str | Path] | None = None
     selected_skills: list[str] | None = None
     builtin_tools: list[str] | None = None
-    output_dir: str | Path | None = None
     max_model_requests: int = 64
     max_tool_calls: int | None = None
     strict_hooks: bool = False
     request_timeout: int = 120
     request_retries: int = Field(default=3, ge=0, le=10)
     request_retry_backoff: float = Field(default=1.0, ge=0, allow_inf_nan=False)
-    max_read_chars: int = 40_000
-    max_read_bytes: int = 1_000_000
-    max_tool_chars: int = 40_000
-    max_search_line_chars: int = 180
-    rg_timeout: int = 30
-    search_exclude_globs: list[str] = Field(default_factory=list)
     read_paths: list[str | Path] | None = None
     write_paths: list[str | Path] | None = None
     temperature: float | None = None
@@ -156,13 +148,14 @@ class HarnessConfig(BaseModel):
 
 
 class Harness:
-    """A non-interactive filesystem agent harness for SDK use."""
+    """A non-interactive agent harness for SDK use."""
 
     def __init__(
         self,
         config: HarnessConfig | None = None,
         *,
         model: Model | None = None,
+        plugins: list[Plugin] | None = None,
         tools: list[ToolSpec] | None = None,
         tracing: list[TracingOptions] | None = None,
         skills: SkillRegistry | None = None,
@@ -176,7 +169,6 @@ class Harness:
         if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
             raise ValueError("skills cannot be combined with skills_dir or selected_skills")
         self.root = Path(self.config.root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
         self.model = model or infer_model(
             self.model_ref,
@@ -194,26 +186,35 @@ class Harness:
         self.model_capabilities = model_capabilities(self.model)
         self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         output_schema = resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
-        filesystem_tools = make_builtin_tools(
-            self.root,
-            output_dir=self.config.output_dir,
-            max_read_chars=self.config.max_read_chars,
-            max_read_bytes=self.config.max_read_bytes,
-            max_tool_chars=self.config.max_tool_chars,
-            max_search_line_chars=self.config.max_search_line_chars,
-            rg_timeout=self.config.rg_timeout,
-            search_exclude_globs=self.config.search_exclude_globs,
-            read_paths=self.config.read_paths,
-            write_paths=self.config.write_paths,
-        )
+        self.output_schema = output_schema
+
+        configured_plugins = tuple(plugins or [])
+        plugin_names = [plugin.name for plugin in configured_plugins]
+        if any(not name.strip() for name in plugin_names):
+            raise ValueError("plugin name must be non-empty")
+        duplicate_plugin = next((name for index, name in enumerate(plugin_names) if name in plugin_names[:index]), None)
+        if duplicate_plugin is not None:
+            raise ValueError(f"duplicate plugin name: {duplicate_plugin}")
+        bindings = tuple(plugin.bind(PluginContext(root=self.root)) for plugin in configured_plugins)
+        for plugin, binding in zip(configured_plugins, bindings, strict=True):
+            if not isinstance(binding, PluginBinding):
+                raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
+        static_tools: list[ToolSpec] = []
+        static_instructions: list[str] = []
+        static_hooks: list[Hook] = []
+        for plugin, binding in zip(configured_plugins, bindings, strict=True):
+            contribution = self._normalize_contribution(plugin.name, binding.static)
+            static_tools.extend(contribution.tools)
+            static_instructions.extend(contribution.instructions)
+            static_hooks.extend(contribution.hooks)
+
         builtin_candidates = [
-            *filesystem_tools,
             *self.skills.specs(),
             create_subagent_tool(self, self.config.subagents),
             create_parallel_llm_tool(self),
         ]
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
-        configured_tools = [*builtin, *(tools or [])]
+        configured_tools = [*static_tools, *builtin, *(tools or [])]
         self._validate_tool_list(
             configured_tools,
             output_schema=output_schema,
@@ -221,19 +222,28 @@ class Harness:
             is_child_run=self._is_child_run,
         )
         tool_map = {tool.name: tool for tool in configured_tools}
-        hook_registry = hooks if isinstance(hooks, HookRegistry) else HookRegistry(hooks, strict_hooks=self.config.strict_hooks)
+        caller_hooks = list(hooks.hooks) if isinstance(hooks, HookRegistry) else list(hooks or [])
+        strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
+        hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
         self._validate_hook_registry(hook_registry, self.config.subagents)
         self._validate_skill_tool_selection_for(self.skills, configured_tools)
 
+        self.plugins = configured_plugins
+        self._plugin_bindings = bindings
+        self._base_tools = list(configured_tools)
+        self._base_instructions = list(static_instructions)
+        self._strict_hooks = strict_hooks
         self.tools = configured_tools
         self._tool_map = tool_map
-        self.output_schema = output_schema
+        self._plugin_instructions = list(static_instructions)
         self.hooks = hook_registry
         self.subagent_hooks = subagent_hooks or {}
         self._mcp_servers = list(self.config.mcp_servers)
         self._resolve_mcp_server_ids()
         self._mcp_stack: AsyncExitStack | None = None
-        self._mcp_connected = False
+        self._plugin_stack: AsyncExitStack | None = None
+        self._connected = False
+        self._connect_lock = asyncio.Lock()
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
@@ -391,6 +401,7 @@ class Harness:
         from .tool_execution import ToolBatchExecutor
 
         try:
+            await self._ensure_connected()
             run_tracer = RunTracer(self.tracing)
             approval_pause: ApprovalPause | None = None
             approval_decision_map: dict[str, ApprovalDecision] | None = None
@@ -434,7 +445,7 @@ class Harness:
                     **run_ctx.stream_base(),
                     decisions=tuple(approval_decisions or []),
                 ))
-        except Exception as exc:
+        except BaseException as exc:
             self._running = False
             emitter.emit(RunFailedEvent(
                 run_id=stream_context.run_id,
@@ -442,7 +453,7 @@ class Harness:
                 parent_run_id=stream_context.parent_run_id,
                 parent_tool_call_id=stream_context.parent_tool_call_id,
                 agent_name=stream_context.agent_name,
-                stop_reason="error",
+                stop_reason="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
                 error_type=type(exc).__name__,
                 message=str(exc),
             ))
@@ -550,7 +561,6 @@ class Harness:
             max_model_requests=self.config.max_model_requests,
             max_tool_calls=self.config.max_tool_calls,
         ))
-        await self._ensure_mcp_connected()
         effective_prompt = prompt
         if not skip_user_prompt:
             prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
@@ -608,14 +618,17 @@ class Harness:
         return asyncio.run(_run_and_close())
 
     async def aclose(self) -> None:
-        """Close MCP servers and owned provider HTTP clients."""
+        """Close connected plugins, MCP servers, and an owned model."""
         if self._closed:
             return
         try:
             if self._mcp_stack is not None:
                 await self._mcp_stack.aclose()
                 self._mcp_stack = None
-                self._mcp_connected = False
+            if self._plugin_stack is not None:
+                await self._plugin_stack.aclose()
+                self._plugin_stack = None
+            self._connected = False
             if self._owns_model:
                 aclose = getattr(self.model.provider, "aclose", None)
                 if aclose is not None:
@@ -644,6 +657,8 @@ class Harness:
             raise ValueError(f"duplicate tool name: {spec.name}")
         self.tools.append(spec)
         self._tool_map[spec.name] = spec
+        if not self._connected:
+            self._base_tools.append(spec)
         self._validate_hook_filters()
 
     def tool_schemas(self) -> list[Json]:
@@ -655,7 +670,7 @@ class Harness:
 
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
-        parts = [self.config.system_prompt, f"Workspace root: {self.root}"]
+        parts = [self.config.system_prompt, *self._plugin_instructions]
         if self._skills_enabled:
             skill_summary = self.skills.prompt_summary()
             if skill_summary:
@@ -680,11 +695,14 @@ class Harness:
     @staticmethod
     def _validate_unique_tools(tools: list[ToolSpec]) -> None:
         """Reject duplicate tool names before sending schemas to a provider."""
-        seen: set[str] = set()
+        seen: dict[str, ToolSpec] = {}
         for tool in tools:
-            if tool.name in seen:
-                raise ValueError(f"duplicate tool name: {tool.name}")
-            seen.add(tool.name)
+            previous = seen.get(tool.name)
+            if previous is not None:
+                first = previous.origin.plugin if previous.origin is not None else "direct"
+                second = tool.origin.plugin if tool.origin is not None else "direct"
+                raise ValueError(f"duplicate tool name: {tool.name} ({first} and {second})")
+            seen[tool.name] = tool
 
     @classmethod
     def _validate_tool_list(
@@ -781,22 +799,85 @@ class Harness:
             server.resolve_id(counts)
 
     async def connect(self) -> None:
-        """Open MCP server connections and discover their tools."""
+        """Open connected plugins and the temporary MCP bridge."""
         if self._closed:
             raise HarnessError("harness is closed")
-        await self._ensure_mcp_connected()
+        await self._ensure_connected()
 
-    async def _ensure_mcp_connected(self) -> None:
-        """Connect MCP servers and append their discovered tools once."""
-        if self._mcp_connected:
+    async def _ensure_connected(self) -> None:
+        """Connect every dynamic contribution once and commit it atomically."""
+        if self._connected:
             return
+        async with self._connect_lock:
+            if self._connected:
+                return
+            plugin_stack = AsyncExitStack()
+            mcp_stack: AsyncExitStack | None = None
+            base_hooks = list(self.hooks.hooks)
+            try:
+                dynamic_tools: list[ToolSpec] = []
+                dynamic_instructions: list[str] = []
+                dynamic_hooks: list[Hook] = []
+                for plugin, binding in zip(self.plugins, self._plugin_bindings, strict=True):
+                    if binding.connect is None:
+                        continue
+                    contribution = await plugin_stack.enter_async_context(binding.connect())
+                    normalized = self._normalize_contribution(plugin.name, contribution)
+                    dynamic_tools.extend(normalized.tools)
+                    dynamic_instructions.extend(normalized.instructions)
+                    dynamic_hooks.extend(normalized.hooks)
+
+                candidate_tools = [*self._base_tools, *dynamic_tools]
+                self._validate_tool_list(
+                    candidate_tools,
+                    output_schema=self.output_schema,
+                    model_supports_approval_resume=self._model_supports_approval_resume(),
+                    is_child_run=self._is_child_run,
+                )
+                candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
+                self._validate_hook_registry(candidate_hooks, self.config.subagents)
+                self._validate_skill_tool_selection_for(self.skills, candidate_tools)
+
+                mcp_stack, mcp_tools = await self._open_mcp_tools(candidate_tools)
+                all_tools = [*candidate_tools, *mcp_tools]
+                self._validate_tool_list(
+                    all_tools,
+                    output_schema=self.output_schema,
+                    model_supports_approval_resume=self._model_supports_approval_resume(),
+                    is_child_run=self._is_child_run,
+                )
+
+                self.tools = all_tools
+                self._tool_map = {tool.name: tool for tool in all_tools}
+                self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
+                self.hooks = candidate_hooks
+                self._skills_enabled = bool(self.skills.skills) and any(
+                    tool.name in {"skill_read", "skill_run"} for tool in self.tools
+                )
+                self._plugin_stack = plugin_stack
+                self._mcp_stack = mcp_stack
+                self._connected = True
+            except BaseException:
+                if mcp_stack is not None:
+                    await mcp_stack.aclose()
+                await plugin_stack.aclose()
+                self.tools = list(self._base_tools)
+                self._tool_map = {tool.name: tool for tool in self.tools}
+                self._plugin_instructions = list(self._base_instructions)
+                self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
+                self._skills_enabled = bool(self.skills.skills) and any(
+                    tool.name in {"skill_read", "skill_run"} for tool in self.tools
+                )
+                raise
+
+    async def _open_mcp_tools(self, existing_tools: list[ToolSpec]) -> tuple[AsyncExitStack | None, list[ToolSpec]]:
+        """Open the temporary MCP bridge and stage its discovered tools."""
         if not self._mcp_servers:
-            self._mcp_connected = True
-            return
+            return None, []
         stack = AsyncExitStack()
         try:
             mcp_tools: list[ToolSpec] = []
-            seen = set(self._tool_map)
+            seen = {tool.name for tool in existing_tools}
             if self.output_schema is not None and self.output_schema.mode == "tool":
                 seen.add(FINAL_RESULT_TOOL_NAME)
             for server in self._mcp_servers:
@@ -809,13 +890,29 @@ class Harness:
                     self._validate_tool_approval_policy(tool)
                     seen.add(tool.name)
                     mcp_tools.append(tool)
-            self.tools.extend(mcp_tools)
-            self._tool_map.update({tool.name: tool for tool in mcp_tools})
-            self._mcp_stack = stack
-            self._mcp_connected = True
+            return stack, mcp_tools
         except BaseException:
             await stack.aclose()
             raise
+
+    @staticmethod
+    def _normalize_contribution(plugin_name: str, contribution: PluginContribution) -> PluginContribution:
+        """Validate contribution values and stamp missing tool provenance."""
+        if not isinstance(contribution, PluginContribution):
+            raise TypeError(f"plugin {plugin_name!r} returned an invalid contribution")
+        instructions = tuple(instruction for instruction in contribution.instructions if instruction.strip())
+        tools = tuple(
+            replace(
+                tool,
+                origin=ToolOrigin(
+                    plugin=plugin_name,
+                    source=tool.origin.source if tool.origin is not None else tool.name,
+                    attributes=dict(tool.origin.attributes) if tool.origin is not None else {},
+                ),
+            )
+            for tool in contribution.tools
+        )
+        return PluginContribution(tools=tools, instructions=instructions, hooks=tuple(contribution.hooks))
 
     def _structured_output_request(self) -> StructuredOutputRequest | None:
         """Return native structured-output request metadata."""
@@ -828,13 +925,16 @@ class Harness:
         """Return all or the explicitly selected built-in tools."""
         by_name = {tool.name: tool for tool in tools}
         if selected_names is None:
-            return [tool for tool in tools if tool.name in DEFAULT_BUILTIN_TOOLS]
+            return []
         selected: list[ToolSpec] = []
         seen: set[str] = set()
         for name in selected_names:
             if name in seen:
                 raise ValueError(f"duplicate selected builtin tool: {name}")
             if name not in by_name:
+                filesystem_names = {"read", "write", "edit", "search", "list", "glob", "jsonl_search"}
+                if name in filesystem_names:
+                    raise ValueError(f"unknown builtin tool: {name}; use FilesystemPlugin(tools=[{name!r}])")
                 available = ", ".join(sorted(by_name)) or "none"
                 raise ValueError(f"unknown builtin tool: {name}; available: {available}")
             selected.append(by_name[name])

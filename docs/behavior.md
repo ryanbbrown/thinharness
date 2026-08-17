@@ -110,7 +110,7 @@ Callers opt into root-scoped workspace tools without making filesystem behavior 
 - FILESYSTEM-PLUGIN-1: `Harness` has no implicit filesystem tools. `FilesystemPlugin` provides `read`, `write`, `edit`, `search`, `list`, and `glob` by default; callers select an ordered subset explicitly.
 - FILESYSTEM-PLUGIN-2: `jsonl_search` is an opt-in tool of `FilesystemPlugin` and shares its root, read policy, search process, truncation, and spill-output handling.
 - FILESYSTEM-PLUGIN-3: `HarnessConfig.root` is the one run root. `FilesystemPlugin` uses that root and cannot configure a different root.
-- FILESYSTEM-PLUGIN-4: Harness construction and plugin binding do not create the root. A harness without `FilesystemPlugin` adds no workspace-root instruction and has no filesystem side effect.
+- FILESYSTEM-PLUGIN-4: Harness construction and plugin binding do not create the root. A harness without `FilesystemPlugin` has a generic default prompt, adds no workspace-root instruction, and has no filesystem side effect.
 - FILESYSTEM-PLUGIN-5: Filesystem limits, output location, search settings, and path policies belong to `FilesystemPlugin`. `HarnessConfig.read_paths` and `write_paths` remain temporarily as parallel-LLM policy and do not configure filesystem plugin tools.
 - FILESYSTEM-PLUGIN-6: Independent custom tools continue to use `tools=[ToolSpec(...)]`; callers do not need to wrap one tool in a plugin.
 

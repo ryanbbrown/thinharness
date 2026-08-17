@@ -164,10 +164,13 @@
         <div class="eyebrow">// use</div>
         <h2>Use</h2>
         <pre><code><span class="k">import</span> asyncio
-<span class="k">from</span> thinharness <span class="k">import</span> Harness, HarnessConfig
+<span class="k">from</span> thinharness <span class="k">import</span> FilesystemPlugin, Harness, HarnessConfig
 
 <span class="k">async def</span> main():
-    <span class="k">async with</span> Harness(HarnessConfig(root=<span class="s">"."</span>, model=<span class="s">"openai:gpt-5.5"</span>)) <span class="k">as</span> harness:
+    <span class="k">async with</span> Harness(
+        HarnessConfig(root=<span class="s">"."</span>, model=<span class="s">"openai:gpt-5.5"</span>),
+        plugins=[FilesystemPlugin(tools=[<span class="s">"read"</span>])],
+    ) <span class="k">as</span> harness:
         result = <span class="k">await</span> harness.run(<span class="s">"Read README.md and summarize it."</span>)
         print(result.text)
 
@@ -179,7 +182,7 @@ asyncio.run(main())</code></pre>
         <div class="eyebrow">// features</div>
         <h2>Features</h2>
         <div class="feat">
-          <div class="f"><div class="ft">Filesystem tools</div><p><code>read</code>, <code>write</code>, batched exact-replacement <code>edit</code>, <code>search</code>, <code>list</code>, and <code>glob</code> with root-scoped path policies.</p></div>
+          <div class="f"><div class="ft">Filesystem plugin</div><p>Explicit <code>FilesystemPlugin</code> composition for <code>read</code>, <code>write</code>, batched exact-replacement <code>edit</code>, <code>search</code>, <code>list</code>, and <code>glob</code> with root-scoped path policies.</p></div>
           <div class="f"><div class="ft">JSONL search</div><p>Opt-in <code>jsonl_search</code> for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range <code>where</code> filters, and field-level snippets from large multiline string values.</p></div>
           <div class="f"><div class="ft">Bash prototype tool</div><p>Opt-in <code>BashTool</code> for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.</p></div>
           <div class="f"><div class="ft">Provider adapters</div><p>Built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.</p></div>

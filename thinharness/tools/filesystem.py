@@ -133,7 +133,6 @@ class FileTools:
         from .jsonl import JsonlSearch
 
         self.root = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
         self.output_dir = contained_path(self.root, output_dir or ".thinharness/outputs")
         self._spill_artifacts: set[Path] = set()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
@@ -580,10 +579,6 @@ class FileTools:
 # Tool plumbing
 # =============================================================================
 
-
-def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
-    """Create the default filesystem tool set."""
-    return FileTools(root, **kwargs).specs()
 
 def _exclude_glob(pattern: str) -> str:
     """Return a ripgrep exclusion glob."""

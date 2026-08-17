@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import AnthropicMessagesModel, AnthropicProvider, Harness, HarnessConfig, ModelSettings, ToolSpec
+from thinharness import AnthropicMessagesModel, AnthropicProvider, FilesystemPlugin, Harness, HarnessConfig, ModelSettings, ToolSpec
 
 MODEL = os.getenv("E2E_ANTHROPIC_MODERNIZATION_MODEL", "anthropic:claude-sonnet-5")
 
@@ -69,12 +69,13 @@ async def _assert_native_structured_output_and_defaults(root: Path, model_name: 
         harness = Harness(
             HarnessConfig(
                 root=root,
-                builtin_tools=["read"],
+                builtin_tools=[],
                 output_type=InventoryAnswer,
                 max_model_requests=4,
                 max_tool_calls=2,
             ),
             model=AnthropicMessagesModel(model_name, provider=provider),
+            plugins=[FilesystemPlugin(tools=["read"])],
         )
 
         result = await harness.run(

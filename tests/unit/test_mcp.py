@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from thinharness import (
     ApprovalDecision,
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -966,7 +967,11 @@ async def test_mcp_collision_detected_before_model_request(tmp_path, monkeypatch
     """MCP names collide with existing tools during connect."""
     server = scripted_server(monkeypatch, {"read": _schema()})
     client = MultiCallClient([])
-    harness = Harness(HarnessConfig(root=tmp_path, mcp_servers=[server]), model=_fake_openai(client))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, mcp_servers=[server]),
+        model=_fake_openai(client),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    )
 
     with pytest.raises(HarnessError, match="tool name collision"):
         await harness.run("go")
@@ -1343,8 +1348,8 @@ async def test_trace_attribution_survives_after_tool_hook(tmp_path, monkeypatch)
     assert tool_span.attributes["mcp.tool.name"] == "remote"
 
 
-async def test_connection_failure_in_run_fires_run_hooks(tmp_path) -> None:
-    """MCP connection failures happen inside the normal run lifecycle."""
+async def test_connection_failure_happens_before_run_hooks(tmp_path) -> None:
+    """Connection failures happen before the normal run lifecycle."""
     events = []
     tracer = FakeTracer()
 
@@ -1367,5 +1372,5 @@ async def test_connection_failure_in_run_fires_run_hooks(tmp_path) -> None:
     with pytest.raises(MCPError, match="connect failed"):
         await harness.run("go")
 
-    assert events == ["start", "error"]
-    assert tracer.spans[0].exceptions
+    assert events == []
+    assert tracer.spans == []

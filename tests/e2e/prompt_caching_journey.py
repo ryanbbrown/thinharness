@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 MODEL = os.getenv("E2E_PROMPT_CACHING_MODEL", "anthropic:claude-haiku-4-5")
 
@@ -34,10 +34,11 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=["read"],
+                builtin_tools=[],
                 max_model_requests=4,
                 max_tool_calls=2,
-            )
+            ),
+            plugins=[FilesystemPlugin(tools=["read"])],
         )
 
         # Run

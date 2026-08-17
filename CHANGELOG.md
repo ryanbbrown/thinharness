@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added explicit plugin composition with static and connected contributions, atomic connection rollback, unique plugin names, generic tool origin, and plugin-provided hooks and instructions.
+- Added `FilesystemPlugin` for the ordered workspace tool surface; `jsonl_search` remains opt-in through this plugin.
+- **Breaking:** `Harness` no longer enables filesystem tools by default. Pass `plugins=[FilesystemPlugin(...)]`; independent custom tools still use `tools=`.
+- **Breaking:** Removed filesystem settings from `HarnessConfig` and removed the `builtin_tools()` helper. `read_paths` and `write_paths` remain temporarily for the transitional parallel-LLM built-in.
+- Changed connection setup to complete before `run_start` hooks. A connection failure does not fire run lifecycle hooks.
+
 ## 0.6.0 - 2026-08-07
 
 - Added automatic retries with bounded exponential backoff, jitter, and `Retry-After` support for transient OpenAI, Anthropic, and OpenRouter request failures. Configure retries with `HarnessConfig.request_retries` and `request_retry_backoff`.

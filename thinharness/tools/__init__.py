@@ -7,13 +7,14 @@ from .base import (
     PathPolicy,
     PathValidationError,
     ToolEnvelope,
+    ToolOrigin,
     ToolResult,
     ToolSpec,
     call_tool,
     contained_path,
 )
 from .bash import BashArgs, BashTool
-from .filesystem import FileTools, builtin_tools
+from .filesystem import FileTools
 from .jsonl import JsonlFieldSearch, JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
 from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
 from .parallel_llm import FilePromptSource, InlinePromptSource, ParallelLlmArgs, ParallelLlmTool, create_parallel_llm_tool
@@ -39,6 +40,7 @@ __all__ = [
     "PathPolicy",
     "PathValidationError",
     "ToolEnvelope",
+    "ToolOrigin",
     "FilePromptSource",
     "InlinePromptSource",
     "ParallelLlmArgs",
@@ -47,7 +49,6 @@ __all__ = [
     "SkillRegistry",
     "ToolResult",
     "ToolSpec",
-    "builtin_tools",
     "call_tool",
     "contained_path",
     "create_parallel_llm_tool",

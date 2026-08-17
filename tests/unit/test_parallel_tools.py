@@ -13,6 +13,7 @@ from fakes import (
 )
 
 from thinharness import (
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     ToolSpec,
@@ -147,8 +148,9 @@ def test_truncate_spill_files_do_not_collide_under_parallel_reads(tmp_path: Path
     (tmp_path / "b.txt").write_text(big, encoding="utf-8")
     client = MultiCallClient([("read", '{"path":"a.txt","max_chars":50}'), ("read", '{"path":"b.txt","max_chars":50}')])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", max_tool_chars=50, max_read_chars=50),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
+        plugins=[FilesystemPlugin(max_tool_chars=50, max_read_chars=50, tools=["read"])],
     )
 
     harness.run_sync("go")

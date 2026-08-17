@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig, Hook
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, Hook
 
 MODEL = os.getenv("E2E_WORKSPACE_MODEL", "openai:gpt-5.2")
 SYSTEM_PROMPT = """You are an exacting workspace agent. Use tools when instructed and keep the final answer brief."""
@@ -47,11 +47,12 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search"],
+                builtin_tools=[],
                 max_model_requests=30,
                 max_tool_calls=12,
                 local_trace_dir=trace_dir,
             ),
+            plugins=[FilesystemPlugin(tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search"])],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
         )
 

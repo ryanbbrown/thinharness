@@ -24,11 +24,14 @@ ThinHarness requires Python 3.11+.
 ```python
 import asyncio
 
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 
 async def main() -> None:
-    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.5")) as harness:
+    async with Harness(
+        HarnessConfig(root=".", model="openai:gpt-5.5"),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    ) as harness:
         result = await harness.run("Read README.md and summarize it.")
         print(result.text)
 
@@ -88,23 +91,38 @@ config = HarnessConfig(
     system_prompt="You are a focused research agent.",
     max_model_requests=32,
     max_tool_calls=80,
-    read_paths=["inputs", "docs"],
-    write_paths=["outputs"],
 )
 ```
 
 Important groups:
 
-- `root`, `read_paths`, `write_paths`, and `output_dir` define filesystem scope.
+- `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- `builtin_tools`, `tools`, `subagents`, `mcp_servers`, and `skills_dir` define the model-callable surface.
+- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools`, `subagents`, `mcp_servers`, and `skills_dir`, define the model-callable surface. `builtin_tools` is temporary for features that have not migrated to plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
 
-## Built-In Filesystem Tools
+## Plugins
 
-When `builtin_tools` is omitted, the model gets these filesystem tools:
+A plugin is a configured bundle of tools, system instructions, and hooks. Pass plugins explicitly in caller order:
+
+```python
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin()],
+    tools=[custom_tool],
+    hooks=[custom_hook],
+)
+```
+
+Independent custom tools and hooks stay direct constructor inputs. Plugin names must be unique within one harness. ThinHarness binds static contributions during construction, then opens connected plugins on `Harness.connect()` or before the first run. Connection is atomic: a failure installs no dynamic contribution, closes opened plugins in reverse order, and allows retry. Closing the harness also closes plugins in reverse order.
+
+Plugins are trusted in-process code. ThinHarness does not discover them from entry points or directories, isolate them, resolve dependencies between them, or hot reload them.
+
+## Filesystem Plugin
+
+The core harness has no implicit filesystem tools. Add `FilesystemPlugin()` to get these default tools:
 
 - `read`: read bounded UTF-8 file ranges with line numbers.
 - `write`: create, overwrite, or append UTF-8 files. This tool is sequential.
@@ -113,15 +131,13 @@ When `builtin_tools` is omitted, the model gets these filesystem tools:
 - `list`: list files or directories.
 - `glob`: find files by glob pattern.
 
-When `builtin_tools` is provided, it is an explicit replacement list. Include every built-in tool the model should see.
-
-`jsonl_search` is available as an opt-in built-in:
+Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` is opt-in:
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["read", "search", "jsonl_search"],
-))
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin(tools=["read", "search", "jsonl_search"])],
+)
 ```
 
 Use `query` as a ripgrep row prefilter, `fields` to project only the values the model needs, and `where` for structured filters over jq-style field paths:
@@ -182,11 +198,13 @@ For large multiline string fields, `field_searches` returns matching internal li
 Filesystem tools enforce the configured read and write policies. Paths must resolve under `root`; escape attempts through absolute paths outside `root`, `..`, or symlinks are rejected.
 
 ```python
-harness = Harness(HarnessConfig(
-    root="/repo",
-    read_paths=["src", "tests"],
-    write_paths=["outputs"],
-))
+harness = Harness(
+    HarnessConfig(root="/repo"),
+    plugins=[FilesystemPlugin(
+        read_paths=["src", "tests"],
+        write_paths=["outputs"],
+    )],
+)
 ```
 
 With this configuration, `read` can access `src/app.py` and `tests/test_app.py`, but not `docs/notes.md`. `write` can create or update `outputs/report.md`, but not `src/generated.py`. Omit `read_paths` or `write_paths` to allow that operation anywhere under `root`.
@@ -364,12 +382,12 @@ By default, hook exceptions are logged and the run continues. Set `strict_hooks=
 The `subagent` tool is opt-in. It lets the parent delegate a bounded task to a child harness. Child runs start fresh; they do not inherit the parent provider transcript.
 
 ```python
-from thinharness import Harness, HarnessConfig, SubAgentConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig
 
 
 harness = Harness(HarnessConfig(
     root=".",
-    builtin_tools=["read", "search", "subagent"],
+    builtin_tools=["subagent"],
     subagents=[
         SubAgentConfig(
             name="reviewer",
@@ -379,7 +397,7 @@ harness = Harness(HarnessConfig(
             max_model_requests=12,
         )
     ],
-))
+), plugins=[FilesystemPlugin(tools=["read", "search"])])
 ```
 
 Calling `subagent` without an `agent` argument uses the framework default subagent, which inherits parent tools except for recursive `subagent` access and MCP-discovered tools. Named subagents use their own `SubAgentConfig`.
@@ -387,7 +405,7 @@ Calling `subagent` without an `agent` argument uses the framework default subage
 Named subagents can:
 
 - inherit parent tools with `inherit_parent_tools=True`
-- choose explicit `builtin_tools`
+- choose explicit `plugins` or transitional `builtin_tools`
 - receive explicit custom `tools`
 - opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
 - use their own model, limits, and structured output
@@ -459,12 +477,15 @@ When `output_type` is set on a custom `ParallelLlmTool`, successful entries cont
 Skills are explicit tools, not auto-discovery. Configure `skills_dir`, then expose `skill_read` and/or `skill_run` through `builtin_tools`.
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    skills_dir="skills",
-    selected_skills=["invoice-review"],
-    builtin_tools=["read", "search", "skill_read", "skill_run"],
-))
+harness = Harness(
+    HarnessConfig(
+        root=".",
+        skills_dir="skills",
+        selected_skills=["invoice-review"],
+        builtin_tools=["skill_read", "skill_run"],
+    ),
+    plugins=[FilesystemPlugin(tools=["read", "search"])],
+)
 ```
 
 If skills are configured and skill tools are exposed, the system prompt includes a compact skill summary. The model still has to call `skill_read` to inspect details.

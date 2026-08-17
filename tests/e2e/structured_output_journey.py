@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig, Hook
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, Hook
 
 MODEL = os.getenv("E2E_STRUCTURED_MODEL", "openai:gpt-5-mini")
 SYSTEM_PROMPT = """You are a structured-output extraction agent. Use tools before finalizing."""
@@ -41,12 +41,13 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=["read"],
+                builtin_tools=[],
                 output_type=InventoryAnswer,
                 output_mode="native",
                 max_model_requests=4,
                 max_tool_calls=2,
             ),
+            plugins=[FilesystemPlugin(tools=["read"])],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
         )
 

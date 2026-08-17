@@ -1,4 +1,4 @@
-"""Public API for the filesystem harness."""
+"""Public interface for ThinHarness."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
@@ -37,6 +37,7 @@ from .hooks import (
     UserPromptSubmitContext,
 )
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
+from .plugins import FilesystemPlugin, Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution
 from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
@@ -81,9 +82,9 @@ from .tools import (
     Skill,
     SkillRegistry,
     ToolEnvelope,
+    ToolOrigin,
     ToolResult,
     ToolSpec,
-    builtin_tools,
     call_tool,
     contained_path,
     create_parallel_llm_tool,
@@ -101,6 +102,7 @@ __all__ = [
     "BashArgs",
     "BashTool",
     "FileTools",
+    "FilesystemPlugin",
     "FilePromptSource",
     "InlinePromptSource",
     "Harness",
@@ -175,8 +177,14 @@ __all__ = [
     "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
+    "Plugin",
+    "PluginBinding",
+    "PluginConnector",
+    "PluginContext",
+    "PluginContribution",
     "McpToolInfo",
     "ToolEnvelope",
+    "ToolOrigin",
     "ParallelLlmArgs",
     "ParallelLlmTool",
     "ToolResult",
@@ -186,7 +194,6 @@ __all__ = [
     "OtlpTracing",
     "TracingOptions",
     "build_child_harness",
-    "builtin_tools",
     "call_tool",
     "contained_path",
     "create_parallel_llm_tool",

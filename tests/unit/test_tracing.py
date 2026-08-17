@@ -21,6 +21,7 @@ from fakes import (
 from pydantic import BaseModel
 
 from thinharness import (
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -52,6 +53,7 @@ def test_harness_tracing_records_agent_model_and_tool_spans(tmp_path: Path) -> N
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read"])],
         tracing=[TracingOptions(
             tracer=tracer,
             agent_name="test-agent",
@@ -149,6 +151,7 @@ def test_local_tracing_writes_full_jsonl_trace(tmp_path: Path, monkeypatch: pyte
             local_trace_dir=trace_dir,
         ),
         model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read"])],
     )
 
     result = harness.run_sync("read hello")
@@ -209,6 +212,7 @@ def test_local_tracing_does_not_change_remote_capture_policy(tmp_path: Path, mon
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model", local_trace_dir=trace_dir),
         model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read"])],
         tracing=[TracingOptions(tracer=remote, capture_messages=False, capture_tool_args=False, capture_tool_results=False)],
     )
 
@@ -243,6 +247,7 @@ def test_capture_messages_false_omits_content_attributes(tmp_path: Path) -> None
     harness = Harness(
         HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(FakeClient()),
+        plugins=[FilesystemPlugin(tools=["read"])],
         tracing=[TracingOptions(tracer=tracer, capture_messages=False, capture_tool_args=True, capture_tool_results=True)],
     )
 
@@ -580,7 +585,13 @@ def test_unknown_named_subagent_trace_marks_failed_without_child_tool_mode(tmp_p
         model=ScriptedModel([parent]),
         tracing=[TracingOptions(tracer=tracer)],
     )
-    harness.add_tool(create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", builtin_tools=["read"])]))
+    harness.add_tool(create_subagent_tool(harness, [
+        SubAgentConfig(
+            name="research",
+            description="Research helper.",
+            plugins=[FilesystemPlugin(tools=["read"])],
+        )
+    ]))
 
     assert harness.run_sync("delegate").text == "parent done"
     subagent_tool = next(span for span in tracer.spans if span.name == "execute_tool subagent")

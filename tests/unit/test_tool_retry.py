@@ -9,6 +9,7 @@ from pydantic import BaseModel, model_validator
 
 from thinharness import (
     AfterToolCallContext,
+    FileTools,
     Harness,
     HarnessConfig,
     HarnessError,
@@ -18,7 +19,6 @@ from thinharness import (
     ToolSpec,
     TracingOptions,
     build_child_harness,
-    builtin_tools,
     call_tool,
 )
 from thinharness.providers import ModelToolCall, ModelTurn
@@ -134,7 +134,7 @@ def test_handler_internal_validation_error_is_not_retry(tmp_path: Path) -> None:
 
 
 def test_builtin_validation_failure_is_retryable(tmp_path: Path) -> None:
-    read = next(tool for tool in builtin_tools(tmp_path) if tool.name == "read")
+    read = next(tool for tool in FileTools(tmp_path).specs() if tool.name == "read")
 
     output = tool_output(call_tool(read, '{"path":"missing.txt","limit":0}'))
 
