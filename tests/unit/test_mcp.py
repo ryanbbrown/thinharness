@@ -929,14 +929,37 @@ def test_mcp_plugin_validates_server_collection() -> None:
 
 
 def test_mcp_plugin_name_is_fixed() -> None:
-    """Instances and subclasses cannot replace the MCP plugin name."""
+    """Instances and classes cannot replace or remove the MCP plugin name."""
     plugin = MCPPlugin(servers=[])
 
     assert plugin.name == "mcp"
     with pytest.raises(AttributeError, match="fixed"):
         plugin.name = "renamed"
+    assert plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        MCPPlugin.name = "renamed"
+    assert plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        del MCPPlugin.name
+    assert plugin.name == "mcp"
+
     with pytest.raises(TypeError, match="cannot override"):
         type("RenamedMCPPlugin", (MCPPlugin,), {"name": "renamed"})
+    assert plugin.name == "mcp"
+
+    class CustomMCPPlugin(MCPPlugin):
+        pass
+
+    custom_plugin = CustomMCPPlugin(servers=[])
+    with pytest.raises(AttributeError, match="fixed"):
+        CustomMCPPlugin.name = "renamed"
+    assert custom_plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        del CustomMCPPlugin.name
+    assert custom_plugin.name == "mcp"
 
 
 def test_mcp_plugin_name_is_unique_and_config_path_is_removed(tmp_path, monkeypatch) -> None:

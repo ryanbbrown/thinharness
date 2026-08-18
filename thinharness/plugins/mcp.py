@@ -24,7 +24,21 @@ class _BoundServer:
         return await self.server.list_tools(server_id=self.resolved_id)
 
 
-class MCPPlugin:
+class _MCPPluginMeta(type):
+    """Keep the MCP plugin name fixed on the class hierarchy."""
+
+    def __setattr__(cls, attribute: str, value: object) -> None:
+        if attribute == "name":
+            raise AttributeError("MCPPlugin.name is fixed to 'mcp'")
+        super().__setattr__(attribute, value)
+
+    def __delattr__(cls, attribute: str) -> None:
+        if attribute == "name":
+            raise AttributeError("MCPPlugin.name is fixed to 'mcp'")
+        super().__delattr__(attribute)
+
+
+class MCPPlugin(metaclass=_MCPPluginMeta):
     """Expose one ordered group of MCP servers through a harness plugin."""
 
     name = "mcp"
