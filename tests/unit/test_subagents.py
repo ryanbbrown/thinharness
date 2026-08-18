@@ -216,6 +216,25 @@ def test_named_inherited_subagent_gets_parent_tools_without_subagent(tmp_path: P
     assert child.skills is parent.skills
     assert child.config.subagents == []
 
+
+def test_inherited_subagents_keep_workspace_instruction_without_duplicate_tools(tmp_path: Path) -> None:
+    parent = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        model=ScriptedModel([]),
+        plugins=[FilesystemPlugin(tools=["read", "write"])],
+    )
+
+    default_child = build_child_harness(parent, None)
+    named_child = build_child_harness(
+        parent,
+        SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True),
+    )
+
+    for child in (default_child, named_child):
+        assert [tool.name for tool in child.tools] == ["read", "write"]
+        assert child.system_instructions().count(f"Workspace root: {tmp_path.resolve()}") == 1
+
+
 def test_inherited_subagent_reuses_parent_skill_registry(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)

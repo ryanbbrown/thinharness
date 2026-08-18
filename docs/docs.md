@@ -314,7 +314,7 @@ Set `output_type` to validate the final result with Pydantic. `result.text` rema
 ```python
 from pydantic import BaseModel
 
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 
 class Summary(BaseModel):
@@ -322,11 +322,14 @@ class Summary(BaseModel):
     bullets: list[str]
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    output_type=Summary,
-    output_mode="auto",
-))
+harness = Harness(
+    HarnessConfig(
+        root=".",
+        output_type=Summary,
+        output_mode="auto",
+    ),
+    plugins=[FilesystemPlugin(tools=["read"])],
+)
 
 result = await harness.run("Summarize README.md.")
 summary: Summary = result.output

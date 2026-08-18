@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from ..tools.base import ToolOrigin
 
 if TYPE_CHECKING:
     from ..hooks import Hook
@@ -51,7 +53,11 @@ class Plugin(Protocol):
         ...
 
 
-@asynccontextmanager
-async def empty_connector() -> AsyncIterator[PluginContribution]:
-    """Return an empty connected contribution."""
-    yield PluginContribution()
+__all__ = [
+    "Plugin",
+    "PluginBinding",
+    "PluginConnector",
+    "PluginContext",
+    "PluginContribution",
+    "ToolOrigin",
+]

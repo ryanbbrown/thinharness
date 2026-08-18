@@ -190,8 +190,8 @@ class Harness:
 
         configured_plugins = tuple(plugins or [])
         plugin_names = [plugin.name for plugin in configured_plugins]
-        if any(not name.strip() for name in plugin_names):
-            raise ValueError("plugin name must be non-empty")
+        if any(not isinstance(name, str) or not name.strip() for name in plugin_names):
+            raise ValueError("plugin name must be a non-empty string")
         duplicate_plugin = next((name for index, name in enumerate(plugin_names) if name in plugin_names[:index]), None)
         if duplicate_plugin is not None:
             raise ValueError(f"duplicate plugin name: {duplicate_plugin}")
@@ -244,6 +244,8 @@ class Harness:
         self._plugin_stack: AsyncExitStack | None = None
         self._connected = False
         self._connect_lock = asyncio.Lock()
+        self._connect_task: asyncio.Task[None] | None = None
+        self._connect_waiters = 0
         self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
@@ -619,22 +621,39 @@ class Harness:
 
     async def aclose(self) -> None:
         """Close connected plugins, MCP servers, and an owned model."""
-        if self._closed:
-            return
-        try:
-            if self._mcp_stack is not None:
-                await self._mcp_stack.aclose()
-                self._mcp_stack = None
-            if self._plugin_stack is not None:
-                await self._plugin_stack.aclose()
-                self._plugin_stack = None
-            self._connected = False
-            if self._owns_model:
-                aclose = getattr(self.model.provider, "aclose", None)
-                if aclose is not None:
-                    await aclose()
-        finally:
+        async with self._connect_lock:
+            if self._closed:
+                return
             self._closed = True
+            connect_task = self._connect_task
+            caller_cancelled = False
+            if connect_task is not None and not connect_task.done():
+                current_task = asyncio.current_task()
+                pending_cancels = current_task.cancelling() if current_task is not None else 0
+                connect_task.cancel()
+                try:
+                    await connect_task
+                except asyncio.CancelledError:
+                    caller_cancelled = current_task is not None and current_task.cancelling() > pending_cancels
+                except BaseException:
+                    pass
+            mcp_stack = self._mcp_stack
+            plugin_stack = self._plugin_stack
+            self._mcp_stack = None
+            self._plugin_stack = None
+            self._connected = False
+            close_error = await self._close_resources(
+                mcp_stack=mcp_stack,
+                plugin_stack=plugin_stack,
+                close_model=self._owns_model,
+            )
+            if caller_cancelled:
+                cancellation = asyncio.CancelledError()
+                if close_error is not None:
+                    cancellation.add_note(f"cleanup also failed: {type(close_error).__name__}: {close_error}")
+                raise cancellation
+            if close_error is not None:
+                raise close_error
 
     async def __aenter__(self) -> Harness:
         """Enter an async harness lifecycle."""
@@ -805,70 +824,127 @@ class Harness:
         await self._ensure_connected()
 
     async def _ensure_connected(self) -> None:
-        """Connect every dynamic contribution once and commit it atomically."""
+        """Share one connection attempt and commit its contributions atomically."""
+        if self._closed:
+            raise HarnessError("harness is closed")
         if self._connected:
             return
         async with self._connect_lock:
+            if self._closed:
+                raise HarnessError("harness is closed")
             if self._connected:
                 return
-            plugin_stack = AsyncExitStack()
-            mcp_stack: AsyncExitStack | None = None
-            base_hooks = list(self.hooks.hooks)
+            task = self._connect_task
+            if task is None or (task.done() and self._connect_waiters == 0):
+                task = asyncio.create_task(self._connect_once())
+                self._connect_task = task
+            self._connect_waiters += 1
+        try:
+            await task
+        finally:
+            async with self._connect_lock:
+                self._connect_waiters -= 1
+                if (
+                    self._connect_waiters == 0
+                    and task.done()
+                    and not self._connected
+                    and self._connect_task is task
+                ):
+                    self._connect_task = None
+
+    async def _connect_once(self) -> None:
+        """Open every dynamic contribution for one shared connection attempt."""
+        plugin_stack = AsyncExitStack()
+        mcp_stack: AsyncExitStack | None = None
+        base_hooks = list(self.hooks.hooks)
+        try:
+            dynamic_tools: list[ToolSpec] = []
+            dynamic_instructions: list[str] = []
+            dynamic_hooks: list[Hook] = []
+            for plugin, binding in zip(self.plugins, self._plugin_bindings, strict=True):
+                if binding.connect is None:
+                    continue
+                contribution = await plugin_stack.enter_async_context(binding.connect())
+                normalized = self._normalize_contribution(plugin.name, contribution)
+                dynamic_tools.extend(normalized.tools)
+                dynamic_instructions.extend(normalized.instructions)
+                dynamic_hooks.extend(normalized.hooks)
+
+            candidate_tools = [*self._base_tools, *dynamic_tools]
+            self._validate_tool_list(
+                candidate_tools,
+                output_schema=self.output_schema,
+                model_supports_approval_resume=self._model_supports_approval_resume(),
+                is_child_run=self._is_child_run,
+            )
+            candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
+            self._validate_hook_registry(candidate_hooks, self.config.subagents)
+            self._validate_skill_tool_selection_for(self.skills, candidate_tools)
+
+            mcp_stack, mcp_tools = await self._open_mcp_tools(candidate_tools)
+            all_tools = [*candidate_tools, *mcp_tools]
+            self._validate_tool_list(
+                all_tools,
+                output_schema=self.output_schema,
+                model_supports_approval_resume=self._model_supports_approval_resume(),
+                is_child_run=self._is_child_run,
+            )
+            if self._closed:
+                raise HarnessError("harness is closed")
+
+            self.tools = all_tools
+            self._tool_map = {tool.name: tool for tool in all_tools}
+            self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
+            self.hooks = candidate_hooks
+            self._skills_enabled = bool(self.skills.skills) and any(
+                tool.name in {"skill_read", "skill_run"} for tool in self.tools
+            )
+            self._plugin_stack = plugin_stack
+            self._mcp_stack = mcp_stack
+            self._connected = True
+        except BaseException as exc:
+            cleanup_error = await self._close_resources(
+                mcp_stack=mcp_stack,
+                plugin_stack=plugin_stack,
+                close_model=False,
+            )
+            self.tools = list(self._base_tools)
+            self._tool_map = {tool.name: tool for tool in self.tools}
+            self._plugin_instructions = list(self._base_instructions)
+            self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
+            self._skills_enabled = bool(self.skills.skills) and any(
+                tool.name in {"skill_read", "skill_run"} for tool in self.tools
+            )
+            if cleanup_error is not None:
+                exc.add_note(f"cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
+            raise
+
+    async def _close_resources(
+        self,
+        *,
+        mcp_stack: AsyncExitStack | None,
+        plugin_stack: AsyncExitStack | None,
+        close_model: bool,
+    ) -> BaseException | None:
+        """Attempt every close in order and return the first failure."""
+        first_error: BaseException | None = None
+        for stack in (mcp_stack, plugin_stack):
+            if stack is None:
+                continue
             try:
-                dynamic_tools: list[ToolSpec] = []
-                dynamic_instructions: list[str] = []
-                dynamic_hooks: list[Hook] = []
-                for plugin, binding in zip(self.plugins, self._plugin_bindings, strict=True):
-                    if binding.connect is None:
-                        continue
-                    contribution = await plugin_stack.enter_async_context(binding.connect())
-                    normalized = self._normalize_contribution(plugin.name, contribution)
-                    dynamic_tools.extend(normalized.tools)
-                    dynamic_instructions.extend(normalized.instructions)
-                    dynamic_hooks.extend(normalized.hooks)
-
-                candidate_tools = [*self._base_tools, *dynamic_tools]
-                self._validate_tool_list(
-                    candidate_tools,
-                    output_schema=self.output_schema,
-                    model_supports_approval_resume=self._model_supports_approval_resume(),
-                    is_child_run=self._is_child_run,
-                )
-                candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
-                self._validate_hook_registry(candidate_hooks, self.config.subagents)
-                self._validate_skill_tool_selection_for(self.skills, candidate_tools)
-
-                mcp_stack, mcp_tools = await self._open_mcp_tools(candidate_tools)
-                all_tools = [*candidate_tools, *mcp_tools]
-                self._validate_tool_list(
-                    all_tools,
-                    output_schema=self.output_schema,
-                    model_supports_approval_resume=self._model_supports_approval_resume(),
-                    is_child_run=self._is_child_run,
-                )
-
-                self.tools = all_tools
-                self._tool_map = {tool.name: tool for tool in all_tools}
-                self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
-                self.hooks = candidate_hooks
-                self._skills_enabled = bool(self.skills.skills) and any(
-                    tool.name in {"skill_read", "skill_run"} for tool in self.tools
-                )
-                self._plugin_stack = plugin_stack
-                self._mcp_stack = mcp_stack
-                self._connected = True
-            except BaseException:
-                if mcp_stack is not None:
-                    await mcp_stack.aclose()
-                await plugin_stack.aclose()
-                self.tools = list(self._base_tools)
-                self._tool_map = {tool.name: tool for tool in self.tools}
-                self._plugin_instructions = list(self._base_instructions)
-                self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
-                self._skills_enabled = bool(self.skills.skills) and any(
-                    tool.name in {"skill_read", "skill_run"} for tool in self.tools
-                )
-                raise
+                await stack.aclose()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if close_model:
+            aclose = getattr(self.model.provider, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+        return first_error
 
     async def _open_mcp_tools(self, existing_tools: list[ToolSpec]) -> tuple[AsyncExitStack | None, list[ToolSpec]]:
         """Open the temporary MCP bridge and stage its discovered tools."""

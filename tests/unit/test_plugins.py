@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+import json
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import pytest
 from fakes import ScriptedModel, ScriptedSession, echo_tool
+from pydantic import BaseModel
 
+import thinharness.core as core_module
 from thinharness import (
     FilesystemPlugin,
     Harness,
     HarnessConfig,
+    HarnessError,
     Hook,
     HookRegistry,
+    ModelToolCall,
     ModelTurn,
     PluginBinding,
     PluginContext,
@@ -20,6 +25,8 @@ from thinharness import (
     ToolOrigin,
     ToolSpec,
 )
+from thinharness.plugins import ToolOrigin as PluginToolOrigin
+from thinharness.tools.base import ToolOrigin as DefinedToolOrigin
 
 
 def _tool(name: str) -> ToolSpec:
@@ -288,8 +295,436 @@ def test_one_plugin_object_binds_independently_to_two_harnesses(tmp_path: Path) 
     assert first.tools[0] is not second.tools[0]
 
 
+def test_filesystem_bind_performs_no_metadata_io(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path.resolve()
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("filesystem metadata used during bind")
+
+    monkeypatch.setattr(Path, "resolve", fail)
+    monkeypatch.setattr(Path, "exists", fail)
+    monkeypatch.setattr(Path, "is_file", fail)
+
+    binding = FilesystemPlugin(read_paths=["future"], write_paths=["outputs"]).bind(PluginContext(root=root))
+
+    assert [tool.name for tool in binding.static.tools] == ["read", "write", "edit", "search", "list", "glob"]
+
+
+def test_tool_origin_is_exported_from_plugin_contract() -> None:
+    assert PluginToolOrigin is ToolOrigin
+    assert DefinedToolOrigin is ToolOrigin
+
+
+def test_plugin_name_must_be_string(tmp_path: Path) -> None:
+    plugin = StaticPlugin("valid")
+    plugin.name = 1  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+
+
+async def test_sequential_runs_reuse_one_connection(tmp_path: Path) -> None:
+    events: list[str] = []
+    plugin = ConnectedPlugin("connected", events, PluginContribution())
+    model = ScriptedModel([
+        ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
+        ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
+    ])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, plugins=[plugin])
+
+    assert (await harness.run("one")).text == "first"
+    assert (await harness.run("two")).text == "second"
+    assert plugin.attempts == 1
+
+    await harness.aclose()
+
+
+async def test_concurrent_failed_connection_is_shared_then_retryable(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class GatedPlugin:
+        name = "gated"
+
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                self.attempts += 1
+                if self.attempts == 1:
+                    entered.set()
+                    await release.wait()
+                    raise RuntimeError("shared failure")
+                yield PluginContribution()
+
+            return PluginBinding(connect=connect)
+
+    plugin = GatedPlugin()
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+    calls = [asyncio.create_task(harness.connect()) for _ in range(3)]
+    await entered.wait()
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*calls, return_exceptions=True)
+
+    assert plugin.attempts == 1
+    assert all(isinstance(result, RuntimeError) and str(result) == "shared failure" for result in results)
+
+    await harness.connect()
+    assert plugin.attempts == 2
+    await harness.aclose()
+
+
+async def test_concurrent_cancelled_connection_is_shared_then_retryable(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class CancellingPlugin:
+        name = "cancel"
+
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                self.attempts += 1
+                if self.attempts == 1:
+                    entered.set()
+                    await release.wait()
+                    raise asyncio.CancelledError
+                yield PluginContribution()
+
+            return PluginBinding(connect=connect)
+
+    plugin = CancellingPlugin()
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+    calls = [asyncio.create_task(harness.connect()) for _ in range(3)]
+    await entered.wait()
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*calls, return_exceptions=True)
+
+    assert plugin.attempts == 1
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+
+    await harness.connect()
+    assert plugin.attempts == 2
+    await harness.aclose()
+
+
+async def test_aclose_cancels_inflight_connection_without_leak(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    exited = asyncio.Event()
+
+    class SlowPlugin:
+        name = "slow"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                    yield PluginContribution()  # pragma: no cover
+                finally:
+                    exited.set()
+
+            return PluginBinding(connect=connect)
+
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[SlowPlugin()])
+    connection = asyncio.create_task(harness.connect())
+    await entered.wait()
+
+    await harness.aclose()
+
+    with pytest.raises(asyncio.CancelledError):
+        await connection
+    assert exited.is_set()
+    assert harness._plugin_stack is None
+    assert harness._mcp_stack is None
+    with pytest.raises(HarnessError, match="harness is closed"):
+        await harness.connect()
+
+
+async def test_aclose_propagates_caller_cancellation_after_connection_cleanup(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    exited = asyncio.Event()
+
+    class SlowCleanupPlugin:
+        name = "slow-cleanup"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                    yield PluginContribution()  # pragma: no cover
+                finally:
+                    cleanup_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        exited.set()
+
+            return PluginBinding(connect=connect)
+
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[SlowCleanupPlugin()])
+    connection = asyncio.create_task(harness.connect())
+    await entered.wait()
+    closing = asyncio.create_task(harness.aclose())
+    await cleanup_started.wait()
+
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    with pytest.raises(asyncio.CancelledError):
+        await connection
+    assert exited.is_set()
+    assert harness._plugin_stack is None
+
+
+async def test_failed_connection_attempts_every_plugin_cleanup(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class CleanupPlugin:
+        def __init__(self, name: str, contribution: PluginContribution, *, fail_close: bool = False) -> None:
+            self.name = name
+            self.contribution = contribution
+            self.fail_close = fail_close
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                try:
+                    yield self.contribution
+                finally:
+                    events.append(self.name)
+                    if self.fail_close:
+                        raise RuntimeError(f"{self.name} close failed")
+
+            return PluginBinding(connect=connect)
+
+    first = CleanupPlugin("first", PluginContribution(), fail_close=True)
+    second = CleanupPlugin("second", PluginContribution(tools=(_tool("subagent"),)))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[first, second])
+
+    with pytest.raises(ValueError, match="reserved tool name") as raised:
+        await harness.connect()
+
+    assert events == ["second", "first"]
+    assert any("cleanup also failed" in note for note in raised.value.__notes__)
+    assert harness.tools == []
+
+
+async def test_close_attempts_all_resources_after_failures(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class FailingClosePlugin:
+        name = "plugin"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                try:
+                    yield PluginContribution()
+                finally:
+                    events.append("plugin")
+                    raise RuntimeError("plugin close failed")
+
+            return PluginBinding(connect=connect)
+
+    class ClosingProvider:
+        name = "OpenAI"
+
+        async def aclose(self) -> None:
+            events.append("model")
+            raise RuntimeError("model close failed")
+
+    model = ScriptedModel([])
+    model.provider = ClosingProvider()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=model,
+        plugins=[FailingClosePlugin()],
+        _owns_model=True,
+    )
+    await harness.connect()
+    mcp_stack = AsyncExitStack()
+
+    async def close_mcp() -> None:
+        events.append("mcp")
+        raise RuntimeError("mcp close failed")
+
+    mcp_stack.push_async_callback(close_mcp)
+    harness._mcp_stack = mcp_stack
+
+    with pytest.raises(RuntimeError, match="mcp close failed"):
+        await harness.aclose()
+
+    assert events == ["mcp", "plugin", "model"]
+    assert harness._mcp_stack is None
+    assert harness._plugin_stack is None
+
+
+class _Answer(BaseModel):
+    value: str
+
+
+async def test_dynamic_structured_output_collision_rolls_back(tmp_path: Path) -> None:
+    plugin = ConnectedPlugin("bad", [], PluginContribution(tools=(_tool("final_result"),)))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, output_type=_Answer, output_mode="tool"),
+        model=ScriptedModel([]),
+        plugins=[plugin],
+    )
+
+    with pytest.raises(ValueError, match="reserved for structured output"):
+        await harness.connect()
+    assert harness.tools == []
+
+
+async def test_dynamic_approval_tool_requires_resumable_model(tmp_path: Path) -> None:
+    class NonResumableModel:
+        model = "non-resumable"
+        provider = type("Provider", (), {"name": "OpenAI"})()
+
+        def new_session(self):
+            raise AssertionError("not used")
+
+    approval = ToolSpec("approve", "approve", {"type": "object", "properties": {}}, lambda _args: "ok", requires_approval=True)
+    plugin = ConnectedPlugin("bad", [], PluginContribution(tools=(approval,)))
+    harness = Harness(HarnessConfig(root=tmp_path), model=NonResumableModel(), plugins=[plugin])
+
+    with pytest.raises(ValueError, match="resumable model"):
+        await harness.connect()
+    assert harness.tools == []
+
+
+async def test_dynamic_non_callable_handler_rolls_back(tmp_path: Path) -> None:
+    invalid = ToolSpec("invalid", "invalid", {"type": "object", "properties": {}}, None)  # type: ignore[arg-type]
+    plugin = ConnectedPlugin("bad", [], PluginContribution(tools=(invalid,)))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+
+    with pytest.raises(TypeError, match="not callable"):
+        await harness.connect()
+    assert harness.tools == []
+
+
+async def test_connected_plugin_toolset_is_frozen_during_run(tmp_path: Path) -> None:
+    outputs: list[str] = []
+
+    class FreezeSession:
+        def __init__(self) -> None:
+            self.continues = 0
+
+        async def start(self, prompt, constants, **_kwargs):
+            assert [tool["name"] for tool in constants.tools] == ["register"]
+            return ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="register", arguments="{}")], raw={"id": "start"})
+
+        async def continue_with_tools(self, tool_outputs, constants, **_kwargs):
+            outputs.extend(output.output for output in tool_outputs)
+            self.continues += 1
+            if self.continues == 1:
+                assert [tool["name"] for tool in constants.tools] == ["register"]
+                return ModelTurn(tool_calls=[ModelToolCall(id="call_2", name="late", arguments="{}")], raw={"id": "late"})
+            return ModelTurn(text="done", raw={"id": "done"})
+
+        async def continue_with_user_text(self, text, constants, **_kwargs):
+            raise AssertionError("not used")
+
+        def dump_state(self):
+            return {"kind": "scripted", "version": 1, "model": "scripted-model"}
+
+    harness: Harness
+
+    def register(_args):
+        harness.add_tool(_tool("late"))
+        return "registered"
+
+    plugin = ConnectedPlugin("dynamic", [], PluginContribution(tools=(ToolSpec(
+        "register", "register", {"type": "object", "properties": {}}, register,
+    ),)))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([FreezeSession()]), plugins=[plugin])
+
+    assert (await harness.run("go")).text == "done"
+    assert "late" in [tool.name for tool in harness.tools]
+    late = json.loads(outputs[-1])
+    assert late["ok"] is False
+    assert "unknown tool late" in late["content"]
+
+    await harness.aclose()
+
+
+async def test_added_tool_survives_failed_connection_and_retry(tmp_path: Path) -> None:
+    plugin = ConnectedPlugin("failing", [], PluginContribution(tools=(_tool("dynamic"),)), fail_first=True)
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+    harness.add_tool(_tool("direct"))
+
+    with pytest.raises(RuntimeError, match="failed:failing"):
+        await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["direct"]
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["direct", "dynamic"]
+    await harness.aclose()
+
+
+def test_missing_root_filesystem_tools_and_write_creation(tmp_path: Path) -> None:
+    root = tmp_path / "missing"
+    harness = Harness(
+        HarnessConfig(root=root),
+        model=ScriptedModel([]),
+        plugins=[FilesystemPlugin(tools=["list", "glob", "jsonl_search", "write"])],
+    )
+    by_name = {tool.name: tool for tool in harness.tools}
+
+    listed = by_name["list"].handler(by_name["list"].parse_args({"path": "."}))
+    globbed = by_name["glob"].handler(by_name["glob"].parse_args({"pattern": "**/*"}))
+    jsonl = by_name["jsonl_search"].handler(by_name["jsonl_search"].parse_args({"path": "."}))
+
+    assert listed.ok is False
+    assert globbed.ok is True
+    assert jsonl.ok is True
+    assert not root.exists()
+
+    written = by_name["write"].handler(by_name["write"].parse_args({"path": "nested/out.txt", "content": "ok"}))
+    assert written.ok is True
+    assert (root / "nested/out.txt").read_text() == "ok"
+
+
+def test_shared_filesystem_plugin_has_independent_binding_state(tmp_path: Path) -> None:
+    plugin = FilesystemPlugin(tools=["write"])
+    first = Harness(HarnessConfig(root=tmp_path / "first"), model=ScriptedModel([]), plugins=[plugin])
+    second = Harness(HarnessConfig(root=tmp_path / "second"), model=ScriptedModel([]), plugins=[plugin])
+
+    first.tools[0].handler(first.tools[0].parse_args({"path": "same.txt", "content": "first"}))
+    second.tools[0].handler(second.tools[0].parse_args({"path": "same.txt", "content": "second"}))
+
+    assert (tmp_path / "first/same.txt").read_text() == "first"
+    assert (tmp_path / "second/same.txt").read_text() == "second"
+
+
+def test_harness_plugins_preserve_order_and_empty_filesystem_instruction(tmp_path: Path) -> None:
+    first = StaticPlugin("first")
+    filesystem = FilesystemPlugin(tools=[])
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[first, filesystem],
+    )
+
+    assert harness.plugins == (first, filesystem)
+    assert harness.tools == []
+    assert harness.system_instructions().count(f"Workspace root: {tmp_path.resolve()}") == 1
+
+
 def test_core_does_not_import_filesystem_implementation() -> None:
-    source = Path("thinharness/core.py").read_text(encoding="utf-8")
+    source = Path(core_module.__file__).read_text(encoding="utf-8")
 
     assert "tools.filesystem" not in source
     assert "plugins.filesystem" not in source

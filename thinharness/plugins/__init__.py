@@ -1,6 +1,6 @@
 """Built-in plugin contracts and adapters."""
 
-from .base import Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution
+from .base import Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution, ToolOrigin
 from .filesystem import FilesystemPlugin
 
 __all__ = [
@@ -10,4 +10,5 @@ __all__ = [
     "PluginConnector",
     "PluginContext",
     "PluginContribution",
+    "ToolOrigin",
 ]

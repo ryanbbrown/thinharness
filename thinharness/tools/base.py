@@ -6,6 +6,7 @@ import asyncio
 import copy
 import inspect
 import json
+import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -142,10 +143,9 @@ class ModelRetry(Exception):
 
 @dataclass(frozen=True)
 class AllowedPath:
-    """One resolved path allowed by a workspace path policy."""
+    """One lexically normalized path allowed by a workspace path policy."""
 
     path: Path
-    exact: bool = False
 
 
 class PathValidationError(ValueError):
@@ -179,22 +179,22 @@ class PathPolicy:
         resolved = path.resolve()
         if not _is_relative_to(resolved, self.root):
             return False
-        for allowed in self.allowed_paths:
-            if allowed.exact:
-                if resolved == allowed.path:
-                    return True
-            elif resolved == allowed.path or allowed.path in resolved.parents:
+        for configured in self.allowed_paths:
+            allowed = contained_path(self.root, configured.path)
+            if resolved == allowed:
+                return True
+            if allowed in resolved.parents and not allowed.is_file():
                 return True
         return False
 
     def existing_search_roots(self) -> list[Path]:
         """Return existing allow roots for commands that accept search paths."""
-        return [allowed.path for allowed in self.allowed_paths if allowed.path.exists()]
+        roots = [contained_path(self.root, configured.path) for configured in self.allowed_paths]
+        return [root for root in roots if root.exists()]
 
     def _allowed_path(self, raw: str | Path) -> AllowedPath:
-        """Normalize a configured allow path under the workspace root."""
-        resolved = contained_path(self.root, raw)
-        return AllowedPath(resolved, exact=resolved.exists() and resolved.is_file())
+        """Normalize a configured allow path without filesystem metadata I/O."""
+        return AllowedPath(_lexical_path_under_root(self.root, raw))
 
 class StrictArgs(BaseModel):
     """Base class for tool arguments."""
@@ -329,6 +329,21 @@ def _is_async_callable(handler: ToolHandler) -> bool:
 def contained_path(root: Path, raw: str | Path) -> Path:
     """Resolve a path and require it to remain inside root."""
     return _resolve_under_root(root, raw)
+
+
+def lexical_contained_path(root: Path, raw: str | Path) -> Path:
+    """Normalize a contained path without consulting filesystem metadata."""
+    return _lexical_path_under_root(root, raw)
+
+
+def _lexical_path_under_root(root: Path, raw: str | Path) -> Path:
+    """Normalize raw under root lexically and reject parent traversal."""
+    path = Path(raw).expanduser()
+    candidate = path if path.is_absolute() else root / path
+    normalized = Path(os.path.abspath(candidate))
+    if not _is_relative_to(normalized, root):
+        raise PathValidationError(f"path escapes root: {raw}")
+    return normalized
 
 
 def _resolve_under_root(root: Path, raw: str | Path) -> Path:

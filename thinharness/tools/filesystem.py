@@ -40,6 +40,7 @@ from .base import (
     _timeout_error_message,
     coerce_args,
     contained_path,
+    lexical_contained_path,
 )
 from .search_support import (
     SearchFile,
@@ -129,11 +130,13 @@ class FileTools:
         search_exclude_globs: list[str] | None = None,
         read_paths: Sequence[str | Path] | None = None,
         write_paths: Sequence[str | Path] | None = None,
+        _root_is_resolved: bool = False,
     ) -> None:
         from .jsonl import JsonlSearch
 
-        self.root = Path(root).expanduser().resolve()
-        self.output_dir = contained_path(self.root, output_dir or ".thinharness/outputs")
+        root_path = Path(root).expanduser()
+        self.root = root_path if _root_is_resolved else root_path.resolve()
+        self.output_dir = lexical_contained_path(self.root, output_dir or ".thinharness/outputs")
         self._spill_artifacts: set[Path] = set()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
@@ -497,7 +500,7 @@ class FileTools:
     def _is_readable_spill_artifact(self, path: Path) -> bool:
         """Return whether path is an exact generated spill artifact."""
         resolved = path.resolve()
-        output_dir = self.output_dir.resolve()
+        output_dir = contained_path(self.root, self.output_dir)
         return resolved in self._spill_artifacts and (resolved == output_dir or output_dir in resolved.parents)
 
     @staticmethod
@@ -555,8 +558,9 @@ class FileTools:
         limit = max_chars or self.max_tool_chars
         if len(text) <= limit:
             return ToolResult(True, text)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        artifact = self.output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
+        output_dir = contained_path(self.root, self.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact = output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
         artifact.write_text(text, encoding="utf-8")
         resolved_artifact = artifact.resolve()
         self._spill_artifacts.add(resolved_artifact)

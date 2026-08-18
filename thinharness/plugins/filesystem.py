@@ -38,21 +38,31 @@ class FilesystemPlugin:
         if len(set(selected)) != len(selected):
             raise ValueError("FilesystemPlugin tools contains a duplicate name")
         self._selected = selected
-        self._options = {
-            "output_dir": output_dir,
-            "max_read_chars": max_read_chars,
-            "max_read_bytes": max_read_bytes,
-            "max_tool_chars": max_tool_chars,
-            "max_search_line_chars": max_search_line_chars,
-            "rg_timeout": rg_timeout,
-            "search_exclude_globs": search_exclude_globs,
-            "read_paths": read_paths,
-            "write_paths": write_paths,
-        }
+        self._output_dir = output_dir
+        self._max_read_chars = max_read_chars
+        self._max_read_bytes = max_read_bytes
+        self._max_tool_chars = max_tool_chars
+        self._max_search_line_chars = max_search_line_chars
+        self._rg_timeout = rg_timeout
+        self._search_exclude_globs = list(search_exclude_globs) if search_exclude_globs is not None else None
+        self._read_paths = tuple(read_paths) if read_paths is not None else None
+        self._write_paths = tuple(write_paths) if write_paths is not None else None
 
     def bind(self, context: PluginContext) -> PluginBinding:
         """Build static tool specifications without filesystem I/O."""
-        collection = FileTools(context.root, **self._options)
+        collection = FileTools(
+            context.root,
+            output_dir=self._output_dir,
+            max_read_chars=self._max_read_chars,
+            max_read_bytes=self._max_read_bytes,
+            max_tool_chars=self._max_tool_chars,
+            max_search_line_chars=self._max_search_line_chars,
+            rg_timeout=self._rg_timeout,
+            search_exclude_globs=self._search_exclude_globs,
+            read_paths=self._read_paths,
+            write_paths=self._write_paths,
+            _root_is_resolved=True,
+        )
         by_name = {tool.name: tool for tool in collection.specs()}
         unknown = [name for name in self._selected if name not in by_name]
         if unknown:

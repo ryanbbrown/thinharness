@@ -291,7 +291,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
     return Harness(
         child_config,
         model=child_model,
-        plugins=[] if inherit_tools or config is None else config.plugins,
+        plugins=_inherited_instruction_plugins(parent) if inherit_tools else (config.plugins if config is not None else []),
         tools=_effective_custom_tools(parent, config),
         tracing=_child_tracing(parent, config),
         skills=parent.skills if inherit_tools else None,
@@ -320,6 +320,16 @@ def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> l
             if tool.name != "subagent" and tool.kind != "mcp" and not tool.requires_approval
         ]
     return list(config.tools)
+
+
+def _inherited_instruction_plugins(parent: Harness) -> list[Plugin]:
+    """Preserve instructions for inherited filesystem tools without duplicating them."""
+    has_filesystem_tools = any(tool.origin is not None and tool.origin.plugin == "filesystem" for tool in parent.tools)
+    if not has_filesystem_tools:
+        return []
+    from .plugins.filesystem import FilesystemPlugin
+
+    return [FilesystemPlugin(tools=[])]
 
 
 def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> list[TracingOptions]:
