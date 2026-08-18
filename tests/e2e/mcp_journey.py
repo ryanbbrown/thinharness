@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -49,7 +50,25 @@ class DeterministicModel:
 
 def main() -> None:
     """Run local stdio discovery, execution, and cleanup end to end."""
+    missing = _missing_mcp_dependencies()
+    if missing:
+        packages = ", ".join(missing)
+        print(f"SKIP mcp_journey missing optional dependencies: {packages}; install thinharness[mcp]")
+        return
     asyncio.run(_run())
+
+
+def _missing_mcp_dependencies() -> list[str]:
+    """Return MCP packages that are not installed."""
+    missing: list[str] = []
+    for package in ("mcp", "fastmcp"):
+        try:
+            available = importlib.util.find_spec(package) is not None
+        except (ImportError, ValueError):
+            available = False
+        if not available:
+            missing.append(package)
+    return missing
 
 
 async def _run() -> None:

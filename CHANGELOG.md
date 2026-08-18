@@ -6,6 +6,8 @@
 - Added `FilesystemPlugin` for the ordered workspace tool surface; `jsonl_search` remains opt-in through this plugin.
 - Added `MCPPlugin` for lazy MCP server connection, binding-local server identity, atomic tool discovery, and generic tool origin attribution.
 - **Breaking:** Removed `HarnessConfig.mcp_servers`, `McpToolInfo`, and the MCP `ToolKind`; configure one `MCPPlugin` with all harness servers.
+- **Breaking:** Generic plugin validation now reports MCP tool collisions as duplicate tool names. Use MCP `tool_prefix`, `include_tools`, or `exclude_tools` to prevent collisions.
+- **Breaking:** Removed `MCPServer.resolve_id()` and post-bind mutation of `server.id`. The public `server.id` remains the base ID; binding-local IDs, including duplicate suffixes, appear in tool origin and result metadata.
 - **Breaking:** `Harness` no longer enables filesystem tools by default. Pass `plugins=[FilesystemPlugin(...)]`; independent custom tools still use `tools=`.
 - **Breaking:** Removed filesystem settings from `HarnessConfig` and removed the `builtin_tools()` helper. `read_paths` and `write_paths` remain temporarily for the transitional parallel-LLM built-in.
 - Changed connection setup to complete before `run_start` hooks. A connection failure does not fire run lifecycle hooks.

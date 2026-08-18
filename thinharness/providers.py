@@ -138,8 +138,8 @@ class StructuredOutputRequest:
 class RequestConstants:
     """Per-run request constants passed to every ModelSession request.
 
-    Built once per run after run-start hooks and MCP connection, so the
-    toolset and instructions are frozen for the run.
+    Built once per run after generic plugin connection and run-start hooks,
+    so the toolset and instructions are frozen for the run.
     """
 
     instructions: str

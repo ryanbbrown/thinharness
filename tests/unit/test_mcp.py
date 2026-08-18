@@ -916,6 +916,29 @@ async def test_harness_connects_mcp_once_across_async_runs(tmp_path, monkeypatch
     assert server.call_records == [("remote", {"value": "ok"})]
 
 
+def test_mcp_plugin_validates_server_collection() -> None:
+    """MCP server configuration is ordered, typed, and unique by identity."""
+    server = MCPServerStdio("unused")
+
+    with pytest.raises(TypeError, match="ordered sequence"):
+        MCPPlugin(servers={server})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="only MCPServer"):
+        MCPPlugin(servers=[object()])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="same server object"):
+        MCPPlugin(servers=[server, server])
+
+
+def test_mcp_plugin_name_is_fixed() -> None:
+    """Instances and subclasses cannot replace the MCP plugin name."""
+    plugin = MCPPlugin(servers=[])
+
+    assert plugin.name == "mcp"
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin.name = "renamed"
+    with pytest.raises(TypeError, match="cannot override"):
+        type("RenamedMCPPlugin", (MCPPlugin,), {"name": "renamed"})
+
+
 def test_mcp_plugin_name_is_unique_and_config_path_is_removed(tmp_path, monkeypatch) -> None:
     """One fixed-name MCP plugin is allowed and the old config path is rejected."""
     first = scripted_server(monkeypatch, {"first": _schema()})
@@ -930,11 +953,25 @@ def test_mcp_plugin_name_is_unique_and_config_path_is_removed(tmp_path, monkeypa
     assert "mcp_servers" not in HarnessConfig.model_fields
 
 
+async def test_empty_mcp_plugin_connects_without_tools(tmp_path) -> None:
+    """An empty MCP plugin is a valid connected contribution."""
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        plugins=[MCPPlugin(servers=[])],
+        model=ScriptedModel([]),
+    )
+
+    await harness.connect()
+    assert harness.tools == []
+    await harness.aclose()
+
+
 async def test_explicit_connect_does_not_reconnect_on_run(tmp_path, monkeypatch) -> None:
     """Explicit connect discovers MCP tools once before run."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
     harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), plugins=[MCPPlugin(servers=[server])], model=_fake_openai(MultiCallClient([])))
 
+    await harness.connect()
     await harness.connect()
     result = await harness.run("go")
     await harness.aclose()
@@ -1033,6 +1070,54 @@ async def test_partial_connect_failure_cleans_up(tmp_path) -> None:
     await harness.aclose()
 
 
+async def test_cancellation_during_failed_discovery_cleanup_propagates_and_retries(tmp_path) -> None:
+    """Caller cancellation during failed discovery cleanup wins after cleanup."""
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class FailingDiscoverySlowCleanupServer(ObservedMCPServer):
+        def __init__(self, transport: Any, **kwargs: Any) -> None:
+            super().__init__(transport, **kwargs)
+            self.attempts = 0
+            self.block_cleanup = True
+
+        async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise MCPError("discovery failed")
+            return await super().list_tools(server_id=server_id)
+
+        async def __aexit__(self, *exc: object) -> None:
+            if self.block_cleanup:
+                self.block_cleanup = False
+                cleanup_started.set()
+                await release_cleanup.wait()
+            await super().__aexit__(*exc)
+
+    backend = FastMCP("failed-discovery-slow-cleanup")
+    backend.tool(_echo_handler("recovered", []), name="recovered")
+    server = FailingDiscoverySlowCleanupServer(FastMCPTransport(backend), id="slow-cleanup")
+    harness = Harness(
+        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        plugins=[MCPPlugin(servers=[server])],
+        model=ScriptedModel([]),
+    )
+    connecting = asyncio.create_task(harness.connect())
+    await cleanup_started.wait()
+
+    connecting.cancel()
+    await asyncio.sleep(0)
+    assert not connecting.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert harness.tools == []
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["recovered"]
+    await harness.aclose()
+
+
 async def test_direct_tool_collision_rolls_back_mcp(tmp_path, monkeypatch) -> None:
     """Discovered MCP tools collide atomically with direct tools."""
     server = scripted_server(monkeypatch, {"shared": _schema()})
@@ -1113,8 +1198,11 @@ async def test_duplicate_derived_id_disambiguated(tmp_path, monkeypatch) -> None
     await harness.connect()
     await harness.aclose()
 
-    metadata = {tool.name: tool.origin.source for tool in harness.tools if tool.origin is not None}
-    assert metadata == {"one": "same", "two": "same-2"}
+    metadata = {tool.name: tool.origin for tool in harness.tools if tool.origin is not None}
+    assert metadata == {
+        "one": ToolOrigin(plugin="mcp", source="same", attributes={"tool_name": "one"}),
+        "two": ToolOrigin(plugin="mcp", source="same-2", attributes={"tool_name": "two"}),
+    }
 
 
 async def test_binding_local_ids_stay_stable_for_shared_server(tmp_path, monkeypatch) -> None:

@@ -769,14 +769,6 @@ class Harness:
             is_child_run=is_child_run,
         )
 
-    def _validate_tool_approval_policy(self, tool: ToolSpec) -> None:
-        """Reject approval policies incompatible with this harness configuration."""
-        self._validate_tool_approval_policy_for(
-            tool,
-            model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
-        )
-
     @staticmethod
     def _validate_tool_approval_policy_for(
         tool: ToolSpec,

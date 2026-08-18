@@ -23,6 +23,8 @@ from thinharness import (
     HarnessConfig,
     Hook,
     HookRegistry,
+    MCPPlugin,
+    MCPServerStdio,
     SubAgentConfig,
     ToolSpec,
     TracingOptions,
@@ -71,6 +73,36 @@ def test_subagent_config_validation_accepts_tool_specs() -> None:
         SubAgentConfig(name="ok", description="Bad\nhelper.", plugins=[FilesystemPlugin(tools=["read"])])
     with pytest.raises(ValueError, match="SubAgentConfig.background has been removed"):
         SubAgentConfig(name="old-background", description="Old helper.", plugins=[FilesystemPlugin(tools=["read"])], background="always")
+
+def test_subagent_rejects_duplicate_mcp_configuration_early() -> None:
+    server = MCPServerStdio("unused")
+    plugin = MCPPlugin(servers=[server])
+
+    with pytest.raises(ValueError, match="explicit MCPPlugin"):
+        SubAgentConfig(
+            name="explicit-and-servers",
+            description="Invalid MCP helper.",
+            plugins=[plugin],
+            mcp_servers=[server],
+        )
+    with pytest.raises(ValueError, match="explicit MCPPlugin"):
+        SubAgentConfig(
+            name="explicit-and-inherit",
+            description="Invalid MCP helper.",
+            plugins=[plugin],
+            inherit_mcp_servers=True,
+        )
+    assert SubAgentConfig(name="explicit", description="Explicit MCP helper.", plugins=[plugin]).plugins == [plugin]
+
+
+def test_inherited_mcp_without_parent_plugin_adds_no_child_plugin(tmp_path: Path) -> None:
+    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
+    config = SubAgentConfig(name="mcp", description="MCP helper.", inherit_mcp_servers=True)
+
+    child = build_child_harness(parent, config)
+
+    assert not any(isinstance(plugin, MCPPlugin) for plugin in child.plugins)
+
 
 def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
     default = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))

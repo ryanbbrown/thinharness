@@ -66,6 +66,9 @@ class SubAgentConfig(BaseModel):
             raise ValueError("subagent cannot be exposed inside a child subagent")
         if any(tool.requires_approval for tool in self.tools):
             raise ValueError("approval-required tools are not supported inside subagents")
+        has_explicit_mcp_plugin = any(isinstance(plugin, MCPPlugin) for plugin in self.plugins)
+        if has_explicit_mcp_plugin and (self.mcp_servers or self.inherit_mcp_servers):
+            raise ValueError("an explicit MCPPlugin cannot be combined with mcp_servers or inherit_mcp_servers=True")
         if self.inherit_parent_tools and (self.builtin_tools or self.plugins or self.tools):
             raise ValueError("inherit_parent_tools cannot be combined with builtin_tools, plugins, or tools")
         if not (self.inherit_parent_tools or self.builtin_tools or self.plugins or self.tools or self.inherit_mcp_servers or self.mcp_servers):

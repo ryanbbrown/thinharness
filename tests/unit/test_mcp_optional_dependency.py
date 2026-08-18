@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import builtins
+import importlib.util
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +40,20 @@ async def test_construction_without_extra(monkeypatch: pytest.MonkeyPatch) -> No
     for server in servers:
         with pytest.raises(MCPDependencyError, match="thinharness\\[mcp\\]"):
             await server.__aenter__()
+
+
+def test_mcp_journey_skips_when_extra_is_missing(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """The deterministic journey reports a skip instead of a dependency traceback."""
+    journey_path = Path(__file__).resolve().parents[1] / "e2e" / "mcp_journey.py"
+    journey = runpy.run_path(str(journey_path))
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None if name == "mcp" else real_find_spec(name))
+
+    main = journey["main"]
+    assert callable(main)
+    main()
+
+    assert capsys.readouterr().out == "SKIP mcp_journey missing optional dependencies: mcp; install thinharness[mcp]\n"
 
 
 async def test_missing_fastmcp_alone_gives_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
