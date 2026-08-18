@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from thinharness import MCPDependencyError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
+from thinharness import MCPDependencyError, MCPPlugin, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
 
 
 def _block_imports(monkeypatch: pytest.MonkeyPatch, blocked: set[str]) -> None:
@@ -33,6 +33,7 @@ async def test_construction_without_extra(monkeypatch: pytest.MonkeyPatch) -> No
         MCPServerStreamableHTTP(url="http://localhost/mcp"),
         MCPServer(object()),
     ]
+    assert MCPPlugin(servers=servers).servers == tuple(servers)
 
     for server in servers:
         with pytest.raises(MCPDependencyError, match="thinharness\\[mcp\\]"):
@@ -70,6 +71,8 @@ servers = [
     thinharness.MCPServerStreamableHTTP(url="http://localhost/mcp"),
     thinharness.MCPServer(object()),
 ]
+plugin = thinharness.MCPPlugin(servers=servers)
+assert plugin.servers == tuple(servers)
 
 async def main():
     for server in servers:

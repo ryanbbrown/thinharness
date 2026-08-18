@@ -2,7 +2,6 @@
 
 from .base import (
     Json,
-    McpToolInfo,
     ModelRetry,
     PathPolicy,
     PathValidationError,
@@ -36,7 +35,6 @@ __all__ = [
     "MCPServerStdio",
     "MCPServerStreamableHTTP",
     "ModelRetry",
-    "McpToolInfo",
     "PathPolicy",
     "PathValidationError",
     "ToolEnvelope",

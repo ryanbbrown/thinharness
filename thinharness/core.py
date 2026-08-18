@@ -58,7 +58,6 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools.base import ToolOrigin, ToolSpec
-from .tools.mcp import MCPServer
 from .tools.parallel_llm import create_parallel_llm_tool
 from .tools.skills import SkillRegistry
 from .tracing import (
@@ -137,7 +136,6 @@ class HarnessConfig(BaseModel):
     builtin_parallel_llm_model: str | None = None
     builtin_parallel_llm_temperature: float | None = None
     parallel_llm_max_prompts: int = Field(default=100, ge=1)
-    mcp_servers: list[MCPServer] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_config(self) -> HarnessConfig:
@@ -238,9 +236,6 @@ class Harness:
         self._plugin_instructions = list(static_instructions)
         self.hooks = hook_registry
         self.subagent_hooks = subagent_hooks or {}
-        self._mcp_servers = list(self.config.mcp_servers)
-        self._resolve_mcp_server_ids()
-        self._mcp_stack: AsyncExitStack | None = None
         self._plugin_stack: AsyncExitStack | None = None
         self._connected = False
         self._connect_lock = asyncio.Lock()
@@ -347,15 +342,17 @@ class Harness:
         )
         emitter = StreamEmitter(stream_context)
         loop = asyncio.get_running_loop()
-        task = loop.create_task(self._run_streaming(
-            prompt,
-            resume_from=resume_from,
-            approval_state=None,
-            approval_decisions=None,
-            metadata=metadata,
-            emitter=emitter,
-            stream_context=stream_context,
-        ))
+        task = loop.create_task(
+            self._run_streaming(
+                prompt,
+                resume_from=resume_from,
+                approval_state=None,
+                approval_decisions=None,
+                metadata=metadata,
+                emitter=emitter,
+                stream_context=stream_context,
+            )
+        )
         self._running = True
         return HarnessStream(task, emitter)
 
@@ -375,15 +372,17 @@ class Harness:
         stream_context = create_stream_context(options=stream_options)
         emitter = StreamEmitter(stream_context)
         loop = asyncio.get_running_loop()
-        task = loop.create_task(self._run_streaming(
-            "",
-            resume_from=None,
-            approval_state=state,
-            approval_decisions=decisions,
-            metadata=metadata,
-            emitter=emitter,
-            stream_context=stream_context,
-        ))
+        task = loop.create_task(
+            self._run_streaming(
+                "",
+                resume_from=None,
+                approval_state=state,
+                approval_decisions=decisions,
+                metadata=metadata,
+                emitter=emitter,
+                stream_context=stream_context,
+            )
+        )
         self._running = True
         return HarnessStream(task, emitter)
 
@@ -435,30 +434,36 @@ class Harness:
                 run_ctx.responses = restored_responses
                 run_ctx.tool_call_records = restored_records
                 run_ctx.emitted_limit_warnings = restored_warnings
-            run_ctx.emit(RunStartedEvent(
-                **run_ctx.stream_base(),
-                prompt=None if approval_pause is not None else prompt,
-                root=str(self.root),
-                max_model_requests=self.config.max_model_requests,
-                max_tool_calls=self.config.max_tool_calls,
-            ))
-            if approval_pause is not None:
-                run_ctx.emit(ApprovalResumedEvent(
+            run_ctx.emit(
+                RunStartedEvent(
                     **run_ctx.stream_base(),
-                    decisions=tuple(approval_decisions or []),
-                ))
+                    prompt=None if approval_pause is not None else prompt,
+                    root=str(self.root),
+                    max_model_requests=self.config.max_model_requests,
+                    max_tool_calls=self.config.max_tool_calls,
+                )
+            )
+            if approval_pause is not None:
+                run_ctx.emit(
+                    ApprovalResumedEvent(
+                        **run_ctx.stream_base(),
+                        decisions=tuple(approval_decisions or []),
+                    )
+                )
         except BaseException as exc:
             self._running = False
-            emitter.emit(RunFailedEvent(
-                run_id=stream_context.run_id,
-                sequence=0,
-                parent_run_id=stream_context.parent_run_id,
-                parent_tool_call_id=stream_context.parent_tool_call_id,
-                agent_name=stream_context.agent_name,
-                stop_reason="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
-                error_type=type(exc).__name__,
-                message=str(exc),
-            ))
+            emitter.emit(
+                RunFailedEvent(
+                    run_id=stream_context.run_id,
+                    sequence=0,
+                    parent_run_id=stream_context.parent_run_id,
+                    parent_tool_call_id=stream_context.parent_tool_call_id,
+                    agent_name=stream_context.agent_name,
+                    stop_reason="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
             emitter.finish()
             raise
 
@@ -534,12 +539,14 @@ class Harness:
                 run_ctx.terminal_error = exc
                 if run_ctx.stop_reason == "end_turn":
                     run_ctx.stop_reason = "error"
-            run_ctx.emit(RunFailedEvent(
-                **run_ctx.stream_base(),
-                stop_reason=run_ctx.stop_reason,
-                error_type=type(exc).__name__,
-                message=str(exc),
-            ))
+            run_ctx.emit(
+                RunFailedEvent(
+                    **run_ctx.stream_base(),
+                    stop_reason=run_ctx.stop_reason,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
             raise
         finally:
             self._running = False
@@ -555,14 +562,16 @@ class Harness:
         skip_user_prompt: bool = False,
     ) -> tuple[str, str]:
         """Fire start hooks and return the effective prompt plus instructions."""
-        self.hooks.fire(RunStartContext(
-            harness=self,
-            metadata=dict(run_metadata),
-            prompt=prompt,
-            root=self.root,
-            max_model_requests=self.config.max_model_requests,
-            max_tool_calls=self.config.max_tool_calls,
-        ))
+        self.hooks.fire(
+            RunStartContext(
+                harness=self,
+                metadata=dict(run_metadata),
+                prompt=prompt,
+                root=self.root,
+                max_model_requests=self.config.max_model_requests,
+                max_tool_calls=self.config.max_tool_calls,
+            )
+        )
         effective_prompt = prompt
         if not skip_user_prompt:
             prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
@@ -592,7 +601,7 @@ class Harness:
         except HarnessError as exc:
             message = str(exc)
             if message.startswith("resume_from"):
-                message = f"approval state provider_state{message[len('resume_from'):]}"
+                message = f"approval state provider_state{message[len('resume_from') :]}"
             raise HarnessError(message) from exc
 
     def _pending_approval_record(self, call: ModelToolCall) -> PendingApproval:
@@ -620,7 +629,7 @@ class Harness:
         return asyncio.run(_run_and_close())
 
     async def aclose(self) -> None:
-        """Close connected plugins, MCP servers, and an owned model."""
+        """Close connected plugins and an owned model."""
         async with self._connect_lock:
             if self._closed:
                 return
@@ -637,13 +646,10 @@ class Harness:
                     caller_cancelled = current_task is not None and current_task.cancelling() > pending_cancels
                 except BaseException:
                     pass
-            mcp_stack = self._mcp_stack
             plugin_stack = self._plugin_stack
-            self._mcp_stack = None
             self._plugin_stack = None
             self._connected = False
             close_error = await self._close_resources(
-                mcp_stack=mcp_stack,
                 plugin_stack=plugin_stack,
                 close_model=self._owns_model,
             )
@@ -755,11 +761,7 @@ class Harness:
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
         if spec.name == "subagent" and spec.kind != "subagent":
             raise ValueError("subagent is a reserved tool name")
-        if (
-            spec.name == FINAL_RESULT_TOOL_NAME
-            and output_schema is not None
-            and output_schema.mode != "text"
-        ):
+        if spec.name == FINAL_RESULT_TOOL_NAME and output_schema is not None and output_schema.mode != "text":
             raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
         Harness._validate_tool_approval_policy_for(
             spec,
@@ -811,14 +813,8 @@ class Harness:
         """Return whether this harness model can resume provider sessions."""
         return hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
 
-    def _resolve_mcp_server_ids(self) -> None:
-        """Assign stable suffixes to duplicate MCP server ids."""
-        counts: dict[str, int] = {}
-        for server in self._mcp_servers:
-            server.resolve_id(counts)
-
     async def connect(self) -> None:
-        """Open connected plugins and the temporary MCP bridge."""
+        """Open connected plugins."""
         if self._closed:
             raise HarnessError("harness is closed")
         await self._ensure_connected()
@@ -844,18 +840,12 @@ class Harness:
         finally:
             async with self._connect_lock:
                 self._connect_waiters -= 1
-                if (
-                    self._connect_waiters == 0
-                    and task.done()
-                    and not self._connected
-                    and self._connect_task is task
-                ):
+                if self._connect_waiters == 0 and task.done() and not self._connected and self._connect_task is task:
                     self._connect_task = None
 
     async def _connect_once(self) -> None:
         """Open every dynamic contribution for one shared connection attempt."""
         plugin_stack = AsyncExitStack()
-        mcp_stack: AsyncExitStack | None = None
         base_hooks = list(self.hooks.hooks)
         try:
             dynamic_tools: list[ToolSpec] = []
@@ -881,30 +871,18 @@ class Harness:
             self._validate_hook_registry(candidate_hooks, self.config.subagents)
             self._validate_skill_tool_selection_for(self.skills, candidate_tools)
 
-            mcp_stack, mcp_tools = await self._open_mcp_tools(candidate_tools)
-            all_tools = [*candidate_tools, *mcp_tools]
-            self._validate_tool_list(
-                all_tools,
-                output_schema=self.output_schema,
-                model_supports_approval_resume=self._model_supports_approval_resume(),
-                is_child_run=self._is_child_run,
-            )
             if self._closed:
                 raise HarnessError("harness is closed")
 
-            self.tools = all_tools
-            self._tool_map = {tool.name: tool for tool in all_tools}
+            self.tools = candidate_tools
+            self._tool_map = {tool.name: tool for tool in candidate_tools}
             self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
             self.hooks = candidate_hooks
-            self._skills_enabled = bool(self.skills.skills) and any(
-                tool.name in {"skill_read", "skill_run"} for tool in self.tools
-            )
+            self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
             self._plugin_stack = plugin_stack
-            self._mcp_stack = mcp_stack
             self._connected = True
         except BaseException as exc:
             cleanup_error = await self._close_resources(
-                mcp_stack=mcp_stack,
                 plugin_stack=plugin_stack,
                 close_model=False,
             )
@@ -912,9 +890,7 @@ class Harness:
             self._tool_map = {tool.name: tool for tool in self.tools}
             self._plugin_instructions = list(self._base_instructions)
             self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
-            self._skills_enabled = bool(self.skills.skills) and any(
-                tool.name in {"skill_read", "skill_run"} for tool in self.tools
-            )
+            self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
             if cleanup_error is not None:
                 exc.add_note(f"cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
             raise
@@ -922,20 +898,16 @@ class Harness:
     async def _close_resources(
         self,
         *,
-        mcp_stack: AsyncExitStack | None,
         plugin_stack: AsyncExitStack | None,
         close_model: bool,
     ) -> BaseException | None:
         """Attempt every close in order and return the first failure."""
         first_error: BaseException | None = None
-        for stack in (mcp_stack, plugin_stack):
-            if stack is None:
-                continue
+        if plugin_stack is not None:
             try:
-                await stack.aclose()
+                await plugin_stack.aclose()
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                first_error = exc
         if close_model:
             aclose = getattr(self.model.provider, "aclose", None)
             if aclose is not None:
@@ -945,31 +917,6 @@ class Harness:
                     if first_error is None:
                         first_error = exc
         return first_error
-
-    async def _open_mcp_tools(self, existing_tools: list[ToolSpec]) -> tuple[AsyncExitStack | None, list[ToolSpec]]:
-        """Open the temporary MCP bridge and stage its discovered tools."""
-        if not self._mcp_servers:
-            return None, []
-        stack = AsyncExitStack()
-        try:
-            mcp_tools: list[ToolSpec] = []
-            seen = {tool.name for tool in existing_tools}
-            if self.output_schema is not None and self.output_schema.mode == "tool":
-                seen.add(FINAL_RESULT_TOOL_NAME)
-            for server in self._mcp_servers:
-                await stack.enter_async_context(server)
-                for tool in await server.list_tools():
-                    if tool.name in seen:
-                        raise HarnessError(
-                            f"MCP tool name collision for {tool.name!r}; use tool_prefix or exclude_tools to disambiguate"
-                        )
-                    self._validate_tool_approval_policy(tool)
-                    seen.add(tool.name)
-                    mcp_tools.append(tool)
-            return stack, mcp_tools
-        except BaseException:
-            await stack.aclose()
-            raise
 
     @staticmethod
     def _normalize_contribution(plugin_name: str, contribution: PluginContribution) -> PluginContribution:

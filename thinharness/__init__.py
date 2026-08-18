@@ -37,7 +37,7 @@ from .hooks import (
     UserPromptSubmitContext,
 )
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
-from .plugins import FilesystemPlugin, Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution
+from .plugins import FilesystemPlugin, MCPPlugin, Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution
 from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
@@ -73,7 +73,6 @@ from .tools import (
     MCPServerSSE,
     MCPServerStdio,
     MCPServerStreamableHTTP,
-    McpToolInfo,
     ModelRetry,
     ParallelLlmArgs,
     ParallelLlmTool,
@@ -131,6 +130,7 @@ __all__ = [
     "ModelRetry",
     "UnexpectedModelBehavior",
     "MCPDependencyError",
+    "MCPPlugin",
     "MCPError",
     "MCPServer",
     "MCPServerSSE",
@@ -182,7 +182,6 @@ __all__ = [
     "PluginConnector",
     "PluginContext",
     "PluginContribution",
-    "McpToolInfo",
     "ToolEnvelope",
     "ToolOrigin",
     "ParallelLlmArgs",

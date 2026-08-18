@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..types import Json
 
-ToolKind = Literal["user", "subagent", "parallel_llm", "mcp"]
+ToolKind = Literal["user", "subagent", "parallel_llm"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
 
@@ -29,14 +29,6 @@ class ToolOrigin:
     plugin: str
     source: str | None = None
     attributes: Json = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class McpToolInfo:
-    """Framework-owned identity for an MCP-backed tool."""
-
-    server_id: str
-    tool_name: str
 
 
 @dataclass(frozen=True)
@@ -54,11 +46,10 @@ class ToolSpec:
     requires_approval: bool = False
     origin: ToolOrigin | None = None
     kind: ToolKind = "user"
-    mcp: McpToolInfo | None = None
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
-        if self.kind not in {"user", "subagent", "parallel_llm", "mcp"}:
+        if self.kind not in {"user", "subagent", "parallel_llm"}:
             raise ValueError(f"unknown tool kind: {self.kind}")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
@@ -141,6 +132,7 @@ class ModelRetry(Exception):
         self.message = message
         super().__init__(message)
 
+
 @dataclass(frozen=True)
 class AllowedPath:
     """One lexically normalized path allowed by a workspace path policy."""
@@ -196,10 +188,12 @@ class PathPolicy:
         """Normalize a configured allow path without filesystem metadata I/O."""
         return AllowedPath(_lexical_path_under_root(self.root, raw))
 
+
 class StrictArgs(BaseModel):
     """Base class for tool arguments."""
 
     model_config = ConfigDict(extra="forbid")
+
 
 def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope | Any:
     """Parse and validate raw tool arguments."""
@@ -326,6 +320,7 @@ def _is_async_callable(handler: ToolHandler) -> bool:
         obj = obj.func
     return inspect.iscoroutinefunction(obj) or (callable(obj) and inspect.iscoroutinefunction(obj.__call__))
 
+
 def contained_path(root: Path, raw: str | Path) -> Path:
     """Resolve a path and require it to remain inside root."""
     return _resolve_under_root(root, raw)
@@ -426,9 +421,11 @@ def _clean_schema(schema: Any) -> None:
             continue
         _clean_schema(value)
 
+
 def _timeout_error_message(command_name: str, timeout: int) -> str:
     """Return a compact timeout failure message."""
     return f"{command_name} timed out after {timeout}s"
+
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     """Return whether path is inside root."""

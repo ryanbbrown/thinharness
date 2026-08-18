@@ -11,6 +11,7 @@ from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .plugins.base import Plugin
+from .plugins.mcp import MCPPlugin
 from .providers import infer_model, same_provider_model_ref
 from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
@@ -60,23 +61,14 @@ class SubAgentConfig(BaseModel):
             raise ValueError(f"{DEFAULT_SUBAGENT_NAME!r} is reserved for the framework default subagent")
         if not self.description.strip() or "\n" in self.description or "\r" in self.description:
             raise ValueError("subagent description must be a non-empty single line")
-        exposes_subagent = any(name.lower() == "subagent" for name in self.builtin_tools) or any(
-            _tool_name(tool).lower() == "subagent" for tool in self.tools
-        )
+        exposes_subagent = any(name.lower() == "subagent" for name in self.builtin_tools) or any(_tool_name(tool).lower() == "subagent" for tool in self.tools)
         if exposes_subagent:
             raise ValueError("subagent cannot be exposed inside a child subagent")
         if any(tool.requires_approval for tool in self.tools):
             raise ValueError("approval-required tools are not supported inside subagents")
         if self.inherit_parent_tools and (self.builtin_tools or self.plugins or self.tools):
             raise ValueError("inherit_parent_tools cannot be combined with builtin_tools, plugins, or tools")
-        if not (
-            self.inherit_parent_tools
-            or self.builtin_tools
-            or self.plugins
-            or self.tools
-            or self.inherit_mcp_servers
-            or self.mcp_servers
-        ):
+        if not (self.inherit_parent_tools or self.builtin_tools or self.plugins or self.tools or self.inherit_mcp_servers or self.mcp_servers):
             raise ValueError("named subagents must define builtin_tools, plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers")
         return self
 
@@ -92,6 +84,7 @@ class SubAgentArgs(BaseModel):
 
 def create_subagent_tool(parent: Harness, configs: list[SubAgentConfig]) -> ToolSpec:
     """Create the parent-facing subagent delegation tool."""
+
     async def handler(args: SubAgentArgs) -> ToolResult:
         """Run the selected subagent."""
         return await run_subagent_tool(parent, configs, args)
@@ -183,15 +176,17 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
         if run_error is not None:
             raise run_error.with_traceback(run_traceback)
     except Exception as exc:
-        parent.hooks.fire(AfterSubagentRunContext(
-            harness=parent,
-            metadata=_parent_run_metadata(),
-            agent=agent_name,
-            task=args.task,
-            error=exc,
-            tools=effective_tools,
-            parent_call_id=parent_call_id,
-        ))
+        parent.hooks.fire(
+            AfterSubagentRunContext(
+                harness=parent,
+                metadata=_parent_run_metadata(),
+                agent=agent_name,
+                task=args.task,
+                error=exc,
+                tools=effective_tools,
+                parent_call_id=parent_call_id,
+            )
+        )
         return ToolResult(
             False,
             str(exc),
@@ -204,16 +199,18 @@ async def run_subagent_tool(parent: Harness, configs: list[SubAgentConfig], args
             },
         )
     assert result is not None
-    parent.hooks.fire(AfterSubagentRunContext(
-        harness=parent,
-        metadata=_parent_run_metadata(),
-        agent=agent_name,
-        task=args.task,
-        result=result,
-        tools=effective_tools,
-        usage=result.usage,
-        parent_call_id=parent_call_id,
-    ))
+    parent.hooks.fire(
+        AfterSubagentRunContext(
+            harness=parent,
+            metadata=_parent_run_metadata(),
+            agent=agent_name,
+            task=args.task,
+            result=result,
+            tools=effective_tools,
+            usage=result.usage,
+            parent_call_id=parent_call_id,
+        )
+    )
     structured_output = result.output is not None
     content = child.output_schema.dump(result.output) if structured_output and child.output_schema is not None else result.text
     return ToolResult(
@@ -242,37 +239,38 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
     else:
         assert config is not None
         child_builtin_tools = config.builtin_tools
+    # Remove this MCP-specific bridge when subagents migrate to plugin composition.
     child_mcp_servers: list[MCPServer] = []
     if config is not None and config.inherit_mcp_servers:
-        child_mcp_servers.extend(parent._mcp_servers)
+        parent_mcp = next((plugin for plugin in parent.plugins if isinstance(plugin, MCPPlugin)), None)
+        if parent_mcp is not None:
+            child_mcp_servers.extend(parent_mcp.servers)
     if config is not None:
         for server in config.mcp_servers:
             if not any(server is existing for existing in child_mcp_servers):
                 child_mcp_servers.append(server)
-    child_config = parent_config.model_copy(update={
-        "model": config.model if config is not None and config.model is not None else parent_config.model,
-        "root": parent.root,
-        "system_prompt": DEFAULT_SYSTEM_PROMPT if config is None else config.system_prompt,
-        "builtin_tools": child_builtin_tools,
-        "skills_dir": parent_config.skills_dir if child_wants_skills and not inherit_tools else None,
-        "selected_skills": parent_config.selected_skills if child_wants_skills and not inherit_tools else None,
-        "max_model_requests": (
-            config.max_model_requests
-            if config is not None and config.max_model_requests is not None
-            else parent_config.max_model_requests
-        ),
-        "max_tool_calls": (
-            config.max_tool_calls
-            if config is not None and config.max_tool_calls is not None
-            else parent_config.max_tool_calls
-        ),
-        "output_type": config.output_type if config is not None else None,
-        "output_mode": config.output_mode if config is not None else "auto",
-        "output_retries": config.output_retries if config is not None else 1,
-        "tool_retries": config.tool_retries if config is not None else parent_config.tool_retries,
-        "subagents": [],
-        "mcp_servers": child_mcp_servers,
-    })
+    child_plugins = list(_inherited_instruction_plugins(parent) if inherit_tools else (config.plugins if config is not None else []))
+    if child_mcp_servers:
+        child_plugins.append(MCPPlugin(servers=child_mcp_servers))
+    child_config = parent_config.model_copy(
+        update={
+            "model": config.model if config is not None and config.model is not None else parent_config.model,
+            "root": parent.root,
+            "system_prompt": DEFAULT_SYSTEM_PROMPT if config is None else config.system_prompt,
+            "builtin_tools": child_builtin_tools,
+            "skills_dir": parent_config.skills_dir if child_wants_skills and not inherit_tools else None,
+            "selected_skills": parent_config.selected_skills if child_wants_skills and not inherit_tools else None,
+            "max_model_requests": (
+                config.max_model_requests if config is not None and config.max_model_requests is not None else parent_config.max_model_requests
+            ),
+            "max_tool_calls": (config.max_tool_calls if config is not None and config.max_tool_calls is not None else parent_config.max_tool_calls),
+            "output_type": config.output_type if config is not None else None,
+            "output_mode": config.output_mode if config is not None else "auto",
+            "output_retries": config.output_retries if config is not None else 1,
+            "tool_retries": config.tool_retries if config is not None else parent_config.tool_retries,
+            "subagents": [],
+        }
+    )
     child_model = parent.model
     if config is not None and config.model is not None:
         same_provider = _same_provider(parent, config.model)
@@ -291,7 +289,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
     return Harness(
         child_config,
         model=child_model,
-        plugins=_inherited_instruction_plugins(parent) if inherit_tools else (config.plugins if config is not None else []),
+        plugins=child_plugins,
         tools=_effective_custom_tools(parent, config),
         tracing=_child_tracing(parent, config),
         skills=parent.skills if inherit_tools else None,
@@ -316,8 +314,9 @@ def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> l
     """Return custom tools to register on the child harness."""
     if config is None or config.inherit_parent_tools:
         return [
-            tool for tool in parent.tools
-            if tool.name != "subagent" and tool.kind != "mcp" and not tool.requires_approval
+            tool
+            for tool in parent.tools
+            if tool.name != "subagent" and not (tool.origin is not None and tool.origin.plugin == "mcp") and not tool.requires_approval
         ]
     return list(config.tools)
 
@@ -336,10 +335,12 @@ def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> list[Traci
     """Return child tracing options that share the parent's tracer."""
     name = config.name if config is not None else DEFAULT_SUBAGENT_NAME
     return [
-        option.model_copy(update={
-            "agent_name": f"subagent.{name}",
-            "agent_description": config.description if config is not None else "Framework default subagent",
-        })
+        option.model_copy(
+            update={
+                "agent_name": f"subagent.{name}",
+                "agent_description": config.description if config is not None else "Framework default subagent",
+            }
+        )
         for option in parent.tracing
     ]
 

@@ -256,6 +256,19 @@ asyncio.run(main())
 
 There's a synchronous wrapper too: `Harness(...).run_sync(...)`.
 
+Optional MCP servers use the same plugin composition model:
+
+```python
+from thinharness import MCPPlugin, MCPServerStdio
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[MCPPlugin(servers=[MCPServerStdio("python", ["server.py"])])],
+)
+```
+
+MCP tools connect and discover one tool snapshot lazily on `Harness.connect()` or the first run. Install support with `uv add 'thinharness[mcp]'`.
+
 Built-in provider requests retry transient HTTP failures three times by default. Configure the shared policy with `request_retries` and `request_retry_backoff` on `HarnessConfig`.
 
 If an injected `http_client` owns retries, set `request_retries=0` on the provider. This prevents nested retry policies from multiplying attempts.

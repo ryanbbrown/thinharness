@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from .base import Json, McpToolInfo, ToolResult, ToolSpec
+from .base import Json, ToolOrigin, ToolResult, ToolSpec
 
 _INSTALL_HINT = "Install MCP support with: pip install thinharness[mcp]"
 _MCP_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
@@ -56,7 +56,6 @@ class MCPServer:
         self.include_tools = list(include_tools) if include_tools is not None else None
         self.exclude_tools = list(exclude_tools) if exclude_tools is not None else None
         self._id = id
-        self._resolved_id: str | None = None
         self._transport = transport
         self._client: Any | None = None
         if type(self) is MCPServer:
@@ -64,14 +63,8 @@ class MCPServer:
 
     @property
     def id(self) -> str:
-        """Stable readable identifier; falls back to a derived default."""
-        return self._resolved_id or self._id or self._default_id()
-
-    def resolve_id(self, existing_counts: dict[str, int]) -> None:
-        """Resolve this server's final id using duplicate counts owned by the caller."""
-        base_id = self._id or self._default_id()
-        existing_counts[base_id] = existing_counts.get(base_id, 0) + 1
-        self._resolved_id = base_id if existing_counts[base_id] == 1 else f"{base_id}-{existing_counts[base_id]}"
+        """Return the public base identifier without binding-local suffixes."""
+        return self._id or self._default_id()
 
     def _default_id(self) -> str:
         """Derive a readable default id from the transport class name."""
@@ -111,8 +104,9 @@ class MCPServer:
         if task is not None and task.cancelling() > pending_cancels:
             raise asyncio.CancelledError
 
-    async def list_tools(self) -> list[ToolSpec]:
+    async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
         """Discover and convert the MCP server's current tool snapshot."""
+        resolved_id = server_id or self.id
         async with self:
             tools = await self._ensure_client().list_tools()
         seen: dict[str, str] = {}
@@ -126,25 +120,27 @@ class MCPServer:
             public_name = _normalize_mcp_name(f"{self.tool_prefix}_{original_name}" if self.tool_prefix else original_name)
             if public_name in seen:
                 raise MCPError(
-                    f"MCP tool name collision after sanitization on server {self.id!r}: "
+                    f"MCP tool name collision after sanitization on server {resolved_id!r}: "
                     f"{seen[public_name]!r} and {original_name!r} both map to {public_name!r}"
                 )
             seen[public_name] = original_name
-            specs.append(ToolSpec(
-                public_name,
-                str(tool.description or ""),
-                _clean_mcp_schema(tool.inputSchema, original_name),
-                _make_tool_handler(self, original_name),
-                sequential=False,
-                kind="mcp",
-                mcp=McpToolInfo(server_id=self.id, tool_name=original_name),
-                max_retries=None,
-            ))
+            specs.append(
+                ToolSpec(
+                    public_name,
+                    str(tool.description or ""),
+                    _clean_mcp_schema(tool.inputSchema, original_name),
+                    _make_tool_handler(self, original_name, resolved_id),
+                    sequential=False,
+                    origin=ToolOrigin(plugin="mcp", source=resolved_id, attributes={"tool_name": original_name}),
+                    max_retries=None,
+                )
+            )
         return specs
 
-    async def call_tool(self, name: str, arguments: Json) -> ToolResult:
+    async def call_tool(self, name: str, arguments: Json, *, server_id: str | None = None) -> ToolResult:
         """Call one MCP tool and normalize its result."""
-        base_metadata = {"source": "mcp", "mcp_server_id": self.id, "mcp_tool_name": name}
+        resolved_id = server_id or self.id
+        base_metadata = {"source": "mcp", "mcp_server_id": resolved_id, "mcp_tool_name": name}
         failure_types = _mcp_failure_types()
         try:
             async with self:
@@ -337,11 +333,12 @@ def _find_known_failure(exc: BaseException, failure_types: tuple[type[BaseExcept
     return None
 
 
-def _make_tool_handler(server: MCPServer, tool_name: str) -> Any:
-    """Build an async ToolSpec handler for one MCP tool."""
+def _make_tool_handler(server: MCPServer, tool_name: str, server_id: str) -> Any:
+    """Build an async ToolSpec handler with binding-local attribution."""
+
     async def handler(args: Json) -> ToolResult:
         """Call the backing MCP tool."""
-        return await server.call_tool(tool_name, args)
+        return await server.call_tool(tool_name, args, server_id=server_id)
 
     return handler
 

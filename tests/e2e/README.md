@@ -1,6 +1,6 @@
 # E2E Journeys
 
-These scripts run real provider calls against temporary workspaces. They are intentionally not wired into pytest or CI.
+Most scripts run real provider calls against temporary workspaces. The deterministic MCP journey uses a local scripted model. Journeys are intentionally not wired into pytest or CI.
 
 Run one script with environment from `.env`:
 
@@ -8,7 +8,7 @@ Run one script with environment from `.env`:
 uv run --env-file .env python tests/e2e/workspace_tools_journey.py
 ```
 
-Each script skips when `CI` is set or when the required provider key is missing. Model defaults can be overridden with the per-script `E2E_*_MODEL` environment variable.
+Credential-based scripts skip when `CI` is set or when the required provider key is missing. Their model defaults can be overridden with the per-script `E2E_*_MODEL` environment variable.
 
 Current journeys:
 
@@ -16,7 +16,7 @@ Current journeys:
 - `skills_journey.py`: skill discovery, `skill_read`, and `skill_run`.
 - `control_plane_journey.py`: hooks, sequential execution, and retry-limit behavior.
 - `structured_output_journey.py`: Pydantic structured output after tool use.
-- `mcp_journey.py`: local stdio MCP tool discovery and execution.
+- `mcp_journey.py`: deterministic local stdio MCP tool discovery, execution, and cleanup without provider credentials.
 - `parallel_llm_tool_journey.py`: direct `ParallelLlmTool` calls across all configured providers.
 - `parallel_llm_agent_journey.py`: an agent run using both built-in `parallel_llm` and a renamed custom `ParallelLlmTool`.
 - `prompt_caching_journey.py`: Anthropic prompt caching — asserts a multi-request run reports cached input tokens.

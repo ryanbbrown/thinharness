@@ -98,7 +98,7 @@ Important groups:
 
 - `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools`, `subagents`, `mcp_servers`, and `skills_dir`, define the model-callable surface. `builtin_tools` is temporary for features that have not migrated to plugins.
+- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools`, `subagents`, and `skills_dir`, define the model-callable surface. Filesystem and MCP tools use explicit plugins. `builtin_tools` is temporary for features that have not migrated to plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
@@ -503,19 +503,21 @@ MCP support is optional. Importing ThinHarness does not require the MCP packages
 
 ```python
 from fastmcp.client.transports import FastMCPTransport
-from thinharness import Harness, HarnessConfig, MCPServer
+from thinharness import Harness, HarnessConfig, MCPPlugin, MCPServer
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    mcp_servers=[
-        MCPServer(
-            FastMCPTransport(my_server),
-            id="inprocess",
-            include_tools=["step", "reset_session"],
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        MCPPlugin(servers=[
+            MCPServer(
+                FastMCPTransport(my_server),
+                id="inprocess",
+                include_tools=["step", "reset_session"],
+            )
+        ])
     ],
-))
+)
 ```
 
 `MCPServer` accepts only a transport object — not a URL, script path, server object, or configuration dictionary. Once a transport is passed to an `MCPServer`, that wrapper owns the client built on it and closes its transport on the final exit; to share one session, reuse the wrapper rather than passing one stateful transport to several wrappers.
@@ -523,23 +525,25 @@ harness = Harness(HarnessConfig(
 The stdio, SSE, and Streamable HTTP wrappers take command- or URL-based constructors and build the matching FastMCP transport when the connection opens:
 
 ```python
-from thinharness import Harness, HarnessConfig, MCPServerStdio
+from thinharness import Harness, HarnessConfig, MCPPlugin, MCPServerStdio
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    mcp_servers=[
-        MCPServerStdio(
-            "uvx",
-            ["my-mcp-server"],
-            tool_prefix="external",
-            include_tools=["lookup"],
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        MCPPlugin(servers=[
+            MCPServerStdio(
+                "uvx",
+                ["my-mcp-server"],
+                tool_prefix="external",
+                include_tools=["lookup"],
+            )
+        ])
     ],
-))
+)
 ```
 
-MCP servers connect lazily during harness startup. Discovered MCP tools become normal `ToolSpec` objects in the live harness tool map. Name collisions are rejected; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
+Use one `MCPPlugin` per harness and put all servers in caller order. Servers connect lazily on `Harness.connect()` or the first run. The binding discovers one tool snapshot and reuses it until the harness closes. Discovered MCP tools become normal `ToolSpec` objects with generic origin data in the live harness tool map. Name collisions reject the whole discovered contribution; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
 
 Available wrappers:
 

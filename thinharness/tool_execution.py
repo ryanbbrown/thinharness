@@ -163,13 +163,15 @@ class ToolCallExecutor:
                     tool_spec=spec,
                     tool_index=index,
                 )
-                self.run_context.emit(ToolCallStartedEvent(
-                    **self.run_context.stream_base(),
-                    call_id=call.id,
-                    tool_name=call.name,
-                    tool_index=index,
-                    arguments=call.arguments,
-                ))
+                self.run_context.emit(
+                    ToolCallStartedEvent(
+                        **self.run_context.stream_base(),
+                        call_id=call.id,
+                        tool_name=call.name,
+                        tool_index=index,
+                        arguments=call.arguments,
+                    )
+                )
                 self.harness.hooks.fire(before)
                 if before.cancelled:
                     cancelled = True
@@ -215,18 +217,20 @@ class ToolCallExecutor:
                 return ToolCallExecution(envelope=envelope, output=output, cancelled=cancelled, retry_kind=retry_kind)
             except Exception as exc:
                 if not completed_emitted:
-                    self.run_context.emit(ToolCallCompletedEvent(
-                        **self.run_context.stream_base(),
-                        call_id=call.id,
-                        tool_name=call.name,
-                        ok=False,
-                        cancelled=cancelled,
-                        retry_kind=retry_kind,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                        duration_ms=(time.perf_counter() - start) * 1000,
-                        output=output,
-                    ))
+                    self.run_context.emit(
+                        ToolCallCompletedEvent(
+                            **self.run_context.stream_base(),
+                            call_id=call.id,
+                            tool_name=call.name,
+                            ok=False,
+                            cancelled=cancelled,
+                            retry_kind=retry_kind,
+                            error_type=type(exc).__name__,
+                            message=str(exc),
+                            duration_ms=(time.perf_counter() - start) * 1000,
+                            output=output,
+                        )
+                    )
                 raise
             finally:
                 _CURRENT_STREAM_EMITTER.reset(emitter_token)
@@ -244,18 +248,20 @@ class ToolCallExecutor:
         duration_ms: float,
     ) -> None:
         """Emit a public tool completion event."""
-        self.run_context.emit(ToolCallCompletedEvent(
-            **self.run_context.stream_base(),
-            call_id=call.id,
-            tool_name=call.name,
-            ok=envelope.ok,
-            cancelled=cancelled,
-            retry_kind=retry_kind,
-            error_type=envelope.error_type(),
-            message=envelope.content if not envelope.ok else None,
-            duration_ms=duration_ms,
-            output=output,
-        ))
+        self.run_context.emit(
+            ToolCallCompletedEvent(
+                **self.run_context.stream_base(),
+                call_id=call.id,
+                tool_name=call.name,
+                ok=envelope.ok,
+                cancelled=cancelled,
+                retry_kind=retry_kind,
+                error_type=envelope.error_type(),
+                message=envelope.content if not envelope.ok else None,
+                duration_ms=duration_ms,
+                output=output,
+            )
+        )
 
     async def _call_output(self, name: str, arguments: str) -> ToolEnvelope:
         """Execute one model tool call and format its output."""
@@ -267,14 +273,19 @@ class ToolCallExecutor:
     def _annotate_special_tool(self, span: _TraceSpan, name: str, envelope: ToolEnvelope) -> None:
         """Add tool-family trace attributes for framework and MCP tools."""
         if name == "subagent":
-            span.set_attributes({
-                "subagent.name": envelope.metadata.get("agent"),
-                "subagent.tool_mode": envelope.metadata.get("tool_mode"),
-                "subagent.tools": envelope.metadata.get("tools"),
-            })
+            span.set_attributes(
+                {
+                    "subagent.name": envelope.metadata.get("agent"),
+                    "subagent.tool_mode": envelope.metadata.get("tool_mode"),
+                    "subagent.tools": envelope.metadata.get("tools"),
+                }
+            )
         spec = self.tool_map.get(str(name))
-        if spec is not None and spec.mcp is not None:
-            span.set_attributes({
-                "mcp.server.id": spec.mcp.server_id,
-                "mcp.tool.name": spec.mcp.tool_name,
-            })
+        origin = spec.origin if spec is not None else None
+        if origin is not None and origin.plugin == "mcp":
+            span.set_attributes(
+                {
+                    "mcp.server.id": origin.source,
+                    "mcp.tool.name": origin.attributes.get("tool_name"),
+                }
+            )

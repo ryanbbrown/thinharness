@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -326,10 +326,12 @@ def test_plugin_name_must_be_string(tmp_path: Path) -> None:
 async def test_sequential_runs_reuse_one_connection(tmp_path: Path) -> None:
     events: list[str] = []
     plugin = ConnectedPlugin("connected", events, PluginContribution())
-    model = ScriptedModel([
-        ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
-        ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
-    ])
+    model = ScriptedModel(
+        [
+            ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
+            ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
+        ]
+    )
     harness = Harness(HarnessConfig(root=tmp_path), model=model, plugins=[plugin])
 
     assert (await harness.run("one")).text == "first"
@@ -444,7 +446,6 @@ async def test_aclose_cancels_inflight_connection_without_leak(tmp_path: Path) -
         await connection
     assert exited.is_set()
     assert harness._plugin_stack is None
-    assert harness._mcp_stack is None
     with pytest.raises(HarnessError, match="harness is closed"):
         await harness.connect()
 
@@ -521,7 +522,7 @@ async def test_failed_connection_attempts_every_plugin_cleanup(tmp_path: Path) -
     assert harness.tools == []
 
 
-async def test_close_attempts_all_resources_after_failures(tmp_path: Path) -> None:
+async def test_close_attempts_model_after_plugin_failure(tmp_path: Path) -> None:
     events: list[str] = []
 
     class FailingClosePlugin:
@@ -554,20 +555,11 @@ async def test_close_attempts_all_resources_after_failures(tmp_path: Path) -> No
         _owns_model=True,
     )
     await harness.connect()
-    mcp_stack = AsyncExitStack()
 
-    async def close_mcp() -> None:
-        events.append("mcp")
-        raise RuntimeError("mcp close failed")
-
-    mcp_stack.push_async_callback(close_mcp)
-    harness._mcp_stack = mcp_stack
-
-    with pytest.raises(RuntimeError, match="mcp close failed"):
+    with pytest.raises(RuntimeError, match="plugin close failed"):
         await harness.aclose()
 
-    assert events == ["mcp", "plugin", "model"]
-    assert harness._mcp_stack is None
+    assert events == ["plugin", "model"]
     assert harness._plugin_stack is None
 
 
@@ -646,9 +638,20 @@ async def test_connected_plugin_toolset_is_frozen_during_run(tmp_path: Path) -> 
         harness.add_tool(_tool("late"))
         return "registered"
 
-    plugin = ConnectedPlugin("dynamic", [], PluginContribution(tools=(ToolSpec(
-        "register", "register", {"type": "object", "properties": {}}, register,
-    ),)))
+    plugin = ConnectedPlugin(
+        "dynamic",
+        [],
+        PluginContribution(
+            tools=(
+                ToolSpec(
+                    "register",
+                    "register",
+                    {"type": "object", "properties": {}},
+                    register,
+                ),
+            )
+        ),
+    )
     harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([FreezeSession()]), plugins=[plugin])
 
     assert (await harness.run("go")).text == "done"
