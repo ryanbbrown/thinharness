@@ -43,7 +43,7 @@ def test_parallel_safe_batch_runs_concurrently(tmp_path: Path) -> None:
     delay = 0.2
     client = MultiCallClient([("slow_a", "{}"), ("slow_b", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[slow_tool("slow_a", delay), slow_tool("slow_b", delay)],
     )
@@ -63,7 +63,7 @@ def test_sequential_tool_forces_serial_batch(tmp_path: Path) -> None:
     delay = 0.2
     client = MultiCallClient([("slow_a", "{}"), ("slow_b", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[slow_tool("slow_a", delay), slow_tool("slow_b", delay, sequential=True)],
     )
@@ -81,7 +81,7 @@ def test_tool_execution_sequential_forces_serial_even_for_safe_tools(tmp_path: P
     delay = 0.15
     client = MultiCallClient([("slow_a", "{}"), ("slow_b", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], tool_execution="sequential"),
+        HarnessConfig(root=tmp_path, model="openai:test-model", tool_execution="sequential"),
         model=_fake_openai(client),
         tools=[slow_tool("slow_a", delay), slow_tool("slow_b", delay)],
     )
@@ -95,7 +95,7 @@ def test_tool_execution_sequential_forces_serial_even_for_safe_tools(tmp_path: P
 def test_parallel_batch_preserves_model_call_order(tmp_path: Path) -> None:
     client = MultiCallClient([("slow_first", "{}"), ("fast_second", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[slow_tool("slow_first", 0.2), slow_tool("fast_second", 0.01)],
     )
@@ -115,7 +115,7 @@ def test_parallel_batch_continues_when_one_tool_errors(tmp_path: Path) -> None:
     boom_spec = ToolSpec("boom", "Always raises.", {"type": "object", "properties": {}}, boom)
     ok_spec = ToolSpec("ok", "Returns ok.", {"type": "object", "properties": {}}, lambda args: "ok")
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[boom_spec, ok_spec],
     )
@@ -132,7 +132,7 @@ def test_parallel_batch_continues_when_one_tool_errors(tmp_path: Path) -> None:
 def test_parallel_batch_makes_one_provider_continuation(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}"), ("c", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[slow_tool("a", 0.01), slow_tool("b", 0.01), slow_tool("c", 0.01)],
     )
@@ -174,7 +174,7 @@ def test_tool_spec_can_opt_into_sequential(tmp_path: Path) -> None:
     )
     client = MultiCallClient([("slow_a", "{}"), ("slow_b", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[slow_tool("slow_a", delay), sequential_tool],
     )
@@ -190,7 +190,7 @@ def test_parallel_batch_with_more_calls_than_worker_cap(tmp_path: Path) -> None:
     client = MultiCallClient(batch)
     tools = [slow_tool(name, 0.01) for name, _ in batch]
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=tools,
     )
@@ -217,7 +217,7 @@ def test_parallel_batch_tools_execute_in_separate_threads(tmp_path: Path) -> Non
         return "b"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[
             ToolSpec("track_a", "a", {"type": "object", "properties": {}}, run_a),

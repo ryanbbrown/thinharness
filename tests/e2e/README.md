@@ -18,6 +18,8 @@ Current journeys:
 - `structured_output_journey.py`: Pydantic structured output after tool use.
 - `mcp_journey.py`: deterministic local stdio MCP tool discovery, execution, and cleanup. It reports a skip when the `mcp` extra is not installed and does not use provider credentials.
 - `parallel_llm_tool_journey.py`: direct `ParallelLlmTool` calls across all configured providers.
-- `parallel_llm_agent_journey.py`: an agent run using both built-in `parallel_llm` and a renamed custom `ParallelLlmTool`.
+- `parallel_llm_agent_journey.py`: an agent run using `ParallelLlmPlugin` and a renamed custom `ParallelLlmTool`.
 - `prompt_caching_journey.py`: Anthropic prompt caching — asserts a multi-request run reports cached input tokens.
 - `anthropic_modernization_journey.py`: Anthropic native structured output, max-token/effort payloads, and adaptive/default-on thinking resume.
+- `subagents_journey.py`: explicit default and cross-provider named delegation, child output metadata, and disabled nested child creation.
+- `langfuse_tracing_journey.py`: nested subagent and tool spans through a live Langfuse OTLP sink.

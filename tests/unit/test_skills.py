@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from fakes import ScriptedModel
+from fakes import FakeChildHarnessHost, ScriptedModel
 
 from thinharness import Harness, HarnessConfig, PluginBinding, PluginContext, PluginContribution, SkillRegistry, SkillsPlugin, ToolSpec
 
@@ -277,5 +277,5 @@ def test_skills_plugin_bind_is_io_free_after_construction(tmp_path: Path, monkey
     monkeypatch.setattr(Path, "exists", fail)
     monkeypatch.setattr(Path, "stat", fail)
 
-    binding = plugin.bind(PluginContext(root=tmp_path, model=model))
+    binding = plugin.bind(PluginContext(root=tmp_path, model=model, child_harnesses=FakeChildHarnessHost()))
     assert binding.static.tools[0].name == "skill_read"

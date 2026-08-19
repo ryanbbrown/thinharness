@@ -10,7 +10,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 LONGMEMEVAL_MD = EXAMPLES_ROOT / "longmemeval.md"
-DEFAULT_OUTPUT = REPO_ROOT / "docs" / "site" / "examples.html"
+DEFAULT_OUTPUT = REPO_ROOT / "docs" / "site" / "examples" / "index.html"
 LONG_PREVIEW_CHARS = 1200
 WEB_RESEARCH_REPORT_META = {
     "slug": "web_research_report",
@@ -375,7 +375,7 @@ def event_from_span(span: dict[str, Any], trace_rel: str, index: int, call_label
         tool_name = str(attrs.get("gen_ai.tool.name") or name.removeprefix("execute_tool "))
         args = parse_jsonish(attrs.get("gen_ai.tool.call.arguments"))
         result = tool_result_parts(attrs.get("gen_ai.tool.call.result"))
-        is_subagent = tool_name == "subagent"
+        is_subagent = attrs.get("subagent.delegation") is True
         event = {
             **base,
             "kind": "subagent" if is_subagent else "tool",

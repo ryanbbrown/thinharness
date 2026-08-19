@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ..tools.base import ToolOrigin
 
 if TYPE_CHECKING:
+    from ..children import ChildHarnessHost
     from ..hooks import Hook
     from ..providers import Model
     from ..tools.base import ToolSpec
@@ -22,6 +23,7 @@ class PluginContext:
 
     root: Path
     model: Model
+    child_harnesses: ChildHarnessHost
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class PluginBinding:
 
     static: PluginContribution = field(default_factory=PluginContribution)
     connect: PluginConnector | None = None
+    agent_names: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -55,7 +58,17 @@ class Plugin(Protocol):
         ...
 
 
+@runtime_checkable
+class ChildInheritablePlugin(Protocol):
+    """Plugin that explicitly supports rebinding against a child context."""
+
+    def for_child(self) -> Plugin:
+        """Return the configured plugin object to bind to one child."""
+        ...
+
+
 __all__ = [
+    "ChildInheritablePlugin",
     "Plugin",
     "PluginBinding",
     "PluginConnector",

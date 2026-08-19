@@ -41,7 +41,6 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=[],
                 output_type=InventoryAnswer,
                 output_mode="native",
                 max_model_requests=4,

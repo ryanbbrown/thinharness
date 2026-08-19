@@ -47,7 +47,6 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=[],
                 max_model_requests=30,
                 max_tool_calls=12,
                 local_trace_dir=trace_dir,

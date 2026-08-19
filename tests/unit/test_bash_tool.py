@@ -131,7 +131,7 @@ def test_bash_is_available_through_explicit_custom_registration(tmp_path: Path) 
 
     session = ScriptedSession(start_turn=call, continue_turn=ModelTurn(text="done", raw={"id": "done"}), on_continue=on_continue)
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[BashTool(tmp_path).spec()],
     )
@@ -146,8 +146,8 @@ def test_bash_is_not_a_builtin_tool(tmp_path: Path) -> None:
     default = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))
 
     assert "bash" not in [tool["name"] for tool in default.tool_schemas()]
-    with pytest.raises(ValueError, match="unknown builtin tool: bash"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=["bash"]), model=ScriptedModel([]))
+    with pytest.raises(ValueError, match="SubagentsPlugin"):
+        HarnessConfig(root=tmp_path, builtin_tools=["bash"])
 
 
 def test_named_subagent_builtin_selector_is_removed() -> None:
@@ -158,7 +158,7 @@ def test_named_subagent_builtin_selector_is_removed() -> None:
 def test_mixed_batch_containing_bash_runs_sequentially(tmp_path: Path) -> None:
     client = MultiCallClient([("bash", '{"command":"sleep 0.2; printf bash"}'), ("slow", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[BashTool(tmp_path).spec(), slow_tool("slow", 0.2)],
     )

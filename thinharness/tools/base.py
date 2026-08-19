@@ -11,13 +11,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, TypeGuard, TypeVar, cast
+from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..types import Json
 
-ToolKind = Literal["user", "subagent"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
 
@@ -45,12 +44,9 @@ class ToolSpec:
     instructions: str | None = None
     requires_approval: bool = False
     origin: ToolOrigin | None = None
-    kind: ToolKind = "user"
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
-        if self.kind not in {"user", "subagent"}:
-            raise ValueError(f"unknown tool kind: {self.kind}")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
 

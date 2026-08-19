@@ -145,7 +145,7 @@ class ReasoningOpenRouterProvider(OpenRouterProvider):
 
 
 def _harness(tmp_path: Path, model, **config) -> Harness:
-    return Harness(HarnessConfig(root=tmp_path, builtin_tools=[], **config), model=model, tools=[echo_tool()])
+    return Harness(HarnessConfig(root=tmp_path, **config), model=model, tools=[echo_tool()])
 
 
 async def _capture_state(tmp_path: Path, model) -> dict:
@@ -552,13 +552,13 @@ def _has_signed_reasoning(state: dict) -> bool:
 
 async def _run_reasoning_resume_live(tmp_path: Path, make_model) -> None:
     """Capture native reasoning, then resume on the same provider/model and assert acceptance."""
-    first = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=make_model(), tools=[_multiply_tool()]).run(
+    first = await Harness(HarnessConfig(root=tmp_path), model=make_model(), tools=[_multiply_tool()]).run(
         "Use the multiply tool to compute 21 times 19, then state the product."
     )
     state = json.loads(json.dumps(first.resume_state))
     assert _has_signed_reasoning(state), "no signed native reasoning captured in resume_state"
 
-    second = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=make_model(), tools=[_multiply_tool()]).run(
+    second = await Harness(HarnessConfig(root=tmp_path), model=make_model(), tools=[_multiply_tool()]).run(
         "Add 100 to that product.", resume_from=state
     )
     assert second.text

@@ -401,7 +401,7 @@ class RunContext:
                 result=self.result,
                 output_schema=self.harness.output_schema,
                 capture_messages=option.capture_messages,
-                top_level=not self.harness._is_child_run,
+                top_level=not self.harness._is_child_harness,
             )
         )
         self.fire_run_end_once()
@@ -438,7 +438,7 @@ class RunContext:
                 result=self.result,
                 output_schema=self.harness.output_schema,
                 capture_messages=option.capture_messages,
-                top_level=not self.harness._is_child_run,
+                top_level=not self.harness._is_child_harness,
             )
         )
         self.attach_resume_state(active_session, require_dump_state=require_dump_state)

@@ -977,8 +977,10 @@ class AnthropicMessagesSession:
             # on the last cacheable block, so the growing prefix is reused.
             "cache_control": {"type": "ephemeral"},
         }
-        if metadata:
-            payload["metadata"] = metadata
+        # Anthropic accepts only user_id in request metadata.
+        anthropic_user_id = metadata.get("user_id") if metadata is not None else None
+        if isinstance(anthropic_user_id, str):
+            payload["metadata"] = {"user_id": anthropic_user_id}
         if self.model.settings.temperature is not None:
             payload["temperature"] = self.model.settings.temperature
         if self.model.settings.effort is not None:

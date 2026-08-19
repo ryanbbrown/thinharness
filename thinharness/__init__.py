@@ -38,6 +38,11 @@ from .hooks import (
 )
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
 from .plugins import (
+    DEFAULT_SUBAGENT_NAME,
+    ChildHarnessHost,
+    ChildHarnessOutcome,
+    ChildHarnessRequest,
+    ChildInheritablePlugin,
     FilesystemPlugin,
     MCPPlugin,
     ParallelLlmPlugin,
@@ -47,6 +52,9 @@ from .plugins import (
     PluginContext,
     PluginContribution,
     SkillsPlugin,
+    SubAgentArgs,
+    SubAgentConfig,
+    SubagentsPlugin,
 )
 from .providers import (
     AnthropicMessagesModel,
@@ -70,7 +78,6 @@ from .providers import (
     infer_model,
     parse_model_ref,
 )
-from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
     BashArgs,
     BashTool,
@@ -108,6 +115,10 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "BashArgs",
+    "ChildHarnessHost",
+    "ChildHarnessOutcome",
+    "ChildHarnessRequest",
+    "ChildInheritablePlugin",
     "BashTool",
     "FileTools",
     "FilesystemPlugin",
@@ -165,6 +176,7 @@ __all__ = [
     "SkillRegistry",
     "SubAgentArgs",
     "SubAgentConfig",
+    "SubagentsPlugin",
     "DEFAULT_SUBAGENT_NAME",
     "Model",
     "ModelCapabilities",
@@ -203,12 +215,10 @@ __all__ = [
     "LocalTracing",
     "OtlpTracing",
     "TracingOptions",
-    "build_child_harness",
     "call_tool",
     "contained_path",
     "create_local_tracing",
     "create_local_tracing_options",
-    "create_subagent_tool",
     "create_otlp_tracing",
     "infer_model",
     "parse_model_ref",

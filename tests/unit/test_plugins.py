@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from fakes import ScriptedModel, ScriptedSession, echo_tool
+from fakes import FakeChildHarnessHost, ScriptedModel, ScriptedSession, echo_tool
 from pydantic import BaseModel
 
 import thinharness.core as core_module
@@ -255,13 +255,18 @@ async def test_connection_cancellation_rolls_back_without_run_hooks(tmp_path: Pa
 
 async def test_invalid_dynamic_contribution_is_not_committed(tmp_path: Path) -> None:
     events: list[str] = []
-    plugin = ConnectedPlugin("bad", events, PluginContribution(tools=(_tool("subagent"),)))
-    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[plugin])
+    plugin = ConnectedPlugin("bad", events, PluginContribution(tools=(_tool("collision"),)))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[plugin],
+        tools=[_tool("collision")],
+    )
 
-    with pytest.raises(ValueError, match="reserved tool name"):
+    with pytest.raises(ValueError, match="duplicate tool name"):
         await harness.connect()
 
-    assert harness.tools == []
+    assert [tool.name for tool in harness.tools] == ["collision"]
     assert events == ["enter:bad", "exit:bad"]
 
 
@@ -318,7 +323,7 @@ def test_filesystem_bind_performs_no_metadata_io(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(Path, "is_file", fail)
 
     binding = FilesystemPlugin(read_paths=["future"], write_paths=["outputs"]).bind(
-        PluginContext(root=root, model=ScriptedModel([]))
+        PluginContext(root=root, model=ScriptedModel([]), child_harnesses=FakeChildHarnessHost())
     )
 
     assert [tool.name for tool in binding.static.tools] == ["read", "write", "edit", "search", "list", "glob"]
@@ -525,15 +530,20 @@ async def test_failed_connection_attempts_every_plugin_cleanup(tmp_path: Path) -
             return PluginBinding(connect=connect)
 
     first = CleanupPlugin("first", PluginContribution(), fail_close=True)
-    second = CleanupPlugin("second", PluginContribution(tools=(_tool("subagent"),)))
-    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[first, second])
+    second = CleanupPlugin("second", PluginContribution(tools=(_tool("collision"),)))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[first, second],
+        tools=[_tool("collision")],
+    )
 
-    with pytest.raises(ValueError, match="reserved tool name") as raised:
+    with pytest.raises(ValueError, match="duplicate tool name") as raised:
         await harness.connect()
 
     assert events == ["second", "first"]
     assert any("cleanup also failed" in note for note in raised.value.__notes__)
-    assert harness.tools == []
+    assert [tool.name for tool in harness.tools] == ["collision"]
 
 
 async def test_close_attempts_model_after_plugin_failure(tmp_path: Path) -> None:

@@ -34,7 +34,6 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=[],
                 max_model_requests=4,
                 max_tool_calls=2,
             ),

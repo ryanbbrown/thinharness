@@ -80,7 +80,7 @@ async def _run() -> None:
         server = MCPServerStdio(sys.executable, [str(server_path)])
 
         async with Harness(
-            HarnessConfig(root=root, builtin_tools=[], max_model_requests=2, max_tool_calls=1),
+            HarnessConfig(root=root, max_model_requests=2, max_tool_calls=1),
             model=DeterministicModel(),
             plugins=[MCPPlugin(servers=[server])],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],

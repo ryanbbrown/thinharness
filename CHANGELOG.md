@@ -7,16 +7,22 @@
 - Added `MCPPlugin` for lazy MCP server connection, binding-local server identity, atomic tool discovery, and generic tool origin attribution.
 - Added `SkillsPlugin` for constructor-time skill discovery, explicit ordered skill-tool selection, static summaries, and shared inherited-child catalogs.
 - Added `ParallelLlmPlugin` for explicit text-only batch composition with borrowed harness or caller models and plugin-owned string-model provider settings.
-- Added the configured harness model to the I/O-free `PluginContext` alongside the canonical root.
+- Added explicit `SubagentsPlugin` composition for the default child, named child recipes, child-local hooks, additive inheritance, and delegation result shaping.
+- Added a narrow `ChildHarnessHost` to `PluginContext`, public child request/outcome contracts, and structural `ChildInheritablePlugin.for_child()` rebinding.
+- Added run-frozen authoritative tool composition provenance for direct-tool inheritance and `subagent.delegation` tracing.
 - **Breaking:** Removed `HarnessConfig.mcp_servers`, `McpToolInfo`, and the MCP `ToolKind`; configure one `MCPPlugin` with all harness servers.
 - **Breaking:** Generic plugin validation now reports MCP tool collisions as duplicate tool names. Use MCP `tool_prefix`, `include_tools`, or `exclude_tools` to prevent collisions.
 - **Breaking:** Removed `MCPServer.resolve_id()` and post-bind mutation of `server.id`. The public `server.id` remains the base ID; binding-local IDs, including duplicate suffixes, appear in tool origin and result metadata.
 - **Breaking:** `Harness` no longer enables filesystem tools by default. Pass `plugins=[FilesystemPlugin(...)]`; independent custom tools still use `tools=`.
 - **Breaking:** Removed filesystem settings from `HarnessConfig` and removed the `builtin_tools()` helper.
 - **Breaking:** Removed `HarnessConfig.skills_dir`, `selected_skills`, `read_paths`, `write_paths`, `builtin_parallel_llm_model`, `builtin_parallel_llm_temperature`, and `parallel_llm_max_prompts`; use `SkillsPlugin` and `ParallelLlmPlugin`.
-- **Breaking:** Removed the `Harness(skills=...)` composition path, `SubAgentConfig.builtin_tools`, and `create_parallel_llm_tool`; named children now use explicit plugins or tools.
-- **Breaking:** Removed the `parallel_llm` `ToolKind`; direct and plugin-created `ParallelLlmTool` specifications now use kind `"user"`.
+- **Breaking:** Removed the `Harness(skills=...)` composition path and `create_parallel_llm_tool`; named children now use explicit plugins or tools.
+- **Breaking:** Removed `HarnessConfig.builtin_tools`, `HarnessConfig.subagents`, and `Harness(subagent_hooks=...)`. ThinHarness has no implicit tool selector; use `FilesystemPlugin`, `SkillsPlugin`, `ParallelLlmPlugin`, and `SubagentsPlugin` explicitly.
+- **Breaking:** Removed `SubAgentConfig.builtin_tools`, `inherit_parent_tools`, `inherit_mcp_servers`, and `mcp_servers`. Use additive `inherit_parent=True`, explicit child plugins, and an explicit child `MCPPlugin`.
+- **Breaking:** Removed `create_subagent_tool`, `build_child_harness`, the `thinharness.subagents` module, `ToolKind`, and `ToolSpec.kind`. A custom direct tool can now use the name `subagent` when `SubagentsPlugin` is absent.
+- **Breaking:** Parent plugins inherit only when they implement `for_child()`. Filesystem, skills, and parallel LLM plugins opt in with frozen constructor configuration; MCP and subagents do not. An inherited `ParallelLlmPlugin(model=None)` now borrows the child model.
 - Changed connection setup to complete before `run_start` hooks. A connection failure does not fire run lifecycle hooks.
+- Fixed Anthropic metadata projection to send only the Messages API's supported `user_id`, while keeping child correlation metadata inside the harness.
 
 ## 0.6.0 - 2026-08-07
 

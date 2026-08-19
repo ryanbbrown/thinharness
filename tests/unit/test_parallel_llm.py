@@ -7,10 +7,11 @@ from typing import Any
 
 import httpx
 import pytest
+from fakes import FakeChildHarnessHost
 from pydantic import BaseModel, ValidationError
 
 import thinharness.plugins.parallel_llm as parallel_plugin_module
-from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ParallelLlmPlugin, PluginContext, ToolOutput
+from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ParallelLlmPlugin, PluginContext, ToolOutput, ToolSpec
 from thinharness.providers import ModelSettings, OpenAIProvider, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
 from thinharness.tools.parallel_llm import (
@@ -664,7 +665,7 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
 
     assert spec.name == "parallel_extract"
     assert spec.description == "Extract fields."
-    assert spec.kind == "user"
+    assert "kind" not in ToolSpec.__dataclass_fields__
     assert isinstance(model, OpenAIResponsesModel)
     assert should_close is True
     assert model.provider.api_key == "key"
@@ -718,8 +719,8 @@ def test_parallel_llm_plugin_composition_and_builtin_migration(tmp_path: Path) -
     assert "parallel_llm" not in {tool.name for tool in default_harness.tools}
     assert "parallel_llm" in {tool.name for tool in selected_harness.tools}
     assert next(tool for tool in selected_harness.tools if tool.name == "parallel_llm").instructions == DEFAULT_PARALLEL_LLM_INSTRUCTIONS
-    with pytest.raises(ValueError, match="ParallelLlmPlugin"):
-        Harness(HarnessConfig(root=tmp_path / "bad", builtin_tools=["parallel_llm"]))
+    with pytest.raises(ValueError, match="SubagentsPlugin"):
+        HarnessConfig(root=tmp_path / "bad", builtin_tools=["parallel_llm"])
 
 
 async def test_parallel_llm_usage_accounting_in_harness_run(tmp_path: Path) -> None:
@@ -744,7 +745,7 @@ def test_parallel_llm_plugin_static_contract_and_fixed_names(tmp_path: Path) -> 
     assert spec.name == "parallel_llm"
     assert spec.description == "Batch now."
     assert spec.instructions == "Use carefully."
-    assert spec.kind == "user"
+    assert "kind" not in ToolSpec.__dataclass_fields__
     assert spec.origin is not None
     assert spec.origin.plugin == "parallel_llm"
     assert spec.origin.source == "parallel_llm"
@@ -795,7 +796,7 @@ def test_parallel_llm_plugin_omits_default_sentinels_and_preserves_explicit_fals
         return real_tool(**kwargs)
 
     monkeypatch.setattr(parallel_plugin_module, "ParallelLlmTool", capture_tool)
-    context = PluginContext(root=tmp_path, model=BatchModel())
+    context = PluginContext(root=tmp_path, model=BatchModel(), child_harnesses=FakeChildHarnessHost())
 
     ParallelLlmPlugin("openai:default").bind(context)
     ParallelLlmPlugin(
@@ -895,7 +896,7 @@ def test_parallel_llm_plugin_bind_is_io_free_and_does_not_infer_provider(tmp_pat
     monkeypatch.setattr(Path, "stat", fail)
     monkeypatch.setattr("thinharness.providers.infer_model", fail)
 
-    binding = plugin.bind(PluginContext(root=tmp_path, model=BatchModel()))
+    binding = plugin.bind(PluginContext(root=tmp_path, model=BatchModel(), child_harnesses=FakeChildHarnessHost()))
     assert binding.static.tools[0].name == "parallel_llm"
 
 

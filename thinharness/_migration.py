@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 REMOVED_HARNESS_CONFIG_FIELDS = {
+    "builtin_tools": "plugin composition; use SubagentsPlugin for delegation",
+    "subagents": "SubagentsPlugin(agents=[...])",
     "skills_dir": "SkillsPlugin",
     "selected_skills": "SkillsPlugin",
     "read_paths": "ParallelLlmPlugin",

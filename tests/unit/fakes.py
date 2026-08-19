@@ -9,6 +9,8 @@ from typing import Any
 
 from thinharness import (
     AnthropicProvider,
+    ChildHarnessOutcome,
+    ChildHarnessRequest,
     OpenAIProvider,
     OpenAIResponsesModel,
     OpenRouterProvider,
@@ -17,6 +19,18 @@ from thinharness import (
 from thinharness.providers import ModelNotice, ModelTurn, ProviderError
 
 SCRIPTED_MODEL_NAME = "scripted-model"
+
+
+class FakeChildHarnessHost:
+    """No-op child host for direct third-party-style plugin bindings."""
+
+    def register_delegation_tool(self, tool: ToolSpec, recipes) -> ToolSpec:
+        del recipes
+        return tool
+
+    async def run(self, request: ChildHarnessRequest) -> ChildHarnessOutcome:
+        del request
+        raise AssertionError("unexpected child harness request")
 
 
 class FakeClient(OpenAIProvider):
@@ -207,6 +221,7 @@ class ScriptedSession:
         self.on_start = on_start
         self.on_continue = on_continue
         self.notice_calls: list[tuple[str, list[ModelNotice]]] = []
+        self.continue_calls: list[tuple[Any, Any, Any]] = []
         self._dump_state = dump_state if dump_state is not None else {"kind": "scripted", "version": 1, "model": SCRIPTED_MODEL_NAME}
 
     async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
@@ -219,6 +234,7 @@ class ScriptedSession:
     async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Return the scripted continuation turn."""
         self.notice_calls.append(("continue_with_tools", list(notices or [])))
+        self.continue_calls.append((outputs, constants.tools, constants.metadata))
         if self.on_continue:
             self.on_continue(outputs, constants.tools, constants.metadata)
         return self.continue_turn

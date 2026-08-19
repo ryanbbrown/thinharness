@@ -7,13 +7,13 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec
 from .types import HarnessResult, RunUsage, StopReason
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
-_CURRENT_TOOL_RUNTIME: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
+_CURRENT_TOOL_RUNTIME: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
 
 
 def current_tool_call_context() -> Json | None:
@@ -21,7 +21,7 @@ def current_tool_call_context() -> Json | None:
     return _CURRENT_TOOL_CALL.get()
 
 
-def current_tool_runtime_context() -> Json | None:
+def current_tool_runtime_context() -> dict[str, Any] | None:
     """Return internal runtime context for nested framework tool handlers."""
     return _CURRENT_TOOL_RUNTIME.get()
 

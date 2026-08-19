@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fakes import FakeTracer, MultiCallClient, ScriptedModel, _fake_openai, echo_tool, tool_output
+from fakes import FakeChildHarnessHost, FakeTracer, MultiCallClient, ScriptedModel, _fake_openai, echo_tool, tool_output
 from pydantic import BaseModel, model_validator
 
 from thinharness import (
@@ -15,10 +15,11 @@ from thinharness import (
     HarnessError,
     Hook,
     ModelRetry,
+    PluginContext,
     SubAgentConfig,
+    SubagentsPlugin,
     ToolSpec,
     TracingOptions,
-    build_child_harness,
     call_tool,
 )
 from thinharness.providers import ModelToolCall, ModelTurn
@@ -72,7 +73,7 @@ def test_model_retry_public_import_and_successful_retry(tmp_path: Path) -> None:
         ModelTurn(tool_calls=[_call("flaky", "{}", "call_2")], raw={"id": "retry"}),
         ModelTurn(text="done", raw={"id": "done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[
         ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, flaky),
     ])
 
@@ -95,7 +96,7 @@ def test_validation_failure_retries_then_succeeds(tmp_path: Path) -> None:
         ModelTurn(tool_calls=[_call("age", '{"age":5}', "call_2")], raw={"id": "retry"}),
         ModelTurn(text="done", raw={"id": "done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[
         ToolSpec("age", "Age", AgeArgs, lambda args: seen.append(args.age) or "ok"),
     ])
 
@@ -121,7 +122,7 @@ def test_handler_internal_validation_error_is_not_retry(tmp_path: Path) -> None:
         return "never"
 
     client = MultiCallClient([("inner", '{"value":"bad"}')])
-    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]), model=_fake_openai(client), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model"), model=_fake_openai(client), tools=[
         ToolSpec("inner", "Inner", OuterArgs, handler),
     ])
 
@@ -149,7 +150,7 @@ def test_malformed_json_retries_then_succeeds(tmp_path: Path) -> None:
         ModelTurn(tool_calls=[_call("echo", '{"value":"ok"}', "call_2")], raw={"id": "retry"}),
         ModelTurn(text="done", raw={"id": "done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[echo_tool()])
 
     result = harness.run_sync("go")
     retry = tool_output(session.tool_outputs[0][0].output)
@@ -191,7 +192,7 @@ def test_tool_retries_exceeded_counts_over_budget_failure(tmp_path: Path) -> Non
         ModelTurn(tool_calls=[_call("flaky", "{}", "call_2")], raw={"id": "retry"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=1),
+        HarnessConfig(root=tmp_path, tool_retries=1),
         model=ScriptedModel([session]),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[
@@ -212,7 +213,7 @@ def test_tool_retries_exceeded_counts_over_budget_failure(tmp_path: Path) -> Non
 
 def test_tool_max_retries_zero_blocks_first_retry_continuation(tmp_path: Path) -> None:
     session = SequenceSession(ModelTurn(tool_calls=[_call("flaky", "{}")], raw={"id": "start"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=3), model=ScriptedModel([session]), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path, tool_retries=3), model=ScriptedModel([session]), tools=[
         ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("no")), max_retries=0),
     ])
 
@@ -229,7 +230,7 @@ def test_tool_max_retries_override_wins_over_config_default(tmp_path: Path) -> N
     )
     events = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=3),
+        HarnessConfig(root=tmp_path, tool_retries=3),
         model=ScriptedModel([session]),
         tools=[
             ToolSpec(
@@ -257,7 +258,7 @@ def test_two_calls_same_tool_share_budget_and_skip_batch_continuation(tmp_path: 
     ], raw={"id": "start"}))
     events = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=1),
+        HarnessConfig(root=tmp_path, tool_retries=1),
         model=ScriptedModel([session]),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[Hook("run_end", lambda ctx: events.append(dict(ctx.usage.tool_retries)))],
@@ -279,7 +280,7 @@ def test_unknown_tool_and_cancellation_do_not_consume_retry_budget(tmp_path: Pat
             ctx.cancel_reason = "blocked"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("block", "Block", {"type": "object", "properties": {}}, lambda args: "bad")],
         hooks=[Hook("before_tool_call", cancel)],
@@ -294,7 +295,7 @@ def test_unknown_tool_and_cancellation_do_not_consume_retry_budget(tmp_path: Pat
 def test_parallel_retry_and_success_outputs_preserve_model_order(tmp_path: Path) -> None:
     client = MultiCallClient([("retry", "{}"), ("ok", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[
             ToolSpec("retry", "Retry", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("try again"))),
@@ -317,7 +318,7 @@ async def test_async_handler_model_retry_is_captured(tmp_path: Path) -> None:
         raise ModelRetry("async retry")
 
     client = MultiCallClient([("async_retry", "{}")])
-    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]), model=_fake_openai(client), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model"), model=_fake_openai(client), tools=[
         ToolSpec("async_retry", "Async retry", {"type": "object", "properties": {}}, retry),
     ])
 
@@ -338,7 +339,7 @@ async def test_async_handler_internal_validation_error_is_not_retry(tmp_path: Pa
         return "never"
 
     client = MultiCallClient([("inner", '{"value":"bad"}')])
-    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]), model=_fake_openai(client), tools=[
+    harness = Harness(HarnessConfig(root=tmp_path, model="openai:test-model"), model=_fake_openai(client), tools=[
         ToolSpec("inner", "Inner", {"type": "object", "properties": {}}, handler),
     ])
 
@@ -369,7 +370,7 @@ def test_after_tool_hook_sees_retry_envelope_and_cannot_break_budget(tmp_path: P
 
     session = SequenceSession(ModelTurn(tool_calls=[_call("flaky", "{}")], raw={"id": "start"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=0),
+        HarnessConfig(root=tmp_path, tool_retries=0),
         model=ScriptedModel([session]),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[Hook("after_tool_call", after)],
@@ -389,7 +390,7 @@ def test_after_tool_hook_sees_validation_retry_envelope(tmp_path: Path) -> None:
     seen = []
     client = MultiCallClient([("age", '{"age":"five"}')])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("age", "Age", AgeArgs, lambda args: "ok")],
         hooks=[Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope.metadata))],
@@ -410,7 +411,7 @@ def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
 
     client = MultiCallClient([("flaky", "{}")])
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[Hook("after_tool_call", rewrite)],
@@ -423,13 +424,21 @@ def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
     assert span.attributes["error.type"] == "ModelRetry"
 
 
-def test_subagent_tool_retry_budget_inheritance(tmp_path: Path) -> None:
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=4), model=ScriptedModel([]), tools=[echo_tool()])
+def test_subagent_tool_retry_budget_recipes(tmp_path: Path) -> None:
+    host = FakeChildHarnessHost()
+    captured = []
 
-    default_child = build_child_harness(parent, None)
-    named_default = build_child_harness(parent, SubAgentConfig(name="named", description="Named helper.", tools=[echo_tool()]))
-    named_custom = build_child_harness(parent, SubAgentConfig(name="custom", description="Custom helper.", tools=[echo_tool()], tool_retries=2))
+    def register(tool, recipes):
+        captured.extend(recipes)
+        return tool
 
-    assert default_child.config.tool_retries == 4
-    assert named_default.config.tool_retries == 1
-    assert named_custom.config.tool_retries == 2
+    host.register_delegation_tool = register  # type: ignore[method-assign]
+    plugin = SubagentsPlugin(agents=[
+        SubAgentConfig(name="named", description="Named helper.", tools=[echo_tool()]),
+        SubAgentConfig(name="custom", description="Custom helper.", tools=[echo_tool()], tool_retries=2),
+    ])
+    plugin.bind(PluginContext(root=tmp_path, model=ScriptedModel([]), child_harnesses=host))
+
+    assert captured[0].tool_retries is None
+    assert captured[1].tool_retries == 1
+    assert captured[2].tool_retries == 2

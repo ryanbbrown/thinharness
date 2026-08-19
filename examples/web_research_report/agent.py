@@ -16,7 +16,19 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from thinharness import FilesystemPlugin, Harness, HarnessConfig, Hook, ParallelLlmTool, PathPolicy, PathValidationError, SubAgentConfig, ToolResult, ToolSpec
+from thinharness import (
+    FilesystemPlugin,
+    Harness,
+    HarnessConfig,
+    Hook,
+    ParallelLlmTool,
+    PathPolicy,
+    PathValidationError,
+    SubAgentConfig,
+    SubagentsPlugin,
+    ToolResult,
+    ToolSpec,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_ROOT = Path(__file__).resolve().parent
@@ -487,7 +499,6 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
             root=root,
             model=model,
             system_prompt=SYSTEM_PROMPT,
-            builtin_tools=["subagent"],
             output_type=ReportReceipt,
             output_mode=output_mode,
             output_retries=2,
@@ -498,7 +509,16 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
             request_timeout=240,
             temperature=0,
             extra_body=_model_extra_body(model),
-            subagents=[
+        ),
+        plugins=[
+            FilesystemPlugin(
+                tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search"],
+                read_paths=["outputs"],
+                write_paths=["outputs"],
+                max_read_chars=80_000,
+                max_tool_chars=80_000,
+            ),
+            SubagentsPlugin(agents=[
                 SubAgentConfig(
                     name="citation_critic",
                     description="Citation and evidence critic for saved draft reports.",
@@ -509,15 +529,8 @@ def build_harness(root: Path, *, model: str = DEFAULT_MODEL) -> Harness:
                     output_retries=1,
                     tool_retries=1,
                 )
-            ],
-        ),
-        plugins=[FilesystemPlugin(
-            tools=["read", "write", "edit", "search", "list", "glob", "jsonl_search"],
-            read_paths=["outputs"],
-            write_paths=["outputs"],
-            max_read_chars=80_000,
-            max_tool_chars=80_000,
-        )],
+            ]),
+        ],
         tools=[*exa_tools.specs(), parallel_tool],
         hooks=[Hook("after_tool_call", _source_audit_hook)],
     )

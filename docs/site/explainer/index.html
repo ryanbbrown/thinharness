@@ -162,7 +162,7 @@
 |   |-- providers.py                 provider transports, model adapters, session state
 |   |-- output.py                    structured-output schemas and validation
 |   |-- hooks.py                     hook dataclasses, registry, context variables
-|   |-- subagents.py                 subagent tool and child harness construction
+|   |-- children.py                  narrow child-harness host and execution
 |   |-- tracing.py                   OTel-compatible spans and local JSONL tracing
 |   |-- defaults.py                  default system and tool instructions
 |   |-- plugins/
@@ -196,7 +196,7 @@
           <table>
             <thead><tr><th>Name</th><th>Meaning</th><th>Relationship</th></tr></thead>
             <tbody>
-              <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, deferred subagent selection, limits, output mode, tracing, and subagents.</td><td>Configures a <code>Harness</code>.</td></tr>
+              <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, limits, output mode, tracing, and provider settings.</td><td>Configures a <code>Harness</code>.</td></tr>
               <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns the model object, resolved tool map, plugin bindings, hooks, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
               <tr><td><code>RequestConstants</code></td><td>Frozen per-run request constants: instructions, tool schemas, metadata, and the structured-output request. Built once after run-start hooks and plugin connection, so the toolset is frozen for the run.</td><td>Passed to every <code>ModelSession</code> request by the turn machine in <code>turns.py</code>.</td></tr>
               <tr><td><code>RunContext</code></td><td>Internal state for one <code>Harness.run(...)</code>: responses, tool records, usage, retry/notice state, terminal error, stop reason, tracing span, and final result.</td><td>References the reusable <code>Harness</code>, but is not stored on it after the run.</td></tr>
@@ -265,9 +265,9 @@
         <div class="plain-panel">
           <h3>Plugin composition</h3>
           <p>
-            ThinHarness composes filesystem, skills, MCP, and parallel LLM behavior through explicit plugins. Plugins receive
-            the canonical root and configured model, and contribute ordered tools, instructions, hooks, or connected state.
-            <code>builtin_tools</code> remains temporarily only for <code>subagent</code>.
+            ThinHarness composes filesystem, skills, MCP, parallel LLM, and subagent behavior through explicit plugins. Plugins receive
+            the canonical root, configured model, and narrow child host, then contribute ordered tools, instructions, hooks, agent names, or connected state.
+            The core has no implicit or selected built-in tool path.
           </p>
         </div>
       </div>
@@ -287,15 +287,15 @@
             </tr>
             <tr>
               <td>Plugin-provided</td>
-              <td><code>SkillsPlugin</code>, <code>ParallelLlmPlugin</code>, and <code>MCPPlugin</code></td>
+              <td><code>SkillsPlugin</code>, <code>ParallelLlmPlugin</code>, <code>MCPPlugin</code>, and <code>SubagentsPlugin</code></td>
               <td>Explicit plugin contributions are normalized into the same <code>ToolSpec</code> map with plugin origin attribution.</td>
               <td>Skills and parallel LLM contribute static tools; MCP connects lazily and contributes one discovered snapshot.</td>
             </tr>
             <tr>
-              <td>Deferred built-in</td>
-              <td>Subagent composition</td>
-              <td><code>builtin_tools=["subagent"]</code> selects the remaining core candidate.</td>
-              <td>Child composition stays in <code>subagents.py</code> until its plugin migration.</td>
+              <td>Delegation</td>
+              <td><code>SubagentsPlugin</code></td>
+              <td>Explicit plugin composition contributes one ordinary <code>subagent</code> tool and static agent names.</td>
+              <td>The plugin owns child recipes; the neutral child host owns isolated execution and authoritative delegation provenance.</td>
             </tr>
             <tr>
               <td>Custom</td>
@@ -458,13 +458,13 @@
           </tr>
           <tr>
             <td>Subagents</td>
-            <td>The <code>subagent</code> framework tool builds a child <code>Harness</code> and returns the child result as a tool result.</td>
-            <td>The parent tool call awaits the child run. Child harnesses always receive <code>subagents=[]</code>, structurally disabling recursion.</td>
+            <td><code>SubagentsPlugin</code> contributes the <code>subagent</code> tool and passes an opaque recipe to a narrow core child host.</td>
+            <td>The parent tool call awaits a fresh child. Safe plugins rebind through <code>for_child()</code>, direct tools come from the frozen run snapshot, and the child's disabled host blocks recursion.</td>
           </tr>
           <tr>
             <td>MCP</td>
             <td>Configured server objects connect lazily and discover tools into live <code>ToolSpec</code> objects.</td>
-            <td>Subagents do not inherit parent-discovered MCP tools as ordinary custom <code>ToolSpec</code> objects. A named subagent can opt into MCP with <code>inherit_mcp_servers=True</code> or its own <code>mcp_servers=[...]</code>; then the child harness discovers MCP tools through its own connection lifecycle against those configured server objects.</td>
+            <td>MCP does not inherit into children. A named child lists an explicit <code>MCPPlugin</code> in its plugin configuration, then discovers tools through that child binding's connection lifecycle.</td>
           </tr>
           <tr>
             <td>Parallel LLM</td>
@@ -484,9 +484,9 @@
         <li><code>thinharness/output.py</code> so final-answer decisions make sense before reading the loop.</li>
         <li><code>thinharness/core.py</code>, <code>thinharness/turns.py</code>, and <code>thinharness/runtime.py</code> together. Read <code>Harness.__init__</code>, then <code>Harness.run</code>, then <code>advance_until_terminal</code> and <code>RunContext.advance_model</code>.</li>
         <li><code>thinharness/tool_execution.py</code> to see how a model-emitted batch becomes ordered provider outputs.</li>
-        <li><code>thinharness/tools/filesystem.py</code> to understand the default workspace tools the model can call.</li>
+        <li><code>thinharness/tools/filesystem.py</code> to understand workspace tools that <code>FilesystemPlugin</code> can expose.</li>
         <li><code>thinharness/hooks.py</code> and <code>thinharness/tracing.py</code> to understand lifecycle callbacks and run observability.</li>
-        <li>Pick extras as needed: <code>thinharness/tools/jsonl.py</code>, <code>thinharness/subagents.py</code>, <code>thinharness/tools/mcp.py</code>, <code>thinharness/tools/skills.py</code>, and <code>thinharness/tools/parallel_llm.py</code>.</li>
+        <li>Pick extras as needed: <code>thinharness/tools/jsonl.py</code>, <code>thinharness/plugins/subagents.py</code>, <code>thinharness/children.py</code>, <code>thinharness/tools/mcp.py</code>, <code>thinharness/tools/skills.py</code>, and <code>thinharness/tools/parallel_llm.py</code>.</li>
         <li>Use tests as executable documentation. Start with <code>tests/test_harness.py</code>, then the feature-specific test file for whatever you are changing.</li>
       </ol>
     </section>
@@ -545,8 +545,8 @@
           </table>
           <p>
             Inheritance is intentionally light. Provider session classes implement the same session protocol, but the core
-            loop mostly uses composition: <code>Harness</code> owns a model, tool specs, hooks, tracing options, skill registry,
-            and MCP server list. Built-in tools often use classes as state holders, then hand bound methods to <code>ToolSpec</code>.
+            loop mostly uses composition: <code>Harness</code> owns a model, tool specs, plugin bindings, hooks, and tracing options.
+            Plugin and direct tool objects hand callable handlers to ordinary <code>ToolSpec</code> values.
           </p>
         </div>
       </details>
@@ -916,13 +916,13 @@
               </tr>
               <tr>
                 <td>Subagents</td>
-                <td>The <code>subagent</code> framework tool builds a child <code>Harness</code> and returns the child result as a tool result.</td>
-                <td>Child runs start fresh, recursion is structurally disabled, and inherited custom tools are live <code>ToolSpec</code> objects.</td>
+                <td><code>SubagentsPlugin</code> owns the delegation tool and child recipes; <code>children.py</code> implements the narrow host.</td>
+                <td>Child runs start fresh, safe plugins rebind, direct tools use the frozen parent-run snapshot, and a disabled child host blocks recursion.</td>
               </tr>
               <tr>
                 <td>MCP</td>
                 <td>Configured server objects connect lazily and discover tools into live <code>ToolSpec</code> objects.</td>
-                <td>Subagents do not inherit parent-discovered MCP tools as ordinary custom <code>ToolSpec</code> objects. They opt into MCP through inherited or explicit server config, then discover tools in the child harness lifecycle.</td>
+                <td>MCP does not inherit automatically. A child lists an explicit <code>MCPPlugin</code> and discovers tools in its own harness lifecycle.</td>
               </tr>
               <tr>
                 <td>Skills</td>

@@ -4,680 +4,725 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fakes import (
-    FailingSession,
-    FakeTracer,
-    RecordingModel,
-    ScriptedModel,
-    ScriptedSession,
-    echo_tool,
-    tool_output,
-)
+from fakes import FailingSession, FakeTracer, ScriptedModel, ScriptedSession, echo_tool, tool_output
 
 from thinharness import (
     DEFAULT_SUBAGENT_NAME,
     AfterSubagentRunContext,
     BeforeSubagentRunContext,
+    ChildHarnessOutcome,
+    ChildHarnessRequest,
     FilesystemPlugin,
     Harness,
     HarnessConfig,
     Hook,
     HookRegistry,
-    MCPPlugin,
-    MCPServerStdio,
-    ParallelLlmPlugin,
+    PluginBinding,
+    PluginContext,
+    PluginContribution,
     SkillsPlugin,
     SubAgentConfig,
+    SubagentsPlugin,
     ToolOrigin,
+    ToolResult,
     ToolSpec,
     TracingOptions,
-    build_child_harness,
     call_tool,
-    create_subagent_tool,
 )
-from thinharness.hooks import current_tool_call_context, current_tool_runtime_context
 from thinharness.providers import ModelToolCall, ModelTurn
 
 
+class FakeChildHost:
+    def __init__(self, outcome: ChildHarnessOutcome | None = None) -> None:
+        self.outcome = outcome
+        self.tools: list[ToolSpec] = []
+        self.recipes: list[ChildHarnessRequest] = []
+        self.requests: list[ChildHarnessRequest] = []
+
+    def register_delegation_tool(self, tool: ToolSpec, recipes) -> ToolSpec:
+        self.tools.append(tool)
+        self.recipes.extend(recipes)
+        return tool
+
+    async def run(self, request: ChildHarnessRequest) -> ChildHarnessOutcome:
+        self.requests.append(request)
+        if self.outcome is None:
+            raise AssertionError("unexpected child run")
+        return self.outcome
+
+
 class ClosingProvider:
+    name = "OpenAI"
+
     def __init__(self) -> None:
-        self.name = "OpenAI"
         self.closed = 0
 
     async def aclose(self) -> None:
         self.closed += 1
 
 
-def test_subagent_config_validation_accepts_tool_specs() -> None:
-    spec = echo_tool()
-    sequential_tool = ToolSpec("sequential_echo", "Sequential echo", {"type": "object", "properties": {}}, lambda args: "ok", sequential=True)
-    config = SubAgentConfig(name="research.1", description="Research helper.", tools=[spec, sequential_tool])
-    inherited = SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True)
-
-    assert config.tools == [spec, sequential_tool]
-    assert inherited.inherit_parent_tools is True
-    with pytest.raises(ValueError, match="inherit_parent_tools"):
-        SubAgentConfig(name="bad", description="Bad helper.", inherit_parent_tools=True, plugins=[FilesystemPlugin(tools=["read"])])
-    with pytest.raises(ValueError, match="SubAgentConfig.builtin_tools has been removed"):
-        SubAgentConfig(name="removed", description="Removed helper.", builtin_tools=["subagent"], tools=[spec])
-    with pytest.raises(ValueError, match="cannot be exposed"):
-        SubAgentConfig(
-            name="recursive-custom",
-            description="Recursive helper.",
-            tools=[ToolSpec("subagent", "Recursive", {"type": "object", "properties": {}}, lambda args: "bad")],
-        )
-    with pytest.raises(
-        ValueError,
-        match="named subagents must define plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers",
-    ):
-        SubAgentConfig(name="empty", description="No tools.")
-    with pytest.raises(ValueError):
-        SubAgentConfig(name="bad name", description="Bad helper.", plugins=[FilesystemPlugin(tools=["read"])])
-    with pytest.raises(ValueError, match="non-empty single line"):
-        SubAgentConfig(name="ok", description="   ", plugins=[FilesystemPlugin(tools=["read"])])
-    with pytest.raises(ValueError, match="non-empty single line"):
-        SubAgentConfig(name="ok", description="Bad\nhelper.", plugins=[FilesystemPlugin(tools=["read"])])
-    with pytest.raises(ValueError, match="SubAgentConfig.background has been removed"):
-        SubAgentConfig(name="old-background", description="Old helper.", plugins=[FilesystemPlugin(tools=["read"])], background="always")
-
-def test_subagent_rejects_duplicate_mcp_configuration_early() -> None:
-    server = MCPServerStdio("unused")
-    plugin = MCPPlugin(servers=[server])
-
-    with pytest.raises(ValueError, match="explicit MCPPlugin"):
-        SubAgentConfig(
-            name="explicit-and-servers",
-            description="Invalid MCP helper.",
-            plugins=[plugin],
-            mcp_servers=[server],
-        )
-    with pytest.raises(ValueError, match="explicit MCPPlugin"):
-        SubAgentConfig(
-            name="explicit-and-inherit",
-            description="Invalid MCP helper.",
-            plugins=[plugin],
-            inherit_mcp_servers=True,
-        )
-    assert SubAgentConfig(name="explicit", description="Explicit MCP helper.", plugins=[plugin]).plugins == [plugin]
-
-
-def test_inherited_mcp_without_parent_plugin_adds_no_child_plugin(tmp_path: Path) -> None:
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    config = SubAgentConfig(name="mcp", description="MCP helper.", inherit_mcp_servers=True)
-
-    child = build_child_harness(parent, config)
-
-    assert not any(isinstance(plugin, MCPPlugin) for plugin in child.plugins)
-
-
-def test_subagent_builtin_exposure_is_selectable(tmp_path: Path) -> None:
-    default = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))
-    disabled = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    only_subagent = Harness(HarnessConfig(root=tmp_path, builtin_tools=["subagent"]), model=ScriptedModel([]))
-
-    assert "subagent" not in [tool["name"] for tool in default.tool_schemas()]
-    assert "subagent" not in [tool["name"] for tool in disabled.tool_schemas()]
-    assert [tool["name"] for tool in only_subagent.tool_schemas()] == ["subagent"]
-    schema = only_subagent.tool_schemas()[0]["parameters"]
-    assert set(schema["properties"]) == {"task", "agent"}
-    assert "tools" not in schema["properties"]
-
-def test_default_subagent_runs_child_with_inherited_tools_and_structured_result(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
+def _parent_call(*, agent: str | None = None, task: str = "help", call_id: str = "call_1") -> ModelTurn:
+    agent_arg = f',"agent":"{agent}"' if agent is not None else ""
+    return ModelTurn(
+        tool_calls=[ModelToolCall(id=call_id, name="subagent", arguments=f'{{"task":"{task}"{agent_arg}}}')],
         raw={"id": "parent-start"},
     )
-    child_start_metadata = {}
+
+
+def _plugin_tool(plugin: SubagentsPlugin, tmp_path: Path) -> tuple[FakeChildHost, ToolSpec, PluginBinding]:
+    host = FakeChildHost()
+    binding = plugin.bind(PluginContext(root=tmp_path, model=ScriptedModel([]), child_harnesses=host))
+    return host, binding.static.tools[0], binding
+
+
+def test_plugin_contributes_static_tool_and_default_agent(tmp_path: Path) -> None:
+    host, tool, binding = _plugin_tool(SubagentsPlugin(), tmp_path)
+
+    assert binding.agent_names == (DEFAULT_SUBAGENT_NAME,)
+    assert host.tools == [tool]
+    assert tool.name == "subagent"
+    assert tool.origin is None
+    assert set(tool.response_tool()["parameters"]["properties"]) == {"task", "agent"}
+    assert "Omit `agent`" in tool.description
+    assert host.recipes[0].tool_mode == "inherited"
+
+
+def test_plain_harness_has_no_delegation_and_same_named_direct_tool_is_valid(tmp_path: Path) -> None:
+    direct = ToolSpec(
+        "subagent",
+        "An ordinary custom tool.",
+        {"type": "object", "properties": {}},
+        lambda _args: "ordinary",
+        origin=ToolOrigin(plugin="subagents"),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), tools=[direct])
+
+    assert harness.tools == [direct]
+    with pytest.raises(ValueError, match="duplicate tool name"):
+        Harness(
+            HarnessConfig(root=tmp_path),
+            model=ScriptedModel([]),
+            plugins=[SubagentsPlugin()],
+            tools=[direct],
+        )
+
+
+def test_subagent_config_accepts_additive_and_model_only_children() -> None:
+    spec = echo_tool()
+    config = SubAgentConfig(
+        name="research.1",
+        description="Research helper.",
+        inherit_parent=True,
+        plugins=[FilesystemPlugin(tools=["read"])],
+        tools=[spec],
+    )
+    model_only = SubAgentConfig(name="model-only", description="No tools.", model="openai:child")
+
+    assert config.inherit_parent is True
+    assert config.tools == (spec,)
+    assert model_only.plugins == ()
+    assert model_only.tools == ()
+
+
+@pytest.mark.parametrize("field", ["inherit_parent_tools", "inherit_mcp_servers", "mcp_servers", "builtin_tools"])
+def test_removed_subagent_config_fields_fail_by_name(field: str) -> None:
+    with pytest.raises(ValueError, match=rf"SubAgentConfig\.{field} has been removed"):
+        SubAgentConfig(name="old", description="Old helper.", **{field: True})
+
+
+def test_subagent_config_and_plugin_validate_order_names_plugins_and_tools() -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        SubAgentConfig(name="default", description="Reserved.")
+    with pytest.raises(ValueError, match="single line"):
+        SubAgentConfig(name="bad", description="Bad\nline")
+    with pytest.raises(ValueError):
+        SubAgentConfig(name="bad name", description="Bad name.")
+    with pytest.raises(TypeError, match="ordered sequence"):
+        SubagentsPlugin(agents={SubAgentConfig(name="a", description="A.")})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="duplicate subagent name"):
+        SubagentsPlugin(agents=[SubAgentConfig(name="a", description="A."), SubAgentConfig(name="a", description="Again.")])
+    with pytest.raises(TypeError, match="Plugin values"):
+        SubAgentConfig(name="bad-plugin", description="Bad.", plugins=[object()])
+    with pytest.raises(ValueError, match="SubagentsPlugin cannot"):
+        SubAgentConfig(name="nested", description="Nested.", plugins=[SubagentsPlugin()])
+    approval = ToolSpec("approve", "Approve", {"type": "object"}, lambda _args: "ok", requires_approval=True)
+    with pytest.raises(ValueError, match="child harnesses"):
+        SubAgentConfig(name="approval", description="Approval.", tools=[approval])
+
+
+def test_child_hook_validation_and_registry_copy(tmp_path: Path) -> None:
+    registry = HookRegistry([Hook("run_start", lambda _ctx: None)], strict_hooks=True)
+    config = SubAgentConfig(name="safe", description="Safe.", hooks=registry)
+    plugin = SubagentsPlugin(default_hooks=registry, agents=[config])
+    registry.hooks.clear()
+    host, _tool, _binding = _plugin_tool(plugin, tmp_path)
+
+    assert isinstance(plugin.default_hooks, HookRegistry)
+    assert len(plugin.default_hooks.hooks) == 1
+    assert all(isinstance(recipe.hooks, HookRegistry) for recipe in host.recipes)
+    assert all(recipe.hooks.strict_hooks for recipe in host.recipes if isinstance(recipe.hooks, HookRegistry))
+    assert all(len(recipe.hooks.hooks) == 1 for recipe in host.recipes if isinstance(recipe.hooks, HookRegistry))
+    with pytest.raises(ValueError, match="lifecycle"):
+        SubagentsPlugin(default_hooks=[Hook("before_subagent_run", lambda _ctx: None)])
+    invalid = SubAgentConfig(
+        name="bad",
+        description="Bad.",
+        hooks=[Hook("after_subagent_run", lambda _ctx: None, agents=["bad"])],
+    )
+    with pytest.raises(ValueError, match="lifecycle"):
+        SubagentsPlugin(agents=[invalid])
+
+
+def test_plugin_name_and_configuration_are_frozen() -> None:
+    plugin = SubagentsPlugin(agents=[SubAgentConfig(name="a", description="A.")])
+
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin.name = "other"  # type: ignore[misc]
+    with pytest.raises(AttributeError, match="frozen"):
+        plugin._agents = ()
+
+
+def test_unknown_and_blank_agent_are_normal_tool_results(tmp_path: Path) -> None:
+    host, tool, _ = _plugin_tool(
+        SubagentsPlugin(agents=[SubAgentConfig(name="research", description="Research.")]),
+        tmp_path,
+    )
+
+    unknown = tool_output(asyncio.run(tool.handler(tool.parse_args({"task": "x", "agent": "missing"}))).to_json())
+    blank = tool_output(call_tool(tool, '{"task":"x","agent":""}'))
+
+    assert unknown["metadata"] == {
+        "agent": "missing",
+        "available": ["research"],
+        "error_type": "UnknownSubAgent",
+    }
+    assert blank["metadata"]["error_type"] == "ValidationError"
+    assert host.requests == []
+
+
+def test_default_child_runs_with_frozen_direct_tools_and_returns_metadata(tmp_path: Path) -> None:
+    child_seen = {}
 
     def on_child_start(prompt, _instructions, tools, metadata, _previous_response_id):
-        child_start_metadata.update({"prompt": prompt, "tools": [tool["name"] for tool in tools], "metadata": metadata})
+        child_seen.update(prompt=prompt, tools=[tool["name"] for tool in tools], metadata=metadata)
 
-    def on_parent_continue(outputs, _tools, _metadata):
-        envelope = tool_output(outputs[0].output)
-        assert envelope["ok"] is True
-        assert envelope["content"] == "child done"
-        assert envelope["metadata"]["agent"] == "default"
-        assert envelope["metadata"]["inherited"] is True
-        assert envelope["metadata"]["tools"] == ["echo"]
-
+    parent = ScriptedSession(
+        start_turn=_parent_call(),
+        continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}),
+    )
     child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}), on_start=on_child_start)
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}), on_continue=on_parent_continue)
-    model = ScriptedModel([parent, child])
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
-    harness.add_tool(create_subagent_tool(harness, []))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin()],
+        tools=[echo_tool()],
+    )
 
-    result = harness.run_sync("delegate", metadata={"conversation_id": "conv-1", "extra": "ignored"})
+    result = harness.run_sync("delegate", metadata={"conversation_id": "conv", "private": "parent"})
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
 
     assert result.text == "parent done"
-    assert child_start_metadata == {
+    assert child_seen == {
         "prompt": "help",
         "tools": ["echo"],
-        "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"},
+        "metadata": {"conversation_id": "conv", "parent_call_id": "call_1"},
+    }
+    assert envelope["metadata"] == {
+        "agent": "default",
+        "inherited": True,
+        "tool_mode": "inherited",
+        "tools": ["echo"],
+        "model_requests": 1,
+        "structured_output": False,
     }
 
-def test_subagent_metadata_uses_runtime_context_without_leaking_hook_mutation(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
-        raw={"id": "parent-start"},
+
+def test_named_model_only_child_has_no_tools(tmp_path: Path) -> None:
+    child_seen = {}
+
+    def on_child_start(_prompt, _instructions, tools, _metadata, _previous_response_id):
+        child_seen["tools"] = tools
+
+    parent = ScriptedSession(
+        start_turn=_parent_call(agent="solo"),
+        continue_turn=ModelTurn(text="done", raw={}),
     )
-    child_start_metadata = {}
-    hook_metadata = []
-    tool_contexts = []
-
-    def on_child_start(prompt, _instructions, _tools, metadata, _previous_response_id):
-        child_start_metadata.update({"prompt": prompt, "metadata": metadata})
-
-    def before_subagent(ctx):
-        assert isinstance(ctx, BeforeSubagentRunContext)
-        hook_metadata.append(("before", dict(ctx.metadata)))
-        tool_contexts.append((current_tool_call_context(), current_tool_runtime_context()))
-        ctx.metadata["conversation_id"] = "mutated"
-        ctx.metadata["new"] = "ignored"
-
-    def after_subagent(ctx):
-        assert isinstance(ctx, AfterSubagentRunContext)
-        hook_metadata.append(("after", dict(ctx.metadata)))
-
-    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}), on_start=on_child_start)
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
+    child_model = ScriptedModel([
+        ScriptedSession(start_turn=ModelTurn(text="solo answer", raw={}), on_start=on_child_start)
+    ])
+    child_model.provider = ClosingProvider()
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([parent, child]),
-        tools=[echo_tool()],
-        hooks=[Hook("before_subagent_run", before_subagent), Hook("after_subagent_run", after_subagent)],
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("delegate", metadata={"conversation_id": "conv-1", "extra": "hook-only"}).text == "parent done"
-
-    assert hook_metadata == [
-        ("before", {"conversation_id": "conv-1", "extra": "hook-only"}),
-        ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
-    ]
-    assert child_start_metadata == {"prompt": "help", "metadata": {"conversation_id": "conv-1", "parent_call_id": "call_1"}}
-    assert tool_contexts == [
-        (
-            {"call_id": "call_1", "name": "subagent"},
-            {"run_metadata": {"conversation_id": "conv-1", "extra": "hook-only"}},
-        )
-    ]
-
-def test_subagent_receives_fresh_child_budget_notices(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[
-            ModelToolCall(id="call_1", name="echo", arguments='{"value":"parent"}'),
-            ModelToolCall(id="call_2", name="subagent", arguments='{"task":"help"}'),
-        ],
-        raw={"id": "parent-start"},
-    )
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
-    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
-    model = ScriptedModel([parent, child])
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=2, max_tool_calls=2),
-        model=model,
-        tools=[echo_tool()],
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("delegate").text == "parent done"
-
-    assert parent.notice_calls[0][1] == []
-    assert [(notice.limit_kind, notice.remaining) for notice in parent.notice_calls[1][1]] == [("model_requests", 1), ("tool_calls", 0)]
-    assert child.notice_calls[0][1] == []
-
-def test_default_subagent_does_not_close_shared_parent_provider(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
-        raw={"id": "parent-start"},
-    )
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
-    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
-    model = ScriptedModel([parent, child])
-    provider = ClosingProvider()
-    model.provider = provider
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("delegate").text == "parent done"
-
-    assert provider.closed == 0
-
-def test_named_inherited_subagent_gets_parent_tools_without_subagent(tmp_path: Path) -> None:
-    parent_echo = echo_tool()
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[parent_echo])
-    parent.add_tool(create_subagent_tool(parent, []))
-
-    child = build_child_harness(parent, SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True))
-
-    assert child.tools == [parent_echo]
-    assert child.config.subagents == []
-
-
-def test_inherited_subagents_keep_workspace_instruction_without_duplicate_tools(tmp_path: Path) -> None:
-    parent = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([]),
-        plugins=[FilesystemPlugin(tools=["read", "write"])],
-    )
-
-    default_child = build_child_harness(parent, None)
-    named_child = build_child_harness(
-        parent,
-        SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True),
-    )
-
-    for child in (default_child, named_child):
-        assert [tool.name for tool in child.tools] == ["read", "write"]
-        assert child.system_instructions().count(f"Workspace root: {tmp_path.resolve()}") == 1
-
-
-def test_inherited_subagent_reuses_parent_skill_registry(tmp_path: Path) -> None:
-    skill = tmp_path / "skills" / "demo"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo body", encoding="utf-8")
-    skills_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
-    parent = Harness(
         HarnessConfig(root=tmp_path),
-        model=ScriptedModel([]),
-        plugins=[skills_plugin],
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin(agents=[SubAgentConfig(name="solo", description="Solo.", model="openai:child")])],
     )
 
-    child = build_child_harness(parent, SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True))
+    import thinharness.children as children_module
 
-    child_skills_plugin = next(plugin for plugin in child.plugins if isinstance(plugin, SkillsPlugin))
-    assert child_skills_plugin is skills_plugin
-    assert child_skills_plugin.registry is skills_plugin.registry
-    assert child.system_instructions().count("demo - Demo skill") == 1
-    skill_read = next(tool for tool in child.tools if tool.name == "skill_read")
-    assert skill_read.handler.__self__ is skills_plugin.registry
+    original = children_module.infer_model
+    children_module.infer_model = lambda *_args, **_kwargs: child_model
+    try:
+        assert harness.run_sync("delegate").text == "done"
+    finally:
+        children_module.infer_model = original
 
-def test_explicit_subagent_skill_tools_use_its_own_plugin(tmp_path: Path) -> None:
-    skill = tmp_path / "skills" / "demo"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo body", encoding="utf-8")
-    parent_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
-    child_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
-    parent = Harness(
-        HarnessConfig(root=tmp_path),
-        model=ScriptedModel([]),
-        plugins=[parent_plugin],
-    )
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
+    assert child_seen["tools"] == []
+    assert envelope["metadata"]["tool_mode"] == "explicit"
+    assert child_model.provider.closed == 1
 
-    child = build_child_harness(
-        parent,
-        SubAgentConfig(name="skilled", description="Skill helper.", plugins=[child_plugin]),
-    )
 
-    assert child_plugin.registry is not parent_plugin.registry
-    assert [tool.name for tool in child.tools] == ["skill_read"]
-    assert "demo - Demo skill" in child.system_instructions()
-
-def test_subagent_model_override_credential_forwarding(tmp_path: Path, monkeypatch) -> None:
-    calls = []
-
-    def fake_infer_model(model_ref, **kwargs):
-        calls.append((model_ref, kwargs))
-        return ScriptedModel([])
-
-    monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
-    parent = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            builtin_tools=[],
-            model="openai:parent",
-            api_key="parent-key",
-            base_url="https://parent.example",
-            temperature=0.2,
-            max_tokens=4096,
-            effort="low",
-            extra_body={"seed": 1},
-            request_retries=2,
-            request_retry_backoff=0.25,
-        ),
-        model=ScriptedModel([]),
-    )
-    same_provider = SubAgentConfig(name="same", description="Same provider.", model="openai:child", tools=[echo_tool()])
-    other_provider = SubAgentConfig(name="other", description="Other provider.", model="anthropic:child", tools=[echo_tool()])
-
-    same_child = build_child_harness(parent, same_provider)
-    other_child = build_child_harness(parent, other_provider)
-
-    assert same_child.config.model == "openai:child"
-    assert other_child.config.model == "anthropic:child"
-    assert calls[0][1]["api_key"] == "parent-key"
-    assert calls[0][1]["base_url"] == "https://parent.example"
-    assert calls[0][1]["temperature"] == 0.2
-    assert calls[0][1]["max_tokens"] == 4096
-    assert calls[0][1]["effort"] == "low"
-    assert calls[0][1]["extra_body"] == {"seed": 1}
-    assert calls[0][1]["request_retries"] == 2
-    assert calls[0][1]["request_retry_backoff"] == 0.25
-    assert calls[1][1]["api_key"] is None
-    assert calls[1][1]["base_url"] is None
-    assert calls[1][1]["max_tokens"] == 4096
-    assert calls[1][1]["effort"] == "low"
-    assert calls[1][1]["request_retries"] == 2
-    assert calls[1][1]["request_retry_backoff"] == 0.25
-
-def test_subagent_model_override_is_used_for_child_run(tmp_path: Path, monkeypatch) -> None:
-    child_model = RecordingModel([ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))], model="child-model")
-    parent_model = RecordingModel([], model="parent-model")
-
-    def fake_infer_model(_model_ref, **_kwargs):
-        return child_model
-
-    monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=parent_model)
-    child = build_child_harness(parent, SubAgentConfig(name="special", description="Special helper.", model="openai:child", tools=[echo_tool()]))
-
-    assert child.model is child_model
-    assert child.run_sync("delegate").text == "child done"
-    assert child_model.session_requests == 1
-    assert parent_model.session_requests == 0
-
-def test_subagent_model_override_closes_child_provider(tmp_path: Path, monkeypatch) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help","agent":"special"}')],
-        raw={"id": "parent-start"},
-    )
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
-    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
-    child_model = ScriptedModel([child], model="child-model")
+def test_override_model_closes_when_child_construction_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent_model = ScriptedModel([])
+    child_model = ScriptedModel([])
     child_provider = ClosingProvider()
     child_model.provider = child_provider
 
-    def fake_infer_model(_model_ref, **_kwargs):
-        return child_model
+    class ModelSensitivePlugin:
+        name = "model-sensitive"
 
-    monkeypatch.setattr("thinharness.subagents.infer_model", fake_infer_model)
-    harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            builtin_tools=[],
-            subagents=[SubAgentConfig(name="special", description="Special helper.", model="openai:child", tools=[echo_tool()])],
-        ),
-        model=ScriptedModel([parent]),
+        def bind(self, context):
+            tools = () if context.model is parent_model else (
+                ToolSpec("duplicate", "Duplicate", {"type": "object"}, lambda _args: "plugin"),
+            )
+            return PluginBinding(static=PluginContribution(tools=tools))
+
+    parent = ScriptedSession(
+        start_turn=_parent_call(agent="broken"),
+        continue_turn=ModelTurn(text="done", raw={}),
     )
-    harness.add_tool(create_subagent_tool(harness, harness.config.subagents))
+    monkeypatch.setattr("thinharness.children.infer_model", lambda *_args, **_kwargs: child_model)
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=parent_model,
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(
+                name="broken",
+                description="Fails during child construction.",
+                model="openai:child",
+                plugins=[ModelSensitivePlugin()],
+                tools=[ToolSpec("duplicate", "Duplicate", {"type": "object"}, lambda _args: "direct")],
+            )
+        ])],
+    )
+    parent_model.sessions.append(parent)
 
-    assert harness.run_sync("delegate").text == "parent done"
-
+    assert harness.run_sync("delegate").text == "done"
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
+    assert envelope["metadata"]["error_type"] == "ValueError"
     assert child_provider.closed == 1
 
-async def test_concurrent_subagent_strict_abort_does_not_hang(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[
-            ModelToolCall(id="call_1", name="subagent", arguments='{"task":"one"}'),
-            ModelToolCall(id="call_2", name="subagent", arguments='{"task":"two"}'),
-        ],
-        raw={"id": "parent-start"},
-    )
 
-    async def wait_forever(_args):
-        await asyncio.Event().wait()
+def test_additive_inheritance_rebinds_plugins_and_appends_direct_tools(tmp_path: Path) -> None:
+    child_seen = {}
 
-    child_tool = ToolSpec("wait", "Wait", {"type": "object", "properties": {}}, wait_forever)
+    def on_child_start(_prompt, instructions, tools, _metadata, _previous_response_id):
+        child_seen.update(instructions=instructions, tools=[tool["name"] for tool in tools])
 
-    def fail_second_subagent(ctx):
-        if ctx.call_id == "call_2":
-            raise RuntimeError("strict abort")
-
+    parent = ScriptedSession(start_turn=_parent_call(agent="mixed"), continue_turn=ModelTurn(text="done", raw={}))
+    child = ScriptedSession(start_turn=ModelTurn(text="child", raw={}), on_start=on_child_start)
+    explicit = ToolSpec("explicit", "Explicit", {"type": "object"}, lambda _args: "ok")
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=True),
-        model=ScriptedModel([
-            ScriptedSession(start_turn=parent_call),
-            ScriptedSession(start_turn=ModelTurn(tool_calls=[ModelToolCall(id="child_call", name="wait", arguments="{}")], raw={"id": "child"})),
-        ]),
-        tools=[child_tool],
-        hooks=[Hook("before_tool_call", fail_second_subagent)],
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    task = asyncio.create_task(harness.run("delegate"))
-
-    with pytest.raises(RuntimeError, match="strict abort"):
-        await asyncio.wait_for(task, timeout=1)
-
-def test_subagent_child_provider_failure_returns_tool_error(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
-        raw={"id": "parent-start"},
-    )
-
-    def on_parent_continue(outputs, _tools, _metadata):
-        envelope = tool_output(outputs[0].output)
-        assert envelope["ok"] is False
-        assert envelope["metadata"]["agent"] == "default"
-        assert envelope["metadata"]["inherited"] is True
-        assert envelope["metadata"]["tool_mode"] == "inherited"
-        assert envelope["metadata"]["tools"] == ["echo"]
-        assert envelope["metadata"]["error_type"] == "HarnessError"
-
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}), on_continue=on_parent_continue)
-    tracer = FakeTracer()
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([parent, FailingSession()]),
-        tools=[echo_tool()],
-        tracing=[TracingOptions(tracer=tracer)],
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("delegate").text == "parent done"
-    subagent_tool = next(span for span in tracer.spans if span.name == "execute_tool subagent")
-    assert subagent_tool.attributes["subagent.name"] == "default"
-    assert subagent_tool.attributes["subagent.tool_mode"] == "inherited"
-    assert subagent_tool.attributes["subagent.tools"] == ["echo"]
-    assert subagent_tool.status is not None
-
-def test_unknown_named_subagent_returns_structured_error(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    tool = create_subagent_tool(harness, [SubAgentConfig(name="research", description="Research helper.", plugins=[FilesystemPlugin(tools=["read"])])])
-
-    output = tool_output(asyncio.run(tool.handler(tool.parse_args({"task": "x", "agent": "missing"}))).as_json())
-
-    assert output["ok"] is False
-    assert output["metadata"]["available"] == ["research"]
-    assert output["metadata"]["error_type"] == "UnknownSubAgent"
-
-def test_blank_subagent_name_is_normal_argument_validation_error(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    tool = create_subagent_tool(harness, [])
-    harness.add_tool(tool)
-
-    output = tool_output(call_tool(tool, '{"task":"x","agent":""}'))
-
-    assert output["ok"] is False
-    assert output["metadata"]["error_type"] == "ValidationError"
-    assert "Invalid arguments" in output["content"]
-
-def test_subagent_tool_name_is_reserved_for_custom_tools(tmp_path: Path) -> None:
-    custom = ToolSpec("subagent", "Not the framework tool.", {"type": "object", "properties": {}}, lambda args: "bad")
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-
-    with pytest.raises(ValueError, match="reserved tool name"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
-    with pytest.raises(ValueError, match="reserved tool name"):
-        harness.add_tool(custom)
-
-def test_framework_subagent_tool_can_be_added_after_construction(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert [tool["name"] for tool in harness.tool_schemas()] == ["subagent"]
-
-def test_explicit_subagent_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
-        raw={"id": "parent-start"},
-    )
-    outputs_seen = []
-
-    def on_continue(outputs, _tools, _metadata):
-        outputs_seen.append(tool_output(outputs[0].output))
-
-    parent = ScriptedSession(
-        start_turn=parent_call,
-        continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}),
-        on_continue=on_continue,
-    )
-    child_registry = HookRegistry([Hook("run_start", lambda ctx: (_ for _ in ()).throw(RuntimeError("strict child")))], strict_hooks=True)
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=False),
-        model=ScriptedModel([parent, ScriptedSession(start_turn=ModelTurn(text="child", raw={"id": "child"}))]),
-        subagent_hooks={DEFAULT_SUBAGENT_NAME: child_registry},
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("go").text == "parent done"
-    assert child_registry.strict_hooks is True
-    assert outputs_seen[0]["ok"] is False
-    assert outputs_seen[0]["metadata"]["error_type"] == "RuntimeError"
-
-def test_subagent_hooks_and_child_hooks_are_explicit(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help","agent":"research"}')],
-        raw={"id": "parent-start"},
-    )
-    child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
-    parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
-    events = []
-
-    def before_subagent(ctx):
-        assert isinstance(ctx, BeforeSubagentRunContext)
-        events.append((ctx.event, ctx.agent, ctx.parent_call_id))
-
-    def child_start(ctx):
-        events.append((ctx.event, DEFAULT_SUBAGENT_NAME if ctx.harness.config.subagents else "child"))
-
-    def after_subagent(ctx):
-        assert isinstance(ctx, AfterSubagentRunContext)
-        events.append((ctx.event, ctx.agent, ctx.usage.model_requests))
-
-    harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            builtin_tools=[],
-            subagents=[SubAgentConfig(name="research", description="Research helper.", tools=[echo_tool()])],
-        ),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent, child]),
-        hooks=[
-            Hook("before_subagent_run", before_subagent, agents=["research"]),
-            Hook("after_subagent_run", after_subagent, agents=["research"]),
+        plugins=[
+            FilesystemPlugin(tools=["read"]),
+            SubagentsPlugin(agents=[
+                SubAgentConfig(
+                    name="mixed",
+                    description="Mixed.",
+                    inherit_parent=True,
+                    tools=[explicit],
+                )
+            ]),
         ],
-        subagent_hooks={"research": [Hook("run_start", child_start)]},
-    )
-    harness.add_tool(create_subagent_tool(harness, harness.config.subagents))
-
-    assert build_child_harness(harness, harness.config.subagents[0]).hooks.hooks
-    assert build_child_harness(harness, None).hooks.hooks == []
-    assert harness.run_sync("delegate").text == "parent done"
-    assert events == [
-        ("before_subagent_run", "research", "call_1"),
-        ("run_start", "child"),
-        ("after_subagent_run", "research", 1),
-    ]
-
-def test_subagent_hook_can_cancel_default_agent_without_child_run(tmp_path: Path) -> None:
-    parent_call = ModelTurn(
-        tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')],
-        raw={"id": "parent-start"},
-    )
-    events = []
-    outputs_seen = []
-
-    def on_continue(outputs, _tools, _metadata):
-        outputs_seen.append(tool_output(outputs[0].output))
-
-    parent = ScriptedSession(
-        start_turn=parent_call,
-        continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}),
-        on_continue=on_continue,
+        tools=[echo_tool()],
     )
 
-    def cancel(ctx):
-        assert isinstance(ctx, BeforeSubagentRunContext)
-        events.append((ctx.agent, ctx.parent_call_id))
-        ctx.cancelled = True
-        ctx.cancel_reason = "blocked"
+    harness.run_sync("delegate")
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
 
-    harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
-        model=ScriptedModel([parent]),
-        hooks=[Hook("before_subagent_run", cancel, agents=[DEFAULT_SUBAGENT_NAME])],
-        subagent_hooks={DEFAULT_SUBAGENT_NAME: [Hook("run_start", lambda ctx: pytest.fail("child should not run"))]},
-    )
-    harness.add_tool(create_subagent_tool(harness, []))
-
-    assert harness.run_sync("delegate").text == "parent done"
-    assert events == [(DEFAULT_SUBAGENT_NAME, "call_1")]
-    assert outputs_seen[0]["ok"] is False
-    assert outputs_seen[0]["content"] == "Subagent execution blocked by hook: blocked"
-    assert outputs_seen[0]["metadata"]["error_type"] == "SubAgentCancelled"
-
-def test_default_subagent_name_is_reserved() -> None:
-    with pytest.raises(ValueError, match="reserved"):
-        SubAgentConfig(name=DEFAULT_SUBAGENT_NAME, description="Reserved.", plugins=[FilesystemPlugin(tools=["read"])])
+    assert child_seen["tools"] == ["read", "echo", "explicit"]
+    assert child_seen["instructions"].count(f"Workspace root: {tmp_path.resolve()}") == 1
+    assert envelope["metadata"]["tool_mode"] == "inherited+explicit"
 
 
-def test_inherited_skills_bridge_orders_instructions_and_keeps_unrelated_origin_tools(tmp_path: Path) -> None:
+def test_skills_plugin_reuses_registry_and_summary_in_child(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nBody", encoding="utf-8")
-    unrelated = ToolSpec(
-        "skill_helper",
-        "Unrelated direct tool",
-        {"type": "object", "properties": {}},
-        lambda _args: "ok",
-        origin=ToolOrigin(plugin="skills", source="caller"),
+    plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
+    child_seen = {}
+
+    def on_child_start(_prompt, instructions, tools, _metadata, _previous_response_id):
+        child_seen.update(instructions=instructions, tools=[tool["name"] for tool in tools])
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child", raw={}), on_start=on_child_start),
+        ]),
+        plugins=[plugin, SubagentsPlugin()],
     )
-    skills_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
-    parent = Harness(
+    harness.run_sync("go")
+
+    assert plugin.for_child() is plugin
+    assert child_seen["tools"] == ["skill_read"]
+    assert child_seen["instructions"].count("demo - Demo skill") == 1
+
+
+def test_mcp_and_non_inheritable_custom_plugins_do_not_inherit(tmp_path: Path) -> None:
+    class OrdinaryPlugin:
+        name = "ordinary"
+
+        def bind(self, _context):
+            return PluginBinding(static=PluginContribution(tools=(ToolSpec("ordinary", "Ordinary", {"type": "object"}, lambda _args: "ok"),)))
+
+    seen = {}
+
+    def on_child_start(_prompt, _instructions, tools, _metadata, _previous_response_id):
+        seen["tools"] = [tool["name"] for tool in tools]
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child", raw={}), on_start=on_child_start),
+        ]),
+        plugins=[OrdinaryPlugin(), SubagentsPlugin()],
+    )
+    harness.run_sync("go")
+
+    assert seen["tools"] == []
+
+
+def test_custom_for_child_plugin_rebinds_and_invalid_return_fails(tmp_path: Path) -> None:
+    roots = []
+
+    class Inheritable:
+        name = "custom"
+
+        def for_child(self):
+            return self
+
+        def bind(self, context):
+            roots.append(context.root)
+            return PluginBinding(static=PluginContribution(tools=(ToolSpec("custom", "Custom", {"type": "object"}, lambda _args: "ok"),)))
+
+    plugin = Inheritable()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child", raw={})),
+        ]),
+        plugins=[plugin, SubagentsPlugin()],
+    )
+    harness.run_sync("go")
+    assert roots == [tmp_path.resolve(), tmp_path.resolve()]
+
+    class Invalid(Inheritable):
+        name = "invalid"
+
+        def for_child(self):
+            return object()
+
+    with pytest.raises(TypeError, match="for_child"):
+        Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[Invalid(), SubagentsPlugin()])
+
+
+def test_known_child_plugin_and_tool_collisions_fail_parent_construction(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate plugin name"):
+        Harness(
+            HarnessConfig(root=tmp_path),
+            model=ScriptedModel([]),
+            plugins=[
+                FilesystemPlugin(tools=["read"]),
+                SubagentsPlugin(agents=[
+                    SubAgentConfig(
+                        name="collision",
+                        description="Collision.",
+                        inherit_parent=True,
+                        plugins=[FilesystemPlugin(tools=["write"])],
+                    )
+                ]),
+            ],
+        )
+
+    direct = echo_tool()
+    harness = Harness(
         HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
-        plugins=[skills_plugin, FilesystemPlugin(tools=["read"])],
-        tools=[unrelated],
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="collision", description="Collision.", inherit_parent=True, tools=[direct])
+        ])],
     )
-
-    child = build_child_harness(parent, None)
-    instructions = child.system_instructions()
-
-    assert [plugin.name for plugin in child.plugins] == ["filesystem", "skills"]
-    assert [tool.name for tool in child.tools] == ["skill_read", "read", "skill_helper"]
-    assert instructions.index("Workspace root:") < instructions.index("demo - Demo skill")
-    assert instructions.count("demo - Demo skill") == 1
-    assert next(tool for tool in child.tools if tool.name == "skill_helper") is unrelated
+    with pytest.raises(ValueError, match="duplicate tool name"):
+        harness.add_tool(direct)
 
 
+def test_inheritable_plugin_approval_tool_fails_parent_construction(tmp_path: Path) -> None:
+    class Unsafe:
+        name = "unsafe"
 
-def test_parallel_llm_explicit_child_plugin_and_inherited_handler_behavior(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    parent_batch_model = ScriptedModel([])
-    parent = Harness(
+        def for_child(self):
+            return self
+
+        def bind(self, _context):
+            tool = ToolSpec("unsafe", "Unsafe", {"type": "object"}, lambda _args: "ok", requires_approval=True)
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+    with pytest.raises(ValueError, match="child harnesses"):
+        Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[Unsafe(), SubagentsPlugin()])
+
+
+def test_direct_tool_added_during_run_is_visible_only_next_run(tmp_path: Path) -> None:
+    late = ToolSpec("late", "Late", {"type": "object"}, lambda _args: "ok")
+    seen: list[list[str]] = []
+
+    def add_late(ctx):
+        if ctx.tool_name == "subagent" and "late" not in [tool.name for tool in ctx.harness.tools]:
+            ctx.harness.add_tool(late)
+
+    def child_start(_prompt, _instructions, tools, _metadata, _previous_response_id):
+        seen.append([tool["name"] for tool in tools])
+
+    harness = Harness(
         HarnessConfig(root=tmp_path),
-        model=ScriptedModel([]),
-        plugins=[ParallelLlmPlugin(parent_batch_model)],
-    )
-    parent_spec = next(tool for tool in parent.tools if tool.name == "parallel_llm")
-
-    explicit_plugin = ParallelLlmPlugin(ScriptedModel([]))
-    explicit_child = build_child_harness(
-        parent,
-        SubAgentConfig(name="explicit", description="Explicit helper.", plugins=[explicit_plugin]),
-    )
-    monkeypatch.setattr("thinharness.subagents.infer_model", lambda *_args, **_kwargs: ScriptedModel([]))
-    inherited_child = build_child_harness(
-        parent,
-        SubAgentConfig(
-            name="inherited",
-            description="Inherited helper.",
-            inherit_parent_tools=True,
-            model="openai:child",
-        ),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="one", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child one", raw={}), on_start=child_start),
+            ScriptedSession(start_turn=_parent_call(call_id="call_2"), continue_turn=ModelTurn(text="two", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child two", raw={}), on_start=child_start),
+        ]),
+        plugins=[SubagentsPlugin()],
+        hooks=[Hook("before_tool_call", add_late, tools=["subagent"])],
     )
 
-    assert [tool.name for tool in explicit_child.tools] == ["parallel_llm"]
-    inherited_spec = next(tool for tool in inherited_child.tools if tool.name == "parallel_llm")
-    assert inherited_spec is parent_spec
-    assert not any(isinstance(plugin, ParallelLlmPlugin) for plugin in inherited_child.plugins)
+    assert asyncio.run(harness.run("first")).text == "one"
+    assert asyncio.run(harness.run("second")).text == "two"
+    assert seen == [[], ["late"]]
+
+
+def test_parent_hooks_child_hooks_metadata_and_cancellation(tmp_path: Path) -> None:
+    events = []
+
+    def before(ctx):
+        assert isinstance(ctx, BeforeSubagentRunContext)
+        events.append((ctx.event, ctx.agent, dict(ctx.metadata)))
+        ctx.metadata["changed"] = True
+
+    def child_start(ctx):
+        events.append((ctx.event, "child", dict(ctx.metadata)))
+
+    def after(ctx):
+        assert isinstance(ctx, AfterSubagentRunContext)
+        events.append((ctx.event, ctx.agent, dict(ctx.metadata)))
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child", raw={})),
+        ]),
+        plugins=[SubagentsPlugin(default_hooks=[Hook("run_start", child_start)])],
+        hooks=[
+            Hook("before_subagent_run", before, agents=["default"]),
+            Hook("after_subagent_run", after, agents=["default"]),
+        ],
+    )
+    harness.run_sync("go", metadata={"conversation_id": "c"})
+
+    assert events == [
+        ("before_subagent_run", "default", {"conversation_id": "c"}),
+        ("run_start", "child", {"conversation_id": "c", "parent_call_id": "call_1"}),
+        ("after_subagent_run", "default", {"conversation_id": "c"}),
+    ]
+
+    def cancel(ctx):
+        ctx.cancelled = True
+        ctx.cancel_reason = "blocked"
+
+    parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="blocked", raw={}))
+    blocked = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin()],
+        hooks=[Hook("before_subagent_run", cancel, agents=["default"])],
+    )
+    blocked.run_sync("go")
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
+    assert envelope["metadata"]["error_type"] == "SubAgentCancelled"
+
+
+def test_agent_filtered_hook_requires_plugin_and_known_name(tmp_path: Path) -> None:
+    hook = Hook("before_subagent_run", lambda _ctx: None, agents=["default"])
+    with pytest.raises(ValueError, match="unknown subagent name"):
+        Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), hooks=[hook])
+    with pytest.raises(ValueError, match="missing"):
+        Harness(
+            HarnessConfig(root=tmp_path),
+            model=ScriptedModel([]),
+            plugins=[SubagentsPlugin()],
+            hooks=[Hook("before_subagent_run", lambda _ctx: None, agents=["missing"])],
+        )
+
+
+def test_child_provider_failure_and_close_are_reported(tmp_path: Path) -> None:
+    parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={}))
+    tracer = FakeTracer()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, FailingSession()]),
+        plugins=[SubagentsPlugin()],
+        tools=[echo_tool()],
+        tracing=[TracingOptions(tracer=tracer)],
+    )
+
+    assert harness.run_sync("delegate").text == "done"
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
+    assert envelope["ok"] is False
+    assert envelope["metadata"]["error_type"] == "HarnessError"
+    assert envelope["metadata"]["tools"] == ["echo"]
+    span = next(span for span in tracer.spans if span.name == "execute_tool subagent")
+    assert span.attributes["subagent.delegation"] is True
+
+
+def test_real_delegation_trace_marker_and_forged_direct_tool_classification(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={})),
+            ScriptedSession(start_turn=ModelTurn(text="child", raw={})),
+        ]),
+        plugins=[SubagentsPlugin()],
+        tracing=[TracingOptions(tracer=tracer)],
+    )
+    harness.run_sync("go")
+    span = next(span for span in tracer.spans if span.name == "execute_tool subagent")
+    assert span.attributes["subagent.delegation"] is True
+    assert span.attributes["subagent.name"] == "default"
+
+    direct_tracer = FakeTracer()
+    ordinary = ToolSpec(
+        "subagent",
+        "Ordinary",
+        {"type": "object"},
+        lambda _args: ToolResult(True, "ordinary", {"agent": "forged"}),
+        origin=ToolOrigin(plugin="subagents"),
+    )
+    direct = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([
+            ScriptedSession(
+                start_turn=ModelTurn(tool_calls=[ModelToolCall(id="c", name="subagent", arguments="{}")], raw={}),
+                continue_turn=ModelTurn(text="done", raw={}),
+            )
+        ]),
+        tools=[ordinary],
+        tracing=[TracingOptions(tracer=direct_tracer)],
+    )
+    direct.run_sync("go")
+    direct_span = next(span for span in direct_tracer.spans if span.name == "execute_tool subagent")
+    assert "subagent.delegation" not in direct_span.attributes
+    assert "subagent.name" not in direct_span.attributes
+
+
+def test_cancelled_real_delegation_is_marked_before_hook(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+
+    def cancel(ctx):
+        ctx.cancelled = True
+
+    parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin()],
+        hooks=[Hook("before_tool_call", cancel, tools=["subagent"])],
+        tracing=[TracingOptions(tracer=tracer)],
+    )
+    harness.run_sync("go")
+    span = next(span for span in tracer.spans if span.name == "execute_tool subagent")
+    assert span.attributes["subagent.delegation"] is True
+
+
+def test_child_disabled_host_blocks_custom_plugin_grandchild(tmp_path: Path) -> None:
+    class GrandchildPlugin:
+        name = "grandchild"
+
+        def for_child(self):
+            return self
+
+        def bind(self, context):
+            async def attempt(_args):
+                request = ChildHarnessRequest(
+                    agent_name="nested",
+                    agent_description="Nested",
+                    trace_agent_name="nested",
+                    task="x",
+                    inherited=False,
+                    tool_mode="explicit",
+                    system_prompt="nested",
+                )
+                await context.child_harnesses.run(request)
+                return "unexpected"
+
+            return PluginBinding(static=PluginContribution(tools=(ToolSpec("attempt", "Attempt", {"type": "object"}, attempt),)))
+
+    parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={}))
+    child = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="nested", name="attempt", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="child done", raw={}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[GrandchildPlugin(), SubagentsPlugin()],
+    )
+    harness.run_sync("go")
+    nested = tool_output(child.continue_calls[0][0][0].output)
+    assert nested["ok"] is False
+    assert nested["metadata"]["error_type"] == "HarnessError"
+    assert "cannot create nested" in nested["content"]
+
+
+async def test_top_level_host_rejects_outside_active_tool_runtime(tmp_path: Path) -> None:
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[SubagentsPlugin()])
+    request = ChildHarnessRequest(
+        agent_name="x",
+        agent_description="X",
+        trace_agent_name="x",
+        task="x",
+        inherited=False,
+        tool_mode="explicit",
+        system_prompt="x",
+    )
+
+    with pytest.raises(Exception, match="active parent tool call"):
+        await harness._child_harnesses.run(request)
+
+
+def test_plugin_object_reuse_binds_independent_hosts(tmp_path: Path) -> None:
+    plugin = SubagentsPlugin()
+    first = Harness(HarnessConfig(root=tmp_path / "one"), model=ScriptedModel([]), plugins=[plugin])
+    second = Harness(HarnessConfig(root=tmp_path / "two"), model=ScriptedModel([]), plugins=[plugin])
+
+    assert first.tools[0].handler is not second.tools[0].handler
+    assert first._child_harnesses is not second._child_harnesses
+
+
+def test_harness_removed_fields_and_constructor_helpers_are_gone() -> None:
+    for field in ("builtin_tools", "subagents"):
+        with pytest.raises(ValueError, match=rf"HarnessConfig\.{field} has been removed.*SubagentsPlugin"):
+            HarnessConfig(**{field: []})
+    with pytest.raises(TypeError, match="subagent_hooks"):
+        Harness(subagent_hooks={})  # type: ignore[call-arg]
+
+    import thinharness
+
+    assert not hasattr(thinharness, "create_subagent_tool")
+    assert not hasattr(thinharness, "build_child_harness")
+    assert "kind" not in ToolSpec.__dataclass_fields__

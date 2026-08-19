@@ -331,10 +331,10 @@ def test_correction_following_resume_uses_same_session(tmp_path: Path) -> None:
         continue_turn=ModelTurn(text='{"name":"Ada","age":37}', raw={"id": "corrected"}),
     )
     model = _ScriptedResumeModel([first_session, resumed_session])
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
+    first = Harness(HarnessConfig(root=tmp_path), model=model).run_sync("first")
 
     resumed = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="prompted"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="prompted"),
         model=model,
     ).run_sync("follow-up", resume_from=first.resume_state)
 
@@ -359,7 +359,7 @@ async def test_model_message_event_finalized_output_mode_populated(tmp_path: Pat
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool"),
         model=ScriptedModel([session]),
     )
 

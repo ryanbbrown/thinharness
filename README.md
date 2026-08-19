@@ -215,11 +215,11 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Purpose-built agents, not universal agents.** ThinHarness is for bounded agent loops, not open-ended interactive assistants like Claude Code or OpenClaw. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.
 
-**No bash by default.** Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness keeps bash out of the default and built-in tool sets, but exposes an opt-in `BashTool` for exploratory runs before the workflow is hardened with typed tools.
+**No bash by default.** Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness has no implicit tools and exposes Bash only through an opt-in `BashTool` for exploratory runs before the workflow is hardened with typed tools.
 
 **Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data: ripgrep row prefiltering, jq-style field projection, `where` filters, range filters, and snippets from large multiline fields.
 
-**Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Add `ParallelLlmPlugin()` for a plain-text batch tool that borrows the harness model, or give the plugin a model string and its own provider settings. For validated structured output per call, instantiate `ParallelLlmTool` with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
+**Parallel LLM calls, explicitly composed.** Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Add `ParallelLlmPlugin()` for a plain-text batch tool that borrows the harness model, or give the plugin a model string and its own provider settings. For validated structured output per call, instantiate `ParallelLlmTool` with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
 **No token streaming.** Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.
 
@@ -269,6 +269,25 @@ harness = Harness(
 
 MCP tools connect and discover one tool snapshot lazily on `Harness.connect()` or the first run. Install support with `uv add 'thinharness[mcp]'`.
 
+Delegation is also an explicit plugin:
+
+```python
+from thinharness import SubAgentConfig, SubagentsPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[SubagentsPlugin(agents=[
+        SubAgentConfig(
+            name="reviewer",
+            description="Reviews one draft.",
+            system_prompt="Return concise issues.",
+        )
+    ])],
+)
+```
+
+Omit `agent` in a `subagent` call to use the default child. Named children can add tools and plugins or set `inherit_parent=True` to rebind safe parent plugins and inherit the active run's frozen direct tools.
+
 Skills and plain-text parallel batches are explicit plugins too:
 
 ```python
@@ -307,12 +326,12 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 
 - **Filesystem plugin:** explicit `FilesystemPlugin` composition for `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
 - **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
-- **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight, custom-registration only, and is not included in the default or built-in tool set.
+- **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight and available only through direct custom registration.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
 - **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/approval flags, and per-tool retry settings.
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
-- **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
+- **Subagents:** explicit `SubagentsPlugin` composition with a default child, ordered named `SubAgentConfig` recipes, additive safe-plugin inheritance, local child hooks, and no recursive delegation.
 - **Parallel LLM:** explicit `ParallelLlmPlugin` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable or structured tools with explicit model, path, prompt, and provider request settings.
 - **Skills:** explicit `SkillsPlugin` composition with an ordered `skill_read` and/or `skill_run` selection, plus Python, shell, JavaScript, and Go script runners.
 - **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
@@ -339,7 +358,7 @@ It isn't meant to be a state-of-the-art research agent; it's a worked example sh
 I ran ThinHarness on a retrieval-heavy 127 question subset of a benchmark for long-term agent memory, and did a local reproduction of the benchmark's optimized harness on the same subset.
 
 - **Performance:** Matched-or-better accuracy (74.0% vs 72.4% on the 127 dynamic questions) with ~46% less token usage (62M vs. 116M). See [my fork](https://github.com/ryanbbrown/LongMemEval-V2) for more details.
-- **Simpler Setup:** ThinHarness only had its built-in filesystem tools (with `jsonl_search` doing the heavy lifting), while the benchmark harness was a full Codex instance with shell and a custom Python tool designed for the task.
+- **Simpler Setup:** ThinHarness only used its filesystem tools (with `jsonl_search` doing the heavy lifting), while the benchmark harness was a full Codex instance with shell and a custom Python tool designed for the task.
 
 ### 3. Personal Opinions Agent
 

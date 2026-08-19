@@ -69,7 +69,6 @@ async def _assert_native_structured_output_and_defaults(root: Path, model_name: 
         harness = Harness(
             HarnessConfig(
                 root=root,
-                builtin_tools=[],
                 output_type=InventoryAnswer,
                 max_model_requests=4,
                 max_tool_calls=2,
@@ -100,7 +99,6 @@ async def _assert_effort_merges_with_native_structured_output(root: Path, model_
         harness = Harness(
             HarnessConfig(
                 root=root,
-                builtin_tools=[],
                 output_type=InventoryAnswer,
                 max_model_requests=2,
             ),
@@ -124,7 +122,7 @@ async def _assert_default_on_thinking_resume(root: Path, model_name: str) -> Non
     first_provider = RecordingAnthropicProvider()
     try:
         first = await Harness(
-            HarnessConfig(root=root, builtin_tools=[], max_model_requests=4, max_tool_calls=2),
+            HarnessConfig(root=root, max_model_requests=4, max_tool_calls=2),
             model=AnthropicMessagesModel(model_name, provider=first_provider),
             tools=[multiply_tool()],
         ).run("Use the multiply tool to compute 37 times 29, then state the product.")
@@ -137,7 +135,7 @@ async def _assert_default_on_thinking_resume(root: Path, model_name: str) -> Non
     second_provider = RecordingAnthropicProvider()
     try:
         second = await Harness(
-            HarnessConfig(root=root, builtin_tools=[], max_model_requests=3, max_tool_calls=1),
+            HarnessConfig(root=root, max_model_requests=3, max_tool_calls=1),
             model=AnthropicMessagesModel(model_name, provider=second_provider),
             tools=[multiply_tool()],
         ).run("Add 11 to that product and answer with the new number.", resume_from=state)

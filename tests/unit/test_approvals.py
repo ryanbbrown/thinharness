@@ -26,6 +26,7 @@ from thinharness import (
     RunUsage,
     SkillsPlugin,
     SubAgentConfig,
+    SubagentsPlugin,
     TokenUsage,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
@@ -121,7 +122,7 @@ async def test_approval_required_tool_pauses_without_executing_or_hooks(tmp_path
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[approval_tool(called)],
         hooks=[
@@ -159,7 +160,7 @@ async def test_approval_resume_approve_executes_original_call_and_finishes(tmp_p
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     model = ScriptedModel([first, resumed])
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_tool(called)])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_tool(called)])
 
     paused = await harness.run("deploy")
     result = await harness.resume_approvals(
@@ -191,10 +192,10 @@ def test_resume_approvals_sync_success_on_fresh_harness(tmp_path: Path) -> None:
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     model = ScriptedModel([first, resumed])
-    paused = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_tool(called)]).run_sync("deploy")
+    paused = Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_tool(called)]).run_sync("deploy")
 
     result = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         tools=[approval_tool(called)],
     ).resume_approvals_sync(
@@ -219,7 +220,7 @@ async def test_approval_resume_reject_sends_model_visible_rejection(tmp_path: Pa
         continue_turn=ModelTurn(text="not deployed", raw={"id": "done"}),
         on_continue=lambda outputs, _tools, _metadata: seen_outputs.extend(outputs),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
 
     paused = await harness.run("deploy")
     result = await harness.resume_approvals(
@@ -252,7 +253,7 @@ async def test_approval_resume_reject_without_reason_omits_reason_line(tmp_path:
         continue_turn=ModelTurn(text="not deployed", raw={"id": "done"}),
         on_continue=lambda outputs, _tools, _metadata: seen_outputs.extend(outputs),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
 
     paused = await harness.run("deploy")
     result = await harness.resume_approvals(paused.resume_state, [ApprovalDecision(call_id="call_1", approved=False)])
@@ -280,7 +281,7 @@ async def test_mixed_batch_pauses_everything_and_resumes_in_model_order(tmp_path
         on_continue=lambda outputs, _tools, _metadata: seen_call_ids.extend(output.call_id for output in outputs),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool([]), echo_tool(normal_called)],
         hooks=[Hook("before_tool_call", lambda ctx: hook_indices.append(ctx.tool_index))],
@@ -312,7 +313,7 @@ async def test_approval_resume_tracing_uses_restored_conversation_id(tmp_path: P
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool([])],
         tracing=[TracingOptions(tracer=tracer)],
@@ -333,7 +334,7 @@ async def test_approval_decision_validation_happens_before_execution(tmp_path: P
             raw={"id": "start"},
         ),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first]), tools=[approval_tool(called)])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first]), tools=[approval_tool(called)])
     paused = await harness.run("deploy")
 
     with pytest.raises(HarnessError, match="missing approval decision"):
@@ -373,7 +374,7 @@ async def test_tampered_approval_required_ids_fail_closed(tmp_path: Path) -> Non
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool(approval_called), echo_tool(normal_called)],
     )
@@ -403,7 +404,7 @@ async def test_approved_call_can_still_be_cancelled_by_before_tool_hook(tmp_path
         ctx.cancel_reason = "blocked by policy"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool(called)],
         hooks=[Hook("before_tool_call", cancel)],
@@ -439,7 +440,7 @@ async def test_approved_retry_output_uses_retry_accounting_and_can_repause(tmp_p
         lambda args: ToolResult(False, "try again", {"error_type": "RetryMe", "retry": True}),
         requires_approval=True,
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=2), model=ScriptedModel([first, resumed]), tools=[tool])
+    harness = Harness(HarnessConfig(root=tmp_path, tool_retries=2), model=ScriptedModel([first, resumed]), tools=[tool])
 
     paused = await harness.run("deploy")
     result = await harness.resume_approvals(paused.resume_state, [ApprovalDecision(call_id="call_1", approved=True)])
@@ -460,7 +461,7 @@ async def test_resume_budget_spans_approval_pause(tmp_path: Path) -> None:
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1),
+        HarnessConfig(root=tmp_path, max_model_requests=1),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool(called)],
     )
@@ -481,7 +482,7 @@ async def test_over_budget_approval_batch_fails_before_pause(tmp_path: Path) -> 
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=0),
+        HarnessConfig(root=tmp_path, max_tool_calls=0),
         model=ScriptedModel([session]),
         tools=[approval_tool(called)],
     )
@@ -497,7 +498,7 @@ async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) 
     client = FakeClient()
     model = _fake_openai(client)
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         tools=[
             ToolSpec(
@@ -512,7 +513,7 @@ async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) 
 
     paused = await harness.run("read")
     result = await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         tools=[
             ToolSpec(
@@ -543,9 +544,9 @@ async def test_anthropic_approval_pause_round_trips_provider_state(tmp_path: Pat
     called: list[dict] = []
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
-    paused = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_echo_tool(called)]).run("first")
+    paused = await Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_echo_tool(called)]).run("first")
 
-    result = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_echo_tool(called)]).resume_approvals(
+    result = await Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_echo_tool(called)]).resume_approvals(
         json.loads(json.dumps(paused.resume_state)),
         [ApprovalDecision(call_id="toolu_1", approved=True)],
     )
@@ -563,9 +564,9 @@ async def test_openrouter_approval_pause_round_trips_provider_state(tmp_path: Pa
     called: list[dict] = []
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
-    paused = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_echo_tool(called)]).run("first")
+    paused = await Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_echo_tool(called)]).run("first")
 
-    result = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[approval_echo_tool(called)]).resume_approvals(
+    result = await Harness(HarnessConfig(root=tmp_path), model=model, tools=[approval_echo_tool(called)]).resume_approvals(
         json.loads(json.dumps(paused.resume_state)),
         [ApprovalDecision(call_id="call_1", approved=True)],
     )
@@ -597,7 +598,7 @@ async def test_structured_output_finalizes_after_approval_resume(tmp_path: Path)
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Answer, output_mode="tool"),
+        HarnessConfig(root=tmp_path, output_type=Answer, output_mode="tool"),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool([])],
     )
@@ -622,7 +623,7 @@ async def test_approval_resume_metadata_override_replaces_envelope_metadata(tmp_
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
         on_continue=lambda _outputs, _tools, metadata: seen_metadata.update(metadata),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
 
     paused = await harness.run("deploy", metadata={"conversation_id": "original", "keep": "old"})
     await harness.resume_approvals(
@@ -641,7 +642,7 @@ async def test_approval_resume_rejects_duplicate_batch_call_ids(tmp_path: Path) 
             raw={"id": "start"},
         ),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first]), tools=[approval_tool([])])
     paused = await harness.run("deploy")
     state = json.loads(json.dumps(paused.resume_state))
     state["batch"].append({"id": "call_1", "name": "echo", "arguments": '{"value":"ok"}'})
@@ -658,7 +659,7 @@ async def test_approval_resume_labels_inner_provider_state_errors(tmp_path: Path
         ),
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
     paused = await harness.run("deploy")
     state = json.loads(json.dumps(paused.resume_state))
     state["provider_state"]["kind"] = "wrong"
@@ -671,7 +672,7 @@ async def test_approval_resume_labels_builtin_provider_state_errors(tmp_path: Pa
     client = FakeClient()
     model = _fake_openai(client)
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         tools=[
             ToolSpec(
@@ -700,7 +701,7 @@ async def test_limit_warning_dedup_keys_survive_approval_round_trip(tmp_path: Pa
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=1),
+        HarnessConfig(root=tmp_path, max_tool_calls=1),
         model=ScriptedModel([first, resumed]),
         tools=[approval_tool([])],
     )
@@ -723,23 +724,16 @@ def test_approval_tool_requires_resumable_model(tmp_path: Path) -> None:
             raise AssertionError("unused")
 
     with pytest.raises(ValueError, match="approval-required tools require a resumable model"):
-        Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=NonResumableModel(), tools=[approval_tool([])])
+        Harness(HarnessConfig(root=tmp_path), model=NonResumableModel(), tools=[approval_tool([])])
 
 
-def test_subagents_reject_explicit_approval_tools_and_filter_inherited(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="approval-required tools are not supported inside subagents"):
+def test_subagents_reject_explicit_approval_tools(tmp_path: Path) -> None:
+    del tmp_path
+    with pytest.raises(ValueError, match="approval-required tools are not supported inside child harnesses"):
         SubAgentConfig(name="helper", description="Helper.", tools=[approval_tool([])])
 
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[approval_tool([]), echo_tool([])])
-    from thinharness.subagents import build_child_harness
 
-    child = build_child_harness(parent, None)
-
-    assert "deploy" not in {tool.name for tool in child.tools}
-    assert "echo" in {tool.name for tool in child.tools}
-
-
-async def test_inherit_parent_tools_subagent_runs_without_parent_approval_tool(tmp_path: Path) -> None:
+async def test_inherited_child_runs_without_parent_approval_tool(tmp_path: Path) -> None:
     subagent_outputs = []
     echo_called: list[dict] = []
     child_session = ScriptedSession(
@@ -759,12 +753,11 @@ async def test_inherit_parent_tools_subagent_runs_without_parent_approval_tool(t
     )
     model = ScriptedModel([parent_session, child_session])
     harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            builtin_tools=["subagent"],
-            subagents=[SubAgentConfig(name="helper", description="Helper.", inherit_parent_tools=True)],
-        ),
+        HarnessConfig(root=tmp_path),
         model=model,
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="helper", description="Helper.", inherit_parent=True)
+        ])],
         tools=[approval_tool([]), echo_tool(echo_called)],
     )
 
@@ -778,7 +771,7 @@ async def test_inherit_parent_tools_subagent_runs_without_parent_approval_tool(t
 
 async def test_resume_approvals_closed_harness_guard(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]))
     await harness.aclose()
 
     with pytest.raises(HarnessError, match="harness is closed"):
@@ -795,7 +788,7 @@ async def test_streaming_approval_resume_marker_and_request_kind(tmp_path: Path)
         ),
     )
     resumed = ScriptedSession(start_turn=ModelTurn(raw={"unused": True}), continue_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([first, resumed]), tools=[approval_tool([])])
     paused = await harness.run("deploy")
 
     events = []
@@ -814,10 +807,10 @@ async def test_streaming_approval_resume_marker_and_request_kind(tmp_path: Path)
 
 def test_directed_resume_api_errors(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="ready", raw={"id": "first"}))
-    provider_state = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session])).run_sync("first").resume_state
+    provider_state = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session])).run_sync("first").resume_state
 
     with pytest.raises(HarnessError, match="approval state kind"):
-        Harness(HarnessConfig(root=tmp_path / "resume", builtin_tools=[]), model=ScriptedModel([])).resume_approvals_sync(provider_state, [])
+        Harness(HarnessConfig(root=tmp_path / "resume"), model=ScriptedModel([])).resume_approvals_sync(provider_state, [])
 
     approval_state = {
         "kind": "approval_pause",
@@ -832,7 +825,7 @@ def test_directed_resume_api_errors(tmp_path: Path) -> None:
         "metadata": {},
     }
     with pytest.raises(HarnessError, match="approval pause state must be resumed with resume_approvals"):
-        Harness(HarnessConfig(root=tmp_path / "other", builtin_tools=[]), model=ScriptedModel([])).run_sync("next", resume_from=approval_state)
+        Harness(HarnessConfig(root=tmp_path / "other"), model=ScriptedModel([])).run_sync("next", resume_from=approval_state)
 
 
 def _codec_envelope(usage: dict | None = None, emitted_limit_warnings: list | None = None) -> dict:
@@ -1032,7 +1025,7 @@ async def test_run_usage_token_totals_accumulate_across_retry_and_approval_resum
     )
     model = ScriptedModel([_QueueSession(pause_turn), _QueueSession(bad_final, good_final)])
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool"),
         model=model,
         tools=[approval_tool()],
     )

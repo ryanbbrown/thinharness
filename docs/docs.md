@@ -98,7 +98,7 @@ Important groups:
 
 - `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools` and `subagents`, define the model-callable surface. Filesystem, MCP, skills, and parallel LLM tools use explicit plugins. `builtin_tools` temporarily selects only `subagent`.
+- The `Harness` constructor's ordered `plugins=` and direct `tools=` inputs define the complete model-callable surface. ThinHarness has no implicit or selected built-in tool path. Filesystem, MCP, skills, parallel LLM, and subagent delegation use explicit plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
@@ -116,7 +116,7 @@ harness = Harness(
 )
 ```
 
-Independent custom tools and hooks stay direct constructor inputs. Plugin names must be unique within one harness. ThinHarness binds static contributions during construction, then opens connected plugins on `Harness.connect()` or before the first run. Connection is atomic: a failure installs no dynamic contribution, closes opened plugins in reverse order, and allows retry. Closing the harness also closes plugins in reverse order.
+Independent custom tools and hooks stay direct constructor inputs. Plugin names must be unique within one harness. `PluginContext` exposes only the canonical root, configured model, and a narrow child-harness host. ThinHarness binds static contributions during construction, then opens connected plugins on `Harness.connect()` or before the first run. Connection is atomic: a failure installs no dynamic contribution, closes opened plugins in reverse order, and allows retry. Closing the harness also closes plugins in reverse order. A plugin opts into automatic child rebinding only by implementing `for_child()`.
 
 Plugins are trusted in-process code. ThinHarness does not discover them from entry points or directories, isolate them, resolve dependencies between them, or hot reload them.
 
@@ -267,11 +267,11 @@ The paused result includes:
 
 Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
 
-Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
+Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child harnesses. Configure approval only on direct top-level `ToolSpec` values.
 
 ### Bash Prototype Tool
 
-`BashTool` is an opt-in custom tool for exploratory agent runs. It is not part of the default built-ins, and `builtin_tools=["bash"]` is intentionally rejected.
+`BashTool` is an opt-in custom tool for exploratory agent runs. ThinHarness has no implicit tools; add `BashTool(...).spec()` through direct `tools=` composition.
 
 ```python
 from thinharness import BashTool, Harness, HarnessConfig
@@ -382,38 +382,36 @@ By default, hook exceptions are logged and the run continues. Set `strict_hooks=
 
 ## Subagents
 
-The `subagent` tool is opt-in. It lets the parent delegate a bounded task to a child harness. Child runs start fresh; they do not inherit the parent provider transcript.
+Add `SubagentsPlugin` to expose one `subagent` tool. Each call delegates one bounded task to a fresh child harness with no parent provider transcript.
 
 ```python
-from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig, SubagentsPlugin
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["subagent"],
-    subagents=[
-        SubAgentConfig(
-            name="reviewer",
-            description="Review a draft for factual and citation issues.",
-            system_prompt="You are a careful review agent.",
-            inherit_parent_tools=True,
-            max_model_requests=12,
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        FilesystemPlugin(tools=["read", "search"]),
+        SubagentsPlugin(agents=[
+            SubAgentConfig(
+                name="reviewer",
+                description="Review a draft for factual and citation issues.",
+                system_prompt="You are a careful review agent.",
+                inherit_parent=True,
+                max_model_requests=12,
+            )
+        ]),
     ],
-), plugins=[FilesystemPlugin(tools=["read", "search"])])
+)
 ```
 
-Calling `subagent` without an `agent` argument uses the framework default subagent, which inherits parent tools except for recursive `subagent` access and MCP-discovered tools. Named subagents use their own `SubAgentConfig`.
+Omitting `agent` selects the framework default child. It borrows the parent model and inherits safe parent plugins plus direct tools from the active run's frozen tool snapshot. Named children can set their own model, limits, output settings, hooks, plugins, and tools. `inherit_parent=True` is additive: inherited plugins and direct tools come first, then explicit child plugins and tools. Duplicate names fail; explicit values do not replace inherited values.
 
-Named subagents can:
+`FilesystemPlugin`, `SkillsPlugin`, and `ParallelLlmPlugin` opt into child rebinding. A borrowed `ParallelLlmPlugin(model=None)` uses the child model. `MCPPlugin` never inherits automatically; put an explicit `MCPPlugin(...)` in the child's `plugins` list. Approval-required tools are excluded or rejected.
 
-- inherit parent tools with `inherit_parent_tools=True`
-- choose explicit `plugins`
-- receive explicit custom `tools`
-- opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
-- use their own model, limits, and structured output
+Default-child hooks use `SubagentsPlugin(default_hooks=...)`. Named child hooks use `SubAgentConfig(hooks=...)`. Parent `before_subagent_run` and `after_subagent_run` hooks stay on the parent and can use `agents=[...]` filters.
 
-`default` is reserved for the framework default subagent name.
+Children receive a disabled child host and cannot delegate again. `SubagentsPlugin` is also invalid in explicit child plugins. A custom ordinary tool can still use the name `subagent` when the delegation plugin is absent. `default` is reserved only as the framework default child configuration name.
 
 ## Parallel LLM Batches
 
@@ -506,7 +504,7 @@ Relative skill directories resolve from the process working directory, not from 
 
 A non-empty catalog contributes the selected tools in caller order and one compact summary. The summary tells the model to call `skill_read` only when that tool is selected. `skill_read` is parallel-safe. `skill_run` is sequential and runs scripts from trusted skill directories: Python through `uv run`, shell through `bash`, JavaScript through `node`, and Go through `go run`.
 
-An explicitly configured named child uses its own `SkillsPlugin`. Default children and named children with `inherit_parent_tools=True` temporarily rebind the exact parent plugin, so they share one catalog and one summary.
+`SkillsPlugin` has frozen constructor configuration and opts into generic child rebinding. Default children and named children with `inherit_parent=True` reuse the exact registry and catalog, so they share one catalog and one summary. A non-inheriting child lists its own plugin explicitly.
 
 ## MCP
 
@@ -565,7 +563,7 @@ Available wrappers:
 - `MCPServerSSE`
 - `MCPServerStreamableHTTP`
 
-ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
+ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
 
 ## Resume
 
@@ -677,7 +675,7 @@ harness = Harness(
 )
 ```
 
-Each tracing sink owns its capture policy. External spans can exist without recording raw prompts or tool payloads unless capture flags are enabled.
+Each tracing sink owns its capture policy. External spans can exist without recording raw prompts or tool payloads unless capture flags are enabled. Real delegation tool spans have `subagent.delegation=true` from span start and child `invoke_agent subagent.<name>` spans remain nested below them. Classification uses core-owned composition provenance, so a same-named direct tool or forged `ToolOrigin` remains an ordinary tool span.
 
 ## Result Object
 

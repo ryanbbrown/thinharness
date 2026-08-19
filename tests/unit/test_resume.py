@@ -124,7 +124,7 @@ async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path
 async def test_anthropic_resume_replays_transcript_and_appends_new_user_turn(tmp_path: Path) -> None:
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()])
 
     first = await harness.run("first")
     state = json.loads(json.dumps(first.resume_state))
@@ -143,7 +143,7 @@ async def test_anthropic_resume_replays_transcript_and_appends_new_user_turn(tmp
 async def test_openrouter_resume_replays_transcript_and_appends_new_user_turn(tmp_path: Path) -> None:
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()])
 
     first = await harness.run("first")
     state = json.loads(json.dumps(first.resume_state))
@@ -163,12 +163,12 @@ async def test_openrouter_resume_replays_transcript_and_appends_new_user_turn(tm
 
 async def test_cross_provider_resume_after_tool_round_trip(tmp_path: Path) -> None:
     source_provider = FakeAnthropicProvider()
-    source = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
+    source = Harness(HarnessConfig(root=tmp_path), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
     state = json.loads(json.dumps((await source.run("first")).resume_state))
 
     openai_provider = _TerminalOpenAIProvider()
     openai_result = await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=OpenAIResponsesModel("gpt-test", provider=openai_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=state)
@@ -180,7 +180,7 @@ async def test_cross_provider_resume_after_tool_round_trip(tmp_path: Path) -> No
 
     openrouter_provider = FakeOpenRouterProvider()
     openrouter_result = await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=OpenRouterModel("openai/test", provider=openrouter_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=state)
@@ -192,13 +192,13 @@ async def test_cross_provider_resume_after_tool_round_trip(tmp_path: Path) -> No
 
 async def test_multi_tool_batch_replay_shapes(tmp_path: Path) -> None:
     source_provider = _MultiToolAnthropicProvider()
-    source = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
+    source = Harness(HarnessConfig(root=tmp_path), model=AnthropicMessagesModel("claude-test", provider=source_provider), tools=[echo_tool()])
     state = json.loads(json.dumps((await source.run("first")).resume_state))
     assert json.loads(json.dumps(state)) == state
 
     anthropic_provider = FakeAnthropicProvider()
     await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=AnthropicMessagesModel("claude-test", provider=anthropic_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=state)
@@ -208,7 +208,7 @@ async def test_multi_tool_batch_replay_shapes(tmp_path: Path) -> None:
 
     openrouter_provider = FakeOpenRouterProvider()
     await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=OpenRouterModel("openai/test", provider=openrouter_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=state)
@@ -218,14 +218,14 @@ async def test_multi_tool_batch_replay_shapes(tmp_path: Path) -> None:
 
 async def test_resume_rederives_live_system_prompt(tmp_path: Path) -> None:
     anthropic_source = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        HarnessConfig(root=tmp_path, system_prompt="old system"),
         model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()),
         tools=[echo_tool()],
     )
     anthropic_state = json.loads(json.dumps((await anthropic_source.run("first")).resume_state))
     anthropic_provider = FakeAnthropicProvider()
     await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        HarnessConfig(root=tmp_path, system_prompt="new system"),
         model=AnthropicMessagesModel("claude-test", provider=anthropic_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=anthropic_state)
@@ -233,14 +233,14 @@ async def test_resume_rederives_live_system_prompt(tmp_path: Path) -> None:
     assert "old system" not in anthropic_provider.payloads[0]["system"]
 
     openrouter_source = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        HarnessConfig(root=tmp_path, system_prompt="old system"),
         model=OpenRouterModel("openai/test", provider=FakeOpenRouterProvider()),
         tools=[echo_tool()],
     )
     openrouter_state = json.loads(json.dumps((await openrouter_source.run("first")).resume_state))
     openrouter_provider = FakeOpenRouterProvider()
     await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        HarnessConfig(root=tmp_path, system_prompt="new system"),
         model=OpenRouterModel("openai/test", provider=openrouter_provider),
         tools=[echo_tool()],
     ).run("follow-up", resume_from=openrouter_state)
@@ -248,13 +248,13 @@ async def test_resume_rederives_live_system_prompt(tmp_path: Path) -> None:
     assert "old system" not in openrouter_provider.payloads[0]["messages"][0]["content"]
 
     openai_source = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="old system"),
+        HarnessConfig(root=tmp_path, system_prompt="old system"),
         model=OpenAIResponsesModel("gpt-test", provider=_TerminalOpenAIProvider()),
     )
     openai_state = json.loads(json.dumps((await openai_source.run("first")).resume_state))
     openai_provider = _TerminalOpenAIProvider()
     await Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], system_prompt="new system"),
+        HarnessConfig(root=tmp_path, system_prompt="new system"),
         model=OpenAIResponsesModel("gpt-test", provider=openai_provider),
     ).run("follow-up", resume_from=openai_state)
     assert openai_provider.payloads[0]["instructions"].startswith("new system")
@@ -271,10 +271,10 @@ def test_resume_allows_provider_model_mismatches_and_rejects_bad_versions_and_ke
 
     def openai_harness(model_name: str = "gpt-test") -> Harness:
         """Create a fresh OpenAI resume harness."""
-        return Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel(model_name, provider=NoToolOpenAIProvider()))
+        return Harness(HarnessConfig(root=tmp_path), model=OpenAIResponsesModel(model_name, provider=NoToolOpenAIProvider()))
 
     state = openai_harness().run_sync("first").resume_state
-    anthropic = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()))
+    anthropic = Harness(HarnessConfig(root=tmp_path), model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()))
 
     assert anthropic.run_sync("follow-up", resume_from=state).text == "done"
     assert openai_harness("other").run_sync("follow-up", resume_from=state).text == "done"
@@ -301,7 +301,7 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
     def harness() -> Harness:
         """Create a fresh harness for one run_sync validation case."""
         return Harness(
-            HarnessConfig(root=tmp_path, builtin_tools=[]),
+            HarnessConfig(root=tmp_path),
             model=AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()),
             hooks=[
                 Hook("run_start", lambda ctx: events.append(type(ctx).__name__)),
@@ -365,7 +365,7 @@ def test_structured_output_final_result_omits_resume_state(tmp_path: Path) -> No
         )
     )
     model = _ScriptedResumeModel([session])
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Answer, output_mode="tool"), model=model)
+    harness = Harness(HarnessConfig(root=tmp_path, output_type=Answer, output_mode="tool"), model=model)
 
     result = harness.run_sync("make output")
 
@@ -390,8 +390,8 @@ def test_resumed_run_can_use_structured_output_and_still_omits_resume_state(tmp_
         )
     )
     model = _ScriptedResumeModel([first_session, resumed_session])
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
-    resumed = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Answer, output_mode="tool"), model=model).run_sync(
+    first = Harness(HarnessConfig(root=tmp_path), model=model).run_sync("first")
+    resumed = Harness(HarnessConfig(root=tmp_path, output_type=Answer, output_mode="tool"), model=model).run_sync(
         "structured follow-up",
         resume_from=first.resume_state,
     )
@@ -406,9 +406,9 @@ def test_resumed_user_prompt_receives_limit_notice(tmp_path: Path) -> None:
     )
     resumed_session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "second"}))
     model = _ScriptedResumeModel([first_session, resumed_session])
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=model).run_sync("first")
+    first = Harness(HarnessConfig(root=tmp_path, max_model_requests=1), model=model).run_sync("first")
 
-    resumed = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=model).run_sync(
+    resumed = Harness(HarnessConfig(root=tmp_path, max_model_requests=1), model=model).run_sync(
         "follow-up",
         resume_from=first.resume_state,
     )
@@ -431,14 +431,14 @@ def test_resumed_user_prompt_runs_prompt_submit_hooks_before_notices(tmp_path: P
         on_start=lambda prompt, _instructions, _tools, _metadata, _previous: captured.setdefault("prompt", prompt),
     )
     model = _ScriptedResumeModel([first_session, resumed_session])
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
+    first = Harness(HarnessConfig(root=tmp_path), model=model).run_sync("first")
 
     def add_context(ctx) -> None:
         events.append("user_prompt_submit")
         ctx.additional_context.append("resume policy")
 
     resumed = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1),
+        HarnessConfig(root=tmp_path, max_model_requests=1),
         model=model,
         hooks=[Hook("user_prompt_submit", add_context)],
     ).run_sync("follow-up", resume_from=first.resume_state)
@@ -460,12 +460,12 @@ def test_no_openai_response_id_still_produces_resume_state(tmp_path: Path) -> No
             return {"output_text": "done"}
 
     provider = NoIdProvider()
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=provider))
+    harness = Harness(HarnessConfig(root=tmp_path), model=OpenAIResponsesModel("gpt-test", provider=provider))
 
     first = harness.run_sync("first")
     assert first.resume_state is not None
     assert first.resume_state["kind"] == "transcript"
-    resumed = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenAIResponsesModel("gpt-test", provider=provider)).run_sync(
+    resumed = Harness(HarnessConfig(root=tmp_path), model=OpenAIResponsesModel("gpt-test", provider=provider)).run_sync(
         "follow-up",
         resume_from=json.loads(json.dumps(first.resume_state)),
     )
@@ -479,14 +479,14 @@ def test_non_clean_exits_omit_resume_state(tmp_path: Path) -> None:
         start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="missing", arguments="{}")], raw={"id": "start"}),
         dump_state={"kind": "scripted", "version": 1, "model": "scripted"},
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=0), model=_ScriptedResumeModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path, max_tool_calls=0), model=_ScriptedResumeModel([session]))
 
     with pytest.raises(HarnessError, match="max_tool_calls"):
         harness.run_sync("go")
 
     captured: list[RunEndContext] = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=0),
+        HarnessConfig(root=tmp_path, max_tool_calls=0),
         model=_ScriptedResumeModel([session]),
         hooks=[Hook("run_end", lambda ctx: captured.append(ctx))],
     )
@@ -504,7 +504,7 @@ def test_provider_error_omits_resume_state(tmp_path: Path) -> None:
 
     captured: list[RunEndContext] = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=_ScriptedResumeModel([FailingProviderSession()]),
         hooks=[Hook("run_end", lambda ctx: captured.append(ctx))],
     )
@@ -522,7 +522,7 @@ def test_tool_retries_exceeded_omits_resume_state(tmp_path: Path) -> None:
     )
     captured: list[RunEndContext] = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], tool_retries=0),
+        HarnessConfig(root=tmp_path, tool_retries=0),
         model=_ScriptedResumeModel([session]),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda args: (_ for _ in ()).throw(ModelRetry("again")))],
         hooks=[Hook("run_end", lambda ctx: captured.append(ctx))],
@@ -542,7 +542,7 @@ def test_cancelled_by_hook_omits_resume_state(tmp_path: Path) -> None:
         ctx.cancel_reason = "blocked"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=_ScriptedResumeModel([_NoResumeSession()]),
         hooks=[Hook("user_prompt_submit", cancel), Hook("run_end", lambda ctx: captured.append(ctx))],
     )
@@ -563,7 +563,7 @@ def test_output_validation_failed_omits_resume_state(tmp_path: Path) -> None:
     )
     captured: list[RunEndContext] = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Answer, output_mode="tool", output_retries=0),
+        HarnessConfig(root=tmp_path, output_type=Answer, output_mode="tool", output_retries=0),
         model=_ScriptedResumeModel([session]),
         hooks=[Hook("run_end", lambda ctx: captured.append(ctx))],
     )
@@ -577,7 +577,7 @@ def test_output_validation_failed_omits_resume_state(tmp_path: Path) -> None:
 async def test_resume_state_is_detached_outbound_and_inbound(tmp_path: Path) -> None:
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()])
     first = await harness.run("first")
     stashed = json.loads(json.dumps(first.resume_state))
 
@@ -592,10 +592,10 @@ async def test_resume_state_is_detached_outbound_and_inbound(tmp_path: Path) -> 
 
 async def test_fresh_harness_persistence_and_sequential_branching(tmp_path: Path) -> None:
     provider = FakeOpenRouterProvider()
-    first_harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenRouterModel("openai/test", provider=provider), tools=[echo_tool()])
+    first_harness = Harness(HarnessConfig(root=tmp_path), model=OpenRouterModel("openai/test", provider=provider), tools=[echo_tool()])
     state = json.loads(json.dumps((await first_harness.run("first")).resume_state))
 
-    second_harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=OpenRouterModel("openai/test", provider=provider), tools=[echo_tool()])
+    second_harness = Harness(HarnessConfig(root=tmp_path), model=OpenRouterModel("openai/test", provider=provider), tools=[echo_tool()])
     first_branch = await second_harness.run("branch one", resume_from=state)
     second_branch = await second_harness.run("branch two", resume_from=state)
 
@@ -626,7 +626,7 @@ def test_adapter_non_json_dump_propagates_type_error(tmp_path: Path) -> None:
         start_turn=ModelTurn(text="done", raw={"id": "done"}),
         dump_state={"kind": "scripted", "version": 1, "model": "scripted", "bad": object()},
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=_ScriptedResumeModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=_ScriptedResumeModel([session]))
 
     with pytest.raises(TypeError):
         harness.run_sync("go")
@@ -636,7 +636,7 @@ def test_custom_model_without_resume_support_can_run_but_cannot_resume(tmp_path:
     events: list[str] = []
     model = _NoResumeModel([_NoResumeSession(), _NoResumeSession()])
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         hooks=[
             Hook("run_start", lambda ctx: events.append(type(ctx).__name__)),
@@ -648,7 +648,7 @@ def test_custom_model_without_resume_support_can_run_but_cannot_resume(tmp_path:
     events.clear()
     with pytest.raises(HarnessError, match="does not support resume"):
         Harness(
-            HarnessConfig(root=tmp_path, builtin_tools=[]),
+            HarnessConfig(root=tmp_path),
             model=model,
             hooks=[
                 Hook("run_start", lambda ctx: events.append(type(ctx).__name__)),
@@ -664,7 +664,7 @@ def test_resumable_model_session_missing_dump_state_raises(tmp_path: Path) -> No
 
         dump_state = None
 
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=_ScriptedResumeModel([MissingDumpStateSession()]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=_ScriptedResumeModel([MissingDumpStateSession()]))
 
     with pytest.raises(HarnessError, match="resumable model session is missing dump_state"):
         harness.run_sync("go")
@@ -673,7 +673,7 @@ def test_resumable_model_session_missing_dump_state_raises(tmp_path: Path) -> No
 def test_run_end_context_sees_resume_state(tmp_path: Path) -> None:
     captured: list[dict | None] = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=OpenAIResponsesModel("gpt-test", provider=FakeClient()),
         hooks=[Hook("run_end", lambda ctx: captured.append(ctx.result.resume_state if ctx.result else None))],
     )
@@ -694,7 +694,7 @@ async def test_reentrancy_beats_resume_validation(tmp_path: Path) -> None:
             await release.wait()
             return ModelTurn(text="done", raw={"id": "done"})
 
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=_NoResumeModel([SlowSession()]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=_NoResumeModel([SlowSession()]))
     task = asyncio.create_task(harness.run("go"))
     await started.wait()
     with pytest.raises(HarnessError, match="not re-entrant"):

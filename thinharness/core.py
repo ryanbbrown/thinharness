@@ -19,6 +19,7 @@ from .approvals import (
     validate_approval_decisions,
     validate_approval_pause_state,
 )
+from .children import ChildHarnessHost, _ParentChildHarnessHost, _ToolComposition
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import (
     ApprovalResumedEvent,
@@ -57,7 +58,6 @@ from .providers import (
     infer_model,
     model_capabilities,
 )
-from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools.base import ToolOrigin, ToolSpec
 from .tracing import (
     LocalTracing,
@@ -108,7 +108,6 @@ class HarnessConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    builtin_tools: list[str] | None = None
     max_model_requests: int = 64
     max_tool_calls: int | None = None
     strict_hooks: bool = False
@@ -123,7 +122,6 @@ class HarnessConfig(BaseModel):
     local_tracing: bool = True
     local_trace_dir: str | Path = "~/.thinharness/traces"
     tool_execution: Literal["auto", "sequential"] = "auto"
-    subagents: list[SubAgentConfig] = Field(default_factory=list)
     output_type: OutputSpec | None = None
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
@@ -152,12 +150,12 @@ class Harness:
         tools: list[ToolSpec] | None = None,
         tracing: list[TracingOptions] | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
-        subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
         _owns_model: bool | None = None,
-        _is_child_run: bool = False,
+        _is_child_harness: bool = False,
+        _child_harnesses: ChildHarnessHost | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
-        self._is_child_run = _is_child_run
+        self._is_child_harness = _is_child_harness
         self.root = Path(self.config.root).expanduser().resolve()
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
         self.model = model or infer_model(
@@ -177,6 +175,7 @@ class Harness:
         output_schema = resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
         self.output_schema = output_schema
 
+        child_harnesses = _child_harnesses or _ParentChildHarnessHost(self)
         configured_plugins = tuple(plugins or [])
         plugin_names = [plugin.name for plugin in configured_plugins]
         if any(not isinstance(name, str) or not name.strip() for name in plugin_names):
@@ -184,44 +183,68 @@ class Harness:
         duplicate_plugin = next((name for index, name in enumerate(plugin_names) if name in plugin_names[:index]), None)
         if duplicate_plugin is not None:
             raise ValueError(f"duplicate plugin name: {duplicate_plugin}")
-        bindings = tuple(plugin.bind(PluginContext(root=self.root, model=self.model)) for plugin in configured_plugins)
+        plugin_context = PluginContext(root=self.root, model=self.model, child_harnesses=child_harnesses)
+        bindings = tuple(plugin.bind(plugin_context) for plugin in configured_plugins)
         for plugin, binding in zip(configured_plugins, bindings, strict=True):
             if not isinstance(binding, PluginBinding):
                 raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
         static_tools: list[ToolSpec] = []
+        static_compositions: list[_ToolComposition] = []
         static_instructions: list[str] = []
         static_hooks: list[Hook] = []
-        for plugin, binding in zip(configured_plugins, bindings, strict=True):
+        agent_names: list[str] = []
+        for plugin_index, (plugin, binding) in enumerate(zip(configured_plugins, bindings, strict=True)):
             contribution = self._normalize_contribution(plugin.name, binding.static)
             static_tools.extend(contribution.tools)
+            static_compositions.extend(
+                _ToolComposition(
+                    source="plugin",
+                    plugin_index=plugin_index,
+                    delegation=isinstance(child_harnesses, _ParentChildHarnessHost)
+                    and child_harnesses.is_delegation_tool(raw_tool),
+                )
+                for raw_tool in binding.static.tools
+            )
             static_instructions.extend(contribution.instructions)
             static_hooks.extend(contribution.hooks)
+            agent_names.extend(self._validate_binding_agent_names(binding.agent_names, agent_names))
 
-        builtin_candidates = [create_subagent_tool(self, self.config.subagents)]
-        builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
-        configured_tools = [*static_tools, *builtin, *(tools or [])]
+        direct_tools = list(tools or [])
+        configured_tools = [*static_tools, *direct_tools]
+        configured_compositions = [
+            *static_compositions,
+            *(_ToolComposition(source="direct") for _ in direct_tools),
+        ]
         self._validate_tool_list(
             configured_tools,
             output_schema=output_schema,
             model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
+            is_child_harness=self._is_child_harness,
         )
         tool_map = {tool.name: tool for tool in configured_tools}
         caller_hooks = list(hooks.hooks) if isinstance(hooks, HookRegistry) else list(hooks or [])
         strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
         hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
-        self._validate_hook_registry(hook_registry, self.config.subagents)
+        self._validate_hook_registry(hook_registry, set(agent_names))
 
         self.plugins = configured_plugins
         self._plugin_bindings = bindings
         self._base_tools = list(configured_tools)
+        self._base_compositions = list(configured_compositions)
         self._base_instructions = list(static_instructions)
         self._strict_hooks = strict_hooks
         self.tools = configured_tools
         self._tool_map = tool_map
+        self._tool_composition = {
+            tool.name: composition
+            for tool, composition in zip(configured_tools, configured_compositions, strict=True)
+        }
         self._plugin_instructions = list(static_instructions)
         self.hooks = hook_registry
-        self.subagent_hooks = subagent_hooks or {}
+        self._agent_names = set(agent_names)
+        self._child_harnesses = child_harnesses
+        if isinstance(child_harnesses, _ParentChildHarnessHost):
+            child_harnesses.validate_recipes(configured_tools, configured_compositions)
         self._plugin_stack: AsyncExitStack | None = None
         self._connected = False
         self._connect_lock = asyncio.Lock()
@@ -229,7 +252,7 @@ class Harness:
         self._connect_waiters = 0
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
-        if _local_tracing_enabled(self.config.local_tracing) and not _is_child_run:
+        if _local_tracing_enabled(self.config.local_tracing) and not _is_child_harness:
             self.local_tracing = create_local_tracing(self.config.local_trace_dir, project_root=self.root)
             self.tracing = [
                 TracingOptions(
@@ -495,6 +518,7 @@ class Harness:
                             harness=self,
                             run_context=run_ctx,
                             tool_map=dict(self._tool_map),
+                            tool_composition=dict(self._tool_composition),
                             run_tracer=run_tracer,
                             tool_execution=self.config.tool_execution,
                         )
@@ -574,7 +598,7 @@ class Harness:
                 prompt=prompt,
                 instructions=instructions,
                 capture_messages=option.capture_messages,
-                top_level=not self._is_child_run,
+                top_level=not self._is_child_harness,
             )
         )
         return effective_prompt, instructions
@@ -661,14 +685,21 @@ class Harness:
             spec,
             output_schema=self.output_schema,
             model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
+            is_child_harness=self._is_child_harness,
         )
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
+        composition = _ToolComposition(source="direct")
+        candidate_tools = [*self.tools, spec]
+        candidate_compositions = [*self._tool_composition.values(), composition]
+        if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+            self._child_harnesses.validate_recipes(candidate_tools, candidate_compositions)
         self.tools.append(spec)
         self._tool_map[spec.name] = spec
+        self._tool_composition[spec.name] = composition
         if not self._connected:
             self._base_tools.append(spec)
+            self._base_compositions.append(composition)
         self._validate_hook_filters()
 
     def tool_schemas(self) -> list[Json]:
@@ -717,7 +748,7 @@ class Harness:
         *,
         output_schema: OutputSchema | None,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Validate a complete tool list before assigning it to a harness."""
         cls._validate_unique_tools(tools)
@@ -726,7 +757,7 @@ class Harness:
                 tool,
                 output_schema=output_schema,
                 model_supports_approval_resume=model_supports_approval_resume,
-                is_child_run=is_child_run,
+                is_child_harness=is_child_harness,
             )
 
     @staticmethod
@@ -735,19 +766,17 @@ class Harness:
         *,
         output_schema: OutputSchema | None,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Validate one tool against explicit harness state."""
         if not callable(spec.handler):
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
-        if spec.name == "subagent" and spec.kind != "subagent":
-            raise ValueError("subagent is a reserved tool name")
         if spec.name == FINAL_RESULT_TOOL_NAME and output_schema is not None and output_schema.mode != "text":
             raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
         Harness._validate_tool_approval_policy_for(
             spec,
             model_supports_approval_resume=model_supports_approval_resume,
-            is_child_run=is_child_run,
+            is_child_harness=is_child_harness,
         )
 
     @staticmethod
@@ -755,23 +784,36 @@ class Harness:
         tool: ToolSpec,
         *,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Reject approval policies incompatible with explicit harness state."""
         if tool.requires_approval and not model_supports_approval_resume:
             raise ValueError("approval-required tools require a resumable model")
-        if tool.requires_approval and is_child_run:
-            raise ValueError("approval-required tools are not supported inside subagents")
+        if tool.requires_approval and is_child_harness:
+            raise ValueError("approval-required tools are not supported inside child harnesses")
 
     def _validate_hook_filters(self) -> None:
-        """Validate hook filters against registered subagents."""
-        self._validate_hook_registry(self.hooks, self.config.subagents)
+        """Validate hook filters against statically contributed agent names."""
+        self._validate_hook_registry(self.hooks, self._agent_names)
 
     @staticmethod
-    def _validate_hook_registry(hooks: HookRegistry, subagents: list[SubAgentConfig]) -> None:
-        """Validate hook filters against explicit subagent configuration."""
-        agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in subagents)}
+    def _validate_hook_registry(hooks: HookRegistry, agent_names: set[str]) -> None:
+        """Validate hook filters against statically contributed agent names."""
         hooks.validate_filters(agent_names=agent_names)
+
+    @staticmethod
+    def _validate_binding_agent_names(names: tuple[str, ...], previous: list[str]) -> list[str]:
+        """Validate immutable agent names within and across plugin bindings."""
+        if not isinstance(names, tuple):
+            raise TypeError("PluginBinding.agent_names must be a tuple")
+        accepted: list[str] = []
+        for name in names:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("plugin agent name must be a non-empty string")
+            if name in previous or name in accepted:
+                raise ValueError(f"duplicate plugin agent name: {name}")
+            accepted.append(name)
+        return accepted
 
     def _model_supports_approval_resume(self) -> bool:
         """Return whether this harness model can resume provider sessions."""
@@ -813,32 +855,44 @@ class Harness:
         base_hooks = list(self.hooks.hooks)
         try:
             dynamic_tools: list[ToolSpec] = []
+            dynamic_compositions: list[_ToolComposition] = []
             dynamic_instructions: list[str] = []
             dynamic_hooks: list[Hook] = []
-            for plugin, binding in zip(self.plugins, self._plugin_bindings, strict=True):
+            for plugin_index, (plugin, binding) in enumerate(zip(self.plugins, self._plugin_bindings, strict=True)):
                 if binding.connect is None:
                     continue
                 contribution = await plugin_stack.enter_async_context(binding.connect())
                 normalized = self._normalize_contribution(plugin.name, contribution)
                 dynamic_tools.extend(normalized.tools)
+                dynamic_compositions.extend(
+                    _ToolComposition(source="plugin", plugin_index=plugin_index)
+                    for _ in normalized.tools
+                )
                 dynamic_instructions.extend(normalized.instructions)
                 dynamic_hooks.extend(normalized.hooks)
 
             candidate_tools = [*self._base_tools, *dynamic_tools]
+            candidate_compositions = [*self._base_compositions, *dynamic_compositions]
             self._validate_tool_list(
                 candidate_tools,
                 output_schema=self.output_schema,
                 model_supports_approval_resume=self._model_supports_approval_resume(),
-                is_child_run=self._is_child_run,
+                is_child_harness=self._is_child_harness,
             )
+            if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+                self._child_harnesses.validate_recipes(candidate_tools, candidate_compositions)
             candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
-            self._validate_hook_registry(candidate_hooks, self.config.subagents)
+            self._validate_hook_registry(candidate_hooks, self._agent_names)
 
             if self._closed:
                 raise HarnessError("harness is closed")
 
             self.tools = candidate_tools
             self._tool_map = {tool.name: tool for tool in candidate_tools}
+            self._tool_composition = {
+                tool.name: composition
+                for tool, composition in zip(candidate_tools, candidate_compositions, strict=True)
+            }
             self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
             self.hooks = candidate_hooks
             self._plugin_stack = plugin_stack
@@ -850,6 +904,10 @@ class Harness:
             )
             self.tools = list(self._base_tools)
             self._tool_map = {tool.name: tool for tool in self.tools}
+            self._tool_composition = {
+                tool.name: composition
+                for tool, composition in zip(self.tools, self._base_compositions, strict=True)
+            }
             self._plugin_instructions = list(self._base_instructions)
             self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
             if cleanup_error is not None:
@@ -903,28 +961,3 @@ class Harness:
         if self.output_schema is None:
             return None
         return self.output_schema.structured_output_request()
-
-    @staticmethod
-    def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
-        """Return all or the explicitly selected built-in tools."""
-        by_name = {tool.name: tool for tool in tools}
-        if selected_names is None:
-            return []
-        selected: list[ToolSpec] = []
-        seen: set[str] = set()
-        for name in selected_names:
-            if name in seen:
-                raise ValueError(f"duplicate selected builtin tool: {name}")
-            if name not in by_name:
-                filesystem_names = {"read", "write", "edit", "search", "list", "glob", "jsonl_search"}
-                if name in filesystem_names:
-                    raise ValueError(f"unknown builtin tool: {name}; use FilesystemPlugin(tools=[{name!r}])")
-                if name in {"skill_read", "skill_run"}:
-                    raise ValueError(f"unknown builtin tool: {name}; use SkillsPlugin(tools=[{name!r}])")
-                if name == "parallel_llm":
-                    raise ValueError("unknown builtin tool: parallel_llm; use ParallelLlmPlugin()")
-                available = ", ".join(sorted(by_name)) or "none"
-                raise ValueError(f"unknown builtin tool: {name}; available: {available}")
-            selected.append(by_name[name])
-            seen.add(name)
-        return selected

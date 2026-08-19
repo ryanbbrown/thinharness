@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from runpy import run_path
 
 import httpx
 import pytest
@@ -29,15 +30,16 @@ from thinharness import (
     OpenAIProvider,
     OpenAIResponsesModel,
     SubAgentConfig,
+    SubagentsPlugin,
     ToolResult,
     ToolSpec,
     TracingOptions,
-    build_child_harness,
-    create_subagent_tool,
 )
 from thinharness.projections import model_request_delta_from_prompt, model_request_delta_from_tool_outputs
 from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn, TokenUsage, ToolOutput
 from thinharness.tracing import _SpanAdapter, annotate_model_request, create_local_tracing_options, serialize_attribute_value
+
+event_from_span = run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "build_transcripts.py"))["event_from_span"]
 
 
 class Person(BaseModel):
@@ -185,11 +187,11 @@ def test_local_tracing_nests_subagent_spans(tmp_path: Path, monkeypatch: pytest.
     child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
     parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], local_tracing=True, local_trace_dir=trace_dir),
+        HarnessConfig(root=tmp_path, local_tracing=True, local_trace_dir=trace_dir),
         model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin()],
         tools=[echo_tool()],
     )
-    harness.add_tool(create_subagent_tool(harness, []))
 
     harness.run_sync("delegate")
 
@@ -287,7 +289,7 @@ async def test_recovered_provider_retry_uses_one_successful_model_span(
             provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
         )
         harness = Harness(
-            HarnessConfig(root=tmp_path, builtin_tools=[]),
+            HarnessConfig(root=tmp_path),
             model=model,
             tracing=[TracingOptions(tracer=tracer)],
         )
@@ -306,7 +308,7 @@ def test_tool_tracing_marks_normalized_failures(tmp_path: Path) -> None:
     client = MultiCallClient([("fail", "{}")])
     tracer = FakeTracer()
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[failing],
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
@@ -328,7 +330,7 @@ async def test_assistant_text_and_tool_calls_project_to_trace_and_stream(tmp_pat
     session = ScriptedSession(start_turn=turn, continue_turn=ModelTurn(text="done", raw={"id": "done"}))
     tracer = FakeTracer()
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[echo_tool()],
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
@@ -357,12 +359,12 @@ def test_subagent_tracing_nests_child_under_parent_tool_span(tmp_path: Path) -> 
     parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
     tracer = FakeTracer()
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin()],
         tools=[echo_tool()],
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     )
-    harness.add_tool(create_subagent_tool(harness, []))
 
     harness.run_sync("delegate")
 
@@ -394,10 +396,13 @@ def test_subagent_runs_with_tracing_disabled(tmp_path: Path) -> None:
     )
     child = ScriptedSession(start_turn=ModelTurn(text="child done", raw={"id": "child"}))
     parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([parent, child]), tools=[echo_tool()])
-    harness.add_tool(create_subagent_tool(harness, []))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin()],
+        tools=[echo_tool()],
+    )
 
-    assert build_child_harness(harness, None).tracing == []
     assert harness.run_sync("delegate").text == "parent done"
 
 def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_path: Path) -> None:
@@ -413,12 +418,12 @@ def test_concurrent_subagent_fanout_keeps_each_child_under_own_tool_span(tmp_pat
     parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}))
     tracer = ContextFakeTracer()
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent, child_a, child_b]),
+        plugins=[SubagentsPlugin()],
         tools=[echo_tool()],
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     )
-    harness.add_tool(create_subagent_tool(harness, []))
 
     assert harness.run_sync("delegate").text == "parent done"
 
@@ -453,18 +458,18 @@ def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> No
     tracer = FakeTracer()
 
     Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool", max_model_requests=2),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool", max_model_requests=2),
         model=model,
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     ).run_sync("make a person")
     Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool"),
         model=model,
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     ).run_sync("make another")
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
+    first = Harness(HarnessConfig(root=tmp_path), model=model).run_sync("first")
     Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     ).run_sync("follow-up", resume_from=first.resume_state)
@@ -487,7 +492,7 @@ def _chat_span_for_turn(tmp_path: Path, turn: ModelTurn) -> FakeSpan:
     """Run one scripted turn and return its chat span."""
     tracer = FakeTracer()
     Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=turn)]),
         tracing=[TracingOptions(tracer=tracer)],
     ).run_sync("go")
@@ -550,7 +555,7 @@ def test_custom_model_turn_without_normalized_fields_falls_back_to_raw(tmp_path:
 def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None:
     tracer = FakeTracer()
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([FailingSession()]),
         tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
     )
@@ -563,6 +568,37 @@ def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None
     assert "gen_ai.system_instructions" in root.attributes
     assert "gen_ai.completion" not in root.attributes
     assert root.status is not None
+
+def test_transcript_classification_requires_authoritative_delegation_marker() -> None:
+    base = {
+        "name": "execute_tool subagent",
+        "attributes": {
+            "gen_ai.tool.name": "subagent",
+            "gen_ai.tool.call.id": "call_1",
+            "gen_ai.tool.call.result": ToolResult(True, "done", {"agent": "forged"}).to_json(),
+        },
+    }
+
+    ordinary = event_from_span(base, "trace.jsonl", 1, {})
+    delegated = event_from_span(
+        {
+            **base,
+            "attributes": {
+                **base["attributes"],
+                "subagent.delegation": True,
+                "subagent.name": "default",
+            },
+        },
+        "trace.jsonl",
+        2,
+        {},
+    )
+
+    assert ordinary["kind"] == "tool"
+    assert ordinary["subagent_name"] == ""
+    assert delegated["kind"] == "subagent"
+    assert delegated["subagent_name"] == "default"
+
 
 def test_unknown_named_subagent_trace_marks_failed_without_child_tool_mode(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -581,17 +617,17 @@ def test_unknown_named_subagent_trace_marks_failed_without_child_tool_mode(tmp_p
     tracer = FakeTracer()
     parent = ScriptedSession(start_turn=parent_call, continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}), on_continue=on_parent_continue)
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(
+                name="research",
+                description="Research helper.",
+                plugins=[FilesystemPlugin(tools=["read"])],
+            )
+        ])],
         tracing=[TracingOptions(tracer=tracer)],
     )
-    harness.add_tool(create_subagent_tool(harness, [
-        SubAgentConfig(
-            name="research",
-            description="Research helper.",
-            plugins=[FilesystemPlugin(tools=["read"])],
-        )
-    ]))
 
     assert harness.run_sync("delegate").text == "parent done"
     subagent_tool = next(span for span in tracer.spans if span.name == "execute_tool subagent")

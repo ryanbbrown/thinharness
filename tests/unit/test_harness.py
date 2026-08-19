@@ -35,13 +35,11 @@ from thinharness import (
     ParallelLlmPlugin,
     RequestConstants,
     SkillsPlugin,
-    SubAgentConfig,
+    SubagentsPlugin,
     TokenUsage,
     ToolSpec,
     UnexpectedModelBehavior,
-    build_child_harness,
     call_tool,
-    create_subagent_tool,
 )
 from thinharness.core import _classify_run_failure
 from thinharness.defaults import DEFAULT_PARALLEL_LLM_INSTRUCTIONS, DEFAULT_SEARCH_INSTRUCTIONS
@@ -72,7 +70,7 @@ def test_session_receives_falsy_metadata_when_run_has_no_metadata(tmp_path: Path
         start_turn=ModelTurn(text="done", raw={"id": "done"}),
         on_start=lambda _prompt, _instructions, _tools, metadata, _previous: captured.setdefault("metadata", metadata),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]))
 
     assert harness.run_sync("go").text == "done"
 
@@ -132,7 +130,7 @@ def test_classify_run_failure_preserves_existing_harness_stop_reason() -> None:
 
 def test_max_model_requests_zero_blocks_before_provider_request(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=0), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path, max_model_requests=0), model=ScriptedModel([session]))
 
     with pytest.raises(HarnessError, match="max_model_requests=0"):
         harness.run_sync("go")
@@ -141,7 +139,7 @@ def test_max_model_requests_zero_blocks_before_provider_request(tmp_path: Path) 
 
 def test_final_model_request_notice_is_sent_on_initial_request(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path, max_model_requests=1), model=ScriptedModel([session]))
 
     assert harness.run_sync("go").text == "done"
 
@@ -153,7 +151,7 @@ def test_warning_only_run_does_not_fire_limit_reached(tmp_path: Path) -> None:
     events = []
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1, max_tool_calls=0),
+        HarnessConfig(root=tmp_path, max_model_requests=1, max_tool_calls=0),
         model=ScriptedModel([session]),
         hooks=[Hook("limit_reached", lambda ctx: events.append(ctx.limit_kind))],
     )
@@ -172,7 +170,7 @@ def test_limit_notices_are_sent_on_tool_continuation(tmp_path: Path) -> None:
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=2, max_tool_calls=1),
+        HarnessConfig(root=tmp_path, max_model_requests=2, max_tool_calls=1),
         model=ScriptedModel([session]),
         tools=[echo_tool()],
     )
@@ -186,7 +184,7 @@ def test_limit_notices_are_sent_on_tool_continuation(tmp_path: Path) -> None:
 
 def test_exhausted_tool_budget_notice_is_sent_on_initial_request(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=0), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path, max_tool_calls=0), model=ScriptedModel([session]))
 
     assert harness.run_sync("go").text == "done"
 
@@ -197,7 +195,7 @@ def test_exhausted_tool_budget_notice_is_sent_on_initial_request(tmp_path: Path)
 def test_combined_limit_notices_use_stable_order(tmp_path: Path, max_tool_calls: int, expected_remaining: int) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1, max_tool_calls=max_tool_calls),
+        HarnessConfig(root=tmp_path, max_model_requests=1, max_tool_calls=max_tool_calls),
         model=ScriptedModel([session]),
     )
 
@@ -216,7 +214,7 @@ def test_same_turn_tool_overage_does_not_send_continuation_notice(tmp_path: Path
         ], raw={"id": "start"})
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_tool_calls=1),
+        HarnessConfig(root=tmp_path, max_tool_calls=1),
         model=ScriptedModel([session]),
         tools=[echo_tool()],
     )
@@ -229,7 +227,7 @@ def test_same_turn_tool_overage_does_not_send_continuation_notice(tmp_path: Path
 async def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
     provider = FakeAnthropicProvider()
     model = AnthropicMessagesModel("claude-test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()])
 
     assert (await harness.run("first")).text == "done"
     assert (await harness.run("second")).text == "done"
@@ -240,7 +238,7 @@ async def test_anthropic_harness_reuses_model_without_message_leak(tmp_path: Pat
 async def test_openrouter_harness_reuses_model_without_message_leak(tmp_path: Path) -> None:
     provider = FakeOpenRouterProvider()
     model = OpenRouterModel("openai/test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()])
 
     assert (await harness.run("first")).text == "done"
     assert (await harness.run("second")).text == "done"
@@ -311,9 +309,9 @@ def test_harness_has_no_implicit_filesystem_tools(tmp_path: Path) -> None:
 
 def test_specialized_filesystem_tools_are_explicit_opt_ins(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=["subagent"]),
+        HarnessConfig(root=tmp_path),
         model=_fake_openai(FakeClient()),
-        plugins=[FilesystemPlugin(tools=["jsonl_search"])],
+        plugins=[FilesystemPlugin(tools=["jsonl_search"]), SubagentsPlugin()],
     )
     assert [tool["name"] for tool in harness.tool_schemas()] == ["jsonl_search", "subagent"]
 
@@ -370,7 +368,7 @@ def test_blank_tool_instructions_are_omitted(tmp_path: Path) -> None:
         lambda args: "ok",
         instructions="   ",
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), tools=[custom])
 
     assert harness.system_instructions() == harness.config.system_prompt
 
@@ -382,7 +380,7 @@ def test_tool_instructions_do_not_change_tool_schema(tmp_path: Path) -> None:
         lambda args: {"echo": args["value"]},
         instructions="Use echo_json only when echoing JSON.",
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[custom])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), tools=[custom])
 
     schema = harness.tool_schemas()[0]
 
@@ -461,34 +459,10 @@ def test_removed_harness_skills_argument_fails_loudly() -> None:
         Harness(HarnessConfig(), skills=object())
 
 
-@pytest.mark.parametrize(
-    ("name", "plugin"),
-    [("skill_read", "SkillsPlugin"), ("skill_run", "SkillsPlugin"), ("parallel_llm", "ParallelLlmPlugin")],
-)
-def test_removed_builtin_tool_names_point_to_plugins(name: str, plugin: str) -> None:
-    with pytest.raises(ValueError, match=plugin):
-        Harness(HarnessConfig(builtin_tools=[name]), model=ScriptedModel([]))
-
-
-def test_unknown_builtin_tool_keeps_normal_error() -> None:
-    with pytest.raises(ValueError, match=r"unknown builtin tool: unknown; available: subagent"):
-        Harness(HarnessConfig(builtin_tools=["unknown"]), model=ScriptedModel([]))
-
-def test_child_harness_tool_surfaces_follow_subagent_policy(tmp_path: Path) -> None:
-    parent_echo = echo_tool()
-    explicit_tool = ToolSpec("explicit", "Explicit sequential tool", {"type": "object", "properties": {}}, lambda args: "ok", sequential=True)
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]), tools=[parent_echo])
-    parent.add_tool(create_subagent_tool(parent, []))
-
-    default_child = build_child_harness(parent, None)
-    explicit_child = build_child_harness(parent, SubAgentConfig(name="special", description="Special helper.", tools=[explicit_tool]))
-
-    assert default_child.tools == [parent_echo]
-    assert default_child.config.subagents == []
-    assert [tool.name for tool in explicit_child.tools] == ["explicit"]
-    assert explicit_child.tools[0].sequential is True
-    assert explicit_child.config.subagents == []
-    assert build_child_harness(parent, None).model is parent.model
+@pytest.mark.parametrize("field", ["builtin_tools", "subagents"])
+def test_removed_delegation_config_fields_point_to_plugin(field: str) -> None:
+    with pytest.raises(ValueError, match=rf"HarnessConfig\.{field}.*SubagentsPlugin"):
+        HarnessConfig(**{field: []})
 
 def test_duplicate_tool_names_are_rejected(tmp_path: Path) -> None:
     duplicate = ToolSpec("read", "Duplicate read", {"type": "object", "properties": {}}, lambda args: "ok")
@@ -512,7 +486,7 @@ def test_after_tool_call_fires_for_handler_exception(tmp_path: Path) -> None:
         seen.append(ctx.envelope.metadata["error_type"])
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("boom", "boom", {"type": "object", "properties": {}}, boom)],
         hooks=[Hook("after_tool_call", after)],
@@ -529,7 +503,7 @@ async def test_async_run_supports_async_tool_handlers(tmp_path: Path) -> None:
         return args["value"]
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[
             ToolSpec(
@@ -561,7 +535,7 @@ async def test_async_tool_handlers_run_without_thread_hop_and_partial_works(tmp_
 
     loop_thread = threading.get_ident()
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("async_partial", "Async partial", {"type": "object", "properties": {}}, partial(async_partial, value="ok"))],
     )
@@ -584,7 +558,7 @@ async def test_callable_object_async_handler_runs_directly(tmp_path: Path) -> No
             return "ok"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("callable_async", "Callable async", {"type": "object", "properties": {}}, CallableAsync())],
     )
@@ -637,7 +611,7 @@ async def test_tool_call_context_visible_in_async_and_threaded_handlers(tmp_path
         return "sync"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[
             ToolSpec("async_ctx", "Async ctx", {"type": "object", "properties": {}}, async_ctx),
@@ -651,7 +625,7 @@ async def test_tool_call_context_visible_in_async_and_threaded_handlers(tmp_path
 
 async def test_run_sync_inside_running_loop_raises(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
 
@@ -672,7 +646,7 @@ async def test_async_context_manager_closes_owned_provider_once(tmp_path: Path) 
     model = ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))])
     model.provider = provider
 
-    async with Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, _owns_model=True) as harness:
+    async with Harness(HarnessConfig(root=tmp_path), model=model, _owns_model=True) as harness:
         assert (await harness.run("go")).text == "done"
 
     await harness.aclose()
@@ -682,7 +656,7 @@ async def test_injected_http_client_is_not_closed_by_harness(tmp_path: Path) -> 
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"id": "resp", "output_text": "done"})))
     provider = OpenAIProvider(api_key="key", http_client=client)
     model = OpenAIResponsesModel("gpt-test", provider=provider)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, _owns_model=True)
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, _owns_model=True)
 
     assert (await harness.run("go")).text == "done"
     await harness.aclose()
@@ -710,7 +684,7 @@ async def test_external_cancellation_records_run_end_and_allows_rerun(tmp_path: 
         ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"})),
     ])
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=model,
         hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
     )
@@ -734,7 +708,7 @@ async def test_after_tool_call_does_not_fire_on_external_tool_cancellation(tmp_p
         await asyncio.Event().wait()
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("wait", "Wait", {"type": "object", "properties": {}}, wait)],
         hooks=[Hook("after_tool_call", lambda ctx: after_calls.append(ctx.tool_name))],
@@ -772,7 +746,7 @@ def test_toolset_is_frozen_at_run_start(tmp_path: Path) -> None:
         return "registered"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[ToolSpec("register", "Register a tool mid-run", {"type": "object", "properties": {}}, register)],
     )
@@ -816,7 +790,7 @@ async def test_tool_added_mid_run_is_not_executable_in_current_run(tmp_path: Pat
         ModelTurn(text="done again", raw={"id": "five"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([first_run, second_run]),
         tools=[ToolSpec("register", "Register a tool mid-run", {"type": "object", "properties": {}}, register)],
     )
@@ -843,7 +817,7 @@ def test_run_usage_token_totals_accumulate_partial_usage(tmp_path: Path) -> None
         ),
         continue_turn=ModelTurn(text="done", raw={"id": "done"}, usage=TokenUsage(output_tokens=7, cached_tokens=2)),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[echo_tool()])
 
     result = harness.run_sync("go")
 

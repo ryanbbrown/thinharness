@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig, TracingOptions, create_otlp_tracing
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig, SubagentsPlugin, TracingOptions, create_otlp_tracing
 
 MODEL = os.getenv("E2E_LANGFUSE_TRACING_MODEL", "openrouter:anthropic/claude-haiku-4.5")
 SYSTEM_PROMPT = "You are a tracing validation parent. Do your own parent checks, then delegate child file work to the named subagent."
@@ -52,11 +52,13 @@ def main() -> None:
                     root=root,
                     model=MODEL,
                     system_prompt=SYSTEM_PROMPT,
-                    builtin_tools=["subagent"],
                     max_model_requests=40,
                     max_tool_calls=12,
                     local_trace_dir=trace_dir,
-                    subagents=[
+                ),
+                plugins=[
+                    FilesystemPlugin(tools=["list", "read", "write"]),
+                    SubagentsPlugin(agents=[
                         SubAgentConfig(
                             name="writer",
                             description="Creates and revises files for tracing validation.",
@@ -64,9 +66,8 @@ def main() -> None:
                             max_model_requests=20,
                             max_tool_calls=8,
                         )
-                    ],
-                ),
-                plugins=[FilesystemPlugin(tools=["list", "read", "write"])],
+                    ]),
+                ],
                 tracing=[TracingOptions(
                     tracer=tracing.tracer,
                     agent_name="langfuse-parent",

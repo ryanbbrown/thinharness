@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..tools.base import ToolOrigin
@@ -13,10 +13,62 @@ from .base import PluginBinding, PluginContext, PluginContribution
 _DEFAULT_TOOLS = ("read", "write", "edit", "search", "list", "glob")
 
 
-class FilesystemPlugin:
+@dataclass(frozen=True)
+class _FilesystemConfig:
+    selected: tuple[str, ...]
+    output_dir: str | Path | None
+    max_read_chars: int
+    max_read_bytes: int
+    max_tool_chars: int
+    max_search_line_chars: int
+    rg_timeout: int
+    search_exclude_globs: tuple[str, ...] | None
+    read_paths: tuple[str | Path, ...] | None
+    write_paths: tuple[str | Path, ...] | None
+
+
+class _FilesystemPluginMeta(type):
+    """Keep the filesystem plugin name fixed on the class hierarchy."""
+
+    def __setattr__(cls, attribute: str, value: object) -> None:
+        if attribute == "name":
+            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
+        super().__setattr__(attribute, value)
+
+    def __delattr__(cls, attribute: str) -> None:
+        if attribute == "name":
+            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
+        super().__delattr__(attribute)
+
+
+class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
     """Provide root-scoped filesystem tools to one harness."""
 
     name = "filesystem"
+    _config: _FilesystemConfig
+    _frozen: bool
+
+    def __init_subclass__(cls) -> None:
+        """Reject subclasses that replace the fixed plugin name."""
+        super().__init_subclass__()
+        if "name" in cls.__dict__:
+            raise TypeError("FilesystemPlugin subclasses cannot override the fixed name 'filesystem'")
+
+    def __setattr__(self, attribute: str, value: object) -> None:
+        """Reject configuration changes after construction."""
+        if attribute == "name":
+            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
+        if getattr(self, "_frozen", False):
+            raise AttributeError("FilesystemPlugin configuration is frozen")
+        object.__setattr__(self, attribute, value)
+
+    def __delattr__(self, attribute: str) -> None:
+        """Reject configuration deletion after construction."""
+        if attribute == "name":
+            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
+        if getattr(self, "_frozen", False):
+            raise AttributeError("FilesystemPlugin configuration is frozen")
+        object.__delattr__(self, attribute)
 
     def __init__(
         self,
@@ -37,41 +89,46 @@ class FilesystemPlugin:
         selected = tuple(_DEFAULT_TOOLS if tools is None else tools)
         if len(set(selected)) != len(selected):
             raise ValueError("FilesystemPlugin tools contains a duplicate name")
-        self._selected = selected
-        self._output_dir = output_dir
-        self._max_read_chars = max_read_chars
-        self._max_read_bytes = max_read_bytes
-        self._max_tool_chars = max_tool_chars
-        self._max_search_line_chars = max_search_line_chars
-        self._rg_timeout = rg_timeout
-        self._search_exclude_globs = list(search_exclude_globs) if search_exclude_globs is not None else None
-        self._read_paths = tuple(read_paths) if read_paths is not None else None
-        self._write_paths = tuple(write_paths) if write_paths is not None else None
+        object.__setattr__(self, "_config", _FilesystemConfig(
+            selected=selected,
+            output_dir=output_dir,
+            max_read_chars=max_read_chars,
+            max_read_bytes=max_read_bytes,
+            max_tool_chars=max_tool_chars,
+            max_search_line_chars=max_search_line_chars,
+            rg_timeout=rg_timeout,
+            search_exclude_globs=tuple(search_exclude_globs) if search_exclude_globs is not None else None,
+            read_paths=tuple(read_paths) if read_paths is not None else None,
+            write_paths=tuple(write_paths) if write_paths is not None else None,
+        ))
+        object.__setattr__(self, "_frozen", True)
+
+    def for_child(self) -> FilesystemPlugin:
+        """Reuse the frozen constructor configuration for a child binding."""
+        return self
 
     def bind(self, context: PluginContext) -> PluginBinding:
         """Build static tool specifications without filesystem I/O."""
+        config = self._config
         collection = FileTools(
             context.root,
-            output_dir=self._output_dir,
-            max_read_chars=self._max_read_chars,
-            max_read_bytes=self._max_read_bytes,
-            max_tool_chars=self._max_tool_chars,
-            max_search_line_chars=self._max_search_line_chars,
-            rg_timeout=self._rg_timeout,
-            search_exclude_globs=self._search_exclude_globs,
-            read_paths=self._read_paths,
-            write_paths=self._write_paths,
+            output_dir=config.output_dir,
+            max_read_chars=config.max_read_chars,
+            max_read_bytes=config.max_read_bytes,
+            max_tool_chars=config.max_tool_chars,
+            max_search_line_chars=config.max_search_line_chars,
+            rg_timeout=config.rg_timeout,
+            search_exclude_globs=list(config.search_exclude_globs) if config.search_exclude_globs is not None else None,
+            read_paths=config.read_paths,
+            write_paths=config.write_paths,
             _root_is_resolved=True,
         )
         by_name = {tool.name: tool for tool in collection.specs()}
-        unknown = [name for name in self._selected if name not in by_name]
+        unknown = [name for name in config.selected if name not in by_name]
         if unknown:
             available = ", ".join(by_name)
             raise ValueError(f"unknown FilesystemPlugin tool: {unknown[0]}; available: {available}")
-        specs = tuple(
-            replace(by_name[name], origin=ToolOrigin(plugin=self.name, source=name))
-            for name in self._selected
-        )
+        specs = tuple(replace(by_name[name], origin=ToolOrigin(plugin=self.name, source=name)) for name in config.selected)
         return PluginBinding(static=PluginContribution(
             tools=specs,
             instructions=(f"Workspace root: {context.root}",),

@@ -404,6 +404,20 @@ async def test_anthropic_provider_model_tool_loop() -> None:
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["input_schema"]["type"] == "object"
 
+async def test_anthropic_projects_only_supported_request_metadata() -> None:
+    provider = FakeAnthropicProvider()
+    session = AnthropicMessagesModel("claude-test", provider=provider).new_session()
+    constants = RequestConstants(
+        instructions="system",
+        tools=[],
+        metadata={"user_id": "user-1", "conversation_id": "conv-1", "parent_call_id": "call-1"},
+    )
+
+    await session.start("hi", constants)
+
+    assert provider.payloads[0]["metadata"] == {"user_id": "user-1"}
+
+
 async def test_anthropic_requests_opt_into_prompt_caching() -> None:
     provider = FakeAnthropicProvider()
     session = AnthropicMessagesModel("claude-test", provider=provider).new_session()
@@ -879,7 +893,7 @@ async def test_provider_retry_does_not_duplicate_tool_continuation_state(monkeyp
             "test-model",
             provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
         )
-        result = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model, tools=[echo_tool()]).run("go")
+        result = await Harness(HarnessConfig(root=tmp_path), model=model, tools=[echo_tool()]).run("go")
 
     assert result.text == "done"
     assert payloads[1] == payloads[2]

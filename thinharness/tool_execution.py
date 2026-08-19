@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .children import _ToolComposition
 from .events import (
     _CURRENT_STREAM_EMITTER,
     ToolCallCompletedEvent,
@@ -45,18 +46,21 @@ class ToolBatchExecutor:
         harness: Harness,
         run_context: RunContext,
         tool_map: dict[str, ToolSpec],
+        tool_composition: dict[str, _ToolComposition],
         run_tracer: RunTracer,
         tool_execution: str,
     ) -> None:
         self.harness = harness
         self.run_context = run_context
         self.tool_map = tool_map
+        self.tool_composition = tool_composition
         self.run_tracer = run_tracer
         self.tool_execution = tool_execution
         self.call_executor = ToolCallExecutor(
             harness=harness,
             run_context=run_context,
             tool_map=tool_map,
+            tool_composition=tool_composition,
             run_tracer=run_tracer,
         )
 
@@ -133,18 +137,27 @@ class ToolCallExecutor:
         harness: Harness,
         run_context: RunContext,
         tool_map: dict[str, ToolSpec],
+        tool_composition: dict[str, _ToolComposition],
         run_tracer: RunTracer,
     ) -> None:
         self.harness = harness
         self.run_context = run_context
         self.tool_map = tool_map
+        self.tool_composition = tool_composition
         self.run_tracer = run_tracer
 
     async def execute_one(self, call: ModelToolCall, index: int) -> ToolCallExecution:
         """Execute one model tool call with tracing."""
         with self.run_tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
+            composition = self.tool_composition.get(str(call.name))
+            if composition is not None and composition.delegation:
+                span.set_attribute("subagent.delegation", True)
             call_token = _CURRENT_TOOL_CALL.set({"call_id": call.id, "name": call.name})
-            runtime_token = _CURRENT_TOOL_RUNTIME.set({"run_metadata": dict(self.run_context.metadata)})
+            runtime_token = _CURRENT_TOOL_RUNTIME.set({
+                "run_metadata": dict(self.run_context.metadata),
+                "tool_map": self.tool_map,
+                "tool_composition": self.tool_composition,
+            })
             emitter_token = _CURRENT_STREAM_EMITTER.set(self.run_context.emitter)
             cancelled = False
             start = time.perf_counter()
@@ -195,7 +208,7 @@ class ToolCallExecutor:
                 self.harness.hooks.fire_after_tool_call(after)
                 output = after.output
                 envelope = after.envelope
-                self._annotate_special_tool(span, call.name, envelope)
+                self._annotate_special_tool(span, call.name, envelope, composition)
                 span.set_attribute_where(
                     lambda option: option.capture_tool_results,
                     "gen_ai.tool.call.result",
@@ -270,9 +283,15 @@ class ToolCallExecutor:
             return ToolResult(False, f"unknown tool {name}", {"tool": name})
         return await _invoke_tool(spec, arguments)
 
-    def _annotate_special_tool(self, span: _TraceSpan, name: str, envelope: ToolEnvelope) -> None:
-        """Add tool-family trace attributes for framework and MCP tools."""
-        if name == "subagent":
+    def _annotate_special_tool(
+        self,
+        span: _TraceSpan,
+        name: str,
+        envelope: ToolEnvelope,
+        composition: _ToolComposition | None,
+    ) -> None:
+        """Add tool-family trace attributes from authoritative and attribution provenance."""
+        if composition is not None and composition.delegation:
             span.set_attributes(
                 {
                     "subagent.name": envelope.metadata.get("agent"),
