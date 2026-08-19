@@ -58,8 +58,6 @@ from .providers import (
 )
 from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
 from .tools.base import ToolOrigin, ToolSpec
-from .tools.parallel_llm import create_parallel_llm_tool
-from .tools.skills import SkillRegistry
 from .tracing import (
     LocalTracing,
     RunTracer,
@@ -109,8 +107,6 @@ class HarnessConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    skills_dir: str | Path | list[str | Path] | None = None
-    selected_skills: list[str] | None = None
     builtin_tools: list[str] | None = None
     max_model_requests: int = 64
     max_tool_calls: int | None = None
@@ -118,8 +114,6 @@ class HarnessConfig(BaseModel):
     request_timeout: int = 120
     request_retries: int = Field(default=3, ge=0, le=10)
     request_retry_backoff: float = Field(default=1.0, ge=0, allow_inf_nan=False)
-    read_paths: list[str | Path] | None = None
-    write_paths: list[str | Path] | None = None
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, ge=1)
     effort: str | None = None
@@ -133,16 +127,27 @@ class HarnessConfig(BaseModel):
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
-    builtin_parallel_llm_model: str | None = None
-    builtin_parallel_llm_temperature: float | None = None
-    parallel_llm_max_prompts: int = Field(default=100, ge=1)
 
-    @model_validator(mode="after")
-    def validate_config(self) -> HarnessConfig:
-        """Validate cross-field configuration settings."""
-        if self.selected_skills is not None and self.skills_dir is None:
-            raise ValueError("selected_skills requires skills_dir")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_fields(cls, data: object) -> object:
+        """Fail loudly when callers use configuration moved to plugins."""
+        if not isinstance(data, dict):
+            return data
+        migrations = (
+            (("skills", "_dir"), "SkillsPlugin"),
+            (("selected", "_skills"), "SkillsPlugin"),
+            (("read", "_paths"), "ParallelLlmPlugin"),
+            (("write", "_paths"), "ParallelLlmPlugin"),
+            (("builtin", "_parallel", "_llm", "_model"), "ParallelLlmPlugin"),
+            (("builtin", "_parallel", "_llm", "_temperature"), "ParallelLlmPlugin"),
+            (("parallel", "_llm", "_max", "_prompts"), "ParallelLlmPlugin"),
+        )
+        for parts, plugin_name in migrations:
+            field_name = "".join(parts)
+            if field_name in data:
+                raise ValueError(f"HarnessConfig.{field_name} has been removed; use {plugin_name}")
+        return data
 
 
 class Harness:
@@ -156,7 +161,6 @@ class Harness:
         plugins: list[Plugin] | None = None,
         tools: list[ToolSpec] | None = None,
         tracing: list[TracingOptions] | None = None,
-        skills: SkillRegistry | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
         subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
         _owns_model: bool | None = None,
@@ -164,8 +168,6 @@ class Harness:
     ) -> None:
         self.config = config or HarnessConfig()
         self._is_child_run = _is_child_run
-        if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
-            raise ValueError("skills cannot be combined with skills_dir or selected_skills")
         self.root = Path(self.config.root).expanduser().resolve()
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
         self.model = model or infer_model(
@@ -182,7 +184,6 @@ class Harness:
         )
         self._owns_model = _owns_model if _owns_model is not None else model is None
         self.model_capabilities = model_capabilities(self.model)
-        self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         output_schema = resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
         self.output_schema = output_schema
 
@@ -193,7 +194,7 @@ class Harness:
         duplicate_plugin = next((name for index, name in enumerate(plugin_names) if name in plugin_names[:index]), None)
         if duplicate_plugin is not None:
             raise ValueError(f"duplicate plugin name: {duplicate_plugin}")
-        bindings = tuple(plugin.bind(PluginContext(root=self.root)) for plugin in configured_plugins)
+        bindings = tuple(plugin.bind(PluginContext(root=self.root, model=self.model)) for plugin in configured_plugins)
         for plugin, binding in zip(configured_plugins, bindings, strict=True):
             if not isinstance(binding, PluginBinding):
                 raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
@@ -206,11 +207,7 @@ class Harness:
             static_instructions.extend(contribution.instructions)
             static_hooks.extend(contribution.hooks)
 
-        builtin_candidates = [
-            *self.skills.specs(),
-            create_subagent_tool(self, self.config.subagents),
-            create_parallel_llm_tool(self),
-        ]
+        builtin_candidates = [create_subagent_tool(self, self.config.subagents)]
         builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
         configured_tools = [*static_tools, *builtin, *(tools or [])]
         self._validate_tool_list(
@@ -224,7 +221,6 @@ class Harness:
         strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
         hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
         self._validate_hook_registry(hook_registry, self.config.subagents)
-        self._validate_skill_tool_selection_for(self.skills, configured_tools)
 
         self.plugins = configured_plugins
         self._plugin_bindings = bindings
@@ -241,7 +237,6 @@ class Harness:
         self._connect_lock = asyncio.Lock()
         self._connect_task: asyncio.Task[None] | None = None
         self._connect_waiters = 0
-        self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
         if _local_tracing_enabled(self.config.local_tracing) and not _is_child_run:
@@ -696,10 +691,6 @@ class Harness:
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
         parts = [self.config.system_prompt, *self._plugin_instructions]
-        if self._skills_enabled:
-            skill_summary = self.skills.prompt_summary()
-            if skill_summary:
-                parts.append(skill_summary)
         tool_instructions = []
         for tool in self.tools:
             if tool.instructions is None:
@@ -782,15 +773,6 @@ class Harness:
         if tool.requires_approval and is_child_run:
             raise ValueError("approval-required tools are not supported inside subagents")
 
-    @staticmethod
-    def _validate_skill_tool_selection_for(skills: SkillRegistry, tools: list[ToolSpec]) -> None:
-        """Require explicit skill tool selection for explicit skills and tool state."""
-        if not skills.skills:
-            return
-        tool_names = {tool.name for tool in tools}
-        if not tool_names.intersection({"skill_read", "skill_run"}):
-            raise ValueError("configured skills require exposing skill_read or skill_run")
-
     def _validate_hook_filters(self) -> None:
         """Validate hook filters against registered subagents."""
         self._validate_hook_registry(self.hooks, self.config.subagents)
@@ -861,7 +843,6 @@ class Harness:
             )
             candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
             self._validate_hook_registry(candidate_hooks, self.config.subagents)
-            self._validate_skill_tool_selection_for(self.skills, candidate_tools)
 
             if self._closed:
                 raise HarnessError("harness is closed")
@@ -870,7 +851,6 @@ class Harness:
             self._tool_map = {tool.name: tool for tool in candidate_tools}
             self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
             self.hooks = candidate_hooks
-            self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
             self._plugin_stack = plugin_stack
             self._connected = True
         except BaseException as exc:
@@ -882,7 +862,6 @@ class Harness:
             self._tool_map = {tool.name: tool for tool in self.tools}
             self._plugin_instructions = list(self._base_instructions)
             self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
-            self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
             if cleanup_error is not None:
                 exc.add_note(f"cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
             raise
@@ -950,6 +929,10 @@ class Harness:
                 filesystem_names = {"read", "write", "edit", "search", "list", "glob", "jsonl_search"}
                 if name in filesystem_names:
                     raise ValueError(f"unknown builtin tool: {name}; use FilesystemPlugin(tools=[{name!r}])")
+                if name in {"skill_read", "skill_run"}:
+                    raise ValueError(f"unknown builtin tool: {name}; use SkillsPlugin(tools=[{name!r}])")
+                if name == "parallel_llm":
+                    raise ValueError("unknown builtin tool: parallel_llm; use ParallelLlmPlugin()")
                 available = ", ".join(sorted(by_name)) or "none"
                 raise ValueError(f"unknown builtin tool: {name}; available: {available}")
             selected.append(by_name[name])

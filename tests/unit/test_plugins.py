@@ -38,9 +38,11 @@ class StaticPlugin:
         self.name = name
         self.contribution = contribution or PluginContribution()
         self.bindings = 0
+        self.contexts: list[PluginContext] = []
 
     def bind(self, context: PluginContext) -> PluginBinding:
         self.bindings += 1
+        self.contexts.append(context)
         return PluginBinding(static=self.contribution)
 
 
@@ -58,8 +60,11 @@ class ConnectedPlugin:
         self.contribution = contribution
         self.fail_first = fail_first
         self.attempts = 0
+        self.contexts: list[PluginContext] = []
 
     def bind(self, context: PluginContext) -> PluginBinding:
+        self.contexts.append(context)
+
         @asynccontextmanager
         async def connect():
             self.attempts += 1
@@ -179,6 +184,9 @@ async def test_plugins_connect_before_first_run_hook_and_close_in_reverse(tmp_pa
     )
 
     assert "dynamic" not in [tool.name for tool in harness.tools]
+    assert first.contexts[0].root == tmp_path.resolve()
+    assert first.contexts[0].model is harness.model
+    assert second.contexts[0].model is harness.model
     assert (await harness.run("go")).text == "done"
     assert events == ["enter:first", "enter:second", "hook:direct", "hook:connected"]
     assert "dynamic" in [tool.name for tool in harness.tools]
@@ -286,12 +294,16 @@ def test_caller_hook_registry_is_copied(tmp_path: Path) -> None:
     assert harness.hooks.strict_hooks is True
 
 
-def test_one_plugin_object_binds_independently_to_two_harnesses(tmp_path: Path) -> None:
+def test_one_plugin_object_receives_each_harness_root_and_model(tmp_path: Path) -> None:
     plugin = StaticPlugin("shared", PluginContribution(tools=(_tool("shared_tool"),)))
-    first = Harness(HarnessConfig(root=tmp_path / "one"), model=ScriptedModel([]), plugins=[plugin])
-    second = Harness(HarnessConfig(root=tmp_path / "two"), model=ScriptedModel([]), plugins=[plugin])
+    first_model = ScriptedModel([])
+    second_model = ScriptedModel([])
+    first = Harness(HarnessConfig(root=tmp_path / "one"), model=first_model, plugins=[plugin])
+    second = Harness(HarnessConfig(root=tmp_path / "two"), model=second_model, plugins=[plugin])
 
     assert plugin.bindings == 2
+    assert [context.root for context in plugin.contexts] == [(tmp_path / "one").resolve(), (tmp_path / "two").resolve()]
+    assert [context.model for context in plugin.contexts] == [first_model, second_model]
     assert first.tools[0] is not second.tools[0]
 
 
@@ -305,7 +317,9 @@ def test_filesystem_bind_performs_no_metadata_io(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(Path, "exists", fail)
     monkeypatch.setattr(Path, "is_file", fail)
 
-    binding = FilesystemPlugin(read_paths=["future"], write_paths=["outputs"]).bind(PluginContext(root=root))
+    binding = FilesystemPlugin(read_paths=["future"], write_paths=["outputs"]).bind(
+        PluginContext(root=root, model=ScriptedModel([]))
+    )
 
     assert [tool.name for tool in binding.static.tools] == ["read", "write", "edit", "search", "list", "glob"]
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..types import Json
 
-ToolKind = Literal["user", "subagent", "parallel_llm"]
+ToolKind = Literal["user", "subagent"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
 
@@ -49,7 +49,7 @@ class ToolSpec:
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
-        if self.kind not in {"user", "subagent", "parallel_llm"}:
+        if self.kind not in {"user", "subagent"}:
             raise ValueError(f"unknown tool kind: {self.kind}")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")

@@ -12,6 +12,7 @@ from ..tools.base import ToolOrigin
 
 if TYPE_CHECKING:
     from ..hooks import Hook
+    from ..providers import Model
     from ..tools.base import ToolSpec
 
 
@@ -20,6 +21,7 @@ class PluginContext:
     """Stable core context available while binding one plugin."""
 
     root: Path
+    model: Model
 
 
 @dataclass(frozen=True)

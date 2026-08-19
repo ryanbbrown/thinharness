@@ -37,7 +37,17 @@ from .hooks import (
     UserPromptSubmitContext,
 )
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
-from .plugins import FilesystemPlugin, MCPPlugin, Plugin, PluginBinding, PluginConnector, PluginContext, PluginContribution
+from .plugins import (
+    FilesystemPlugin,
+    MCPPlugin,
+    ParallelLlmPlugin,
+    Plugin,
+    PluginBinding,
+    PluginConnector,
+    PluginContext,
+    PluginContribution,
+    SkillsPlugin,
+)
 from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
@@ -86,7 +96,6 @@ from .tools import (
     ToolSpec,
     call_tool,
     contained_path,
-    create_parallel_llm_tool,
 )
 from .tracing import LocalTracing, OtlpTracing, TracingOptions, create_local_tracing, create_local_tracing_options, create_otlp_tracing
 from .types import ApprovalDecision, HarnessError, HarnessResult, PendingApproval, RunUsage, UnexpectedModelBehavior
@@ -131,6 +140,8 @@ __all__ = [
     "UnexpectedModelBehavior",
     "MCPDependencyError",
     "MCPPlugin",
+    "ParallelLlmPlugin",
+    "SkillsPlugin",
     "MCPError",
     "MCPServer",
     "MCPServerSSE",
@@ -195,7 +206,6 @@ __all__ = [
     "build_child_harness",
     "call_tool",
     "contained_path",
-    "create_parallel_llm_tool",
     "create_local_tracing",
     "create_local_tracing_options",
     "create_subagent_tool",

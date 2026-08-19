@@ -15,3 +15,24 @@ def test_core_has_no_mcp_imports_or_lifecycle_state() -> None:
     assert not any(module.endswith(("tools.mcp", "plugins.mcp")) for module in imported_modules)
     for forbidden in ("MCPServer", "mcp_servers", "_mcp_", "_open_mcp_tools"):
         assert forbidden not in source
+
+
+def test_core_has_no_skills_or_parallel_llm_implementation_details() -> None:
+    """Core stays independent from skills and parallel LLM composition."""
+    core_path = Path(__file__).resolve().parents[2] / "thinharness" / "core.py"
+    source = core_path.read_text(encoding="utf-8")
+
+    forbidden = (
+        "tools.skills",
+        "SkillRegistry",
+        "skills_dir",
+        "selected_skills",
+        "_skills_enabled",
+        "prompt_summary",
+        "tools.parallel_llm",
+        "create_parallel_llm_tool",
+        "builtin_parallel_llm",
+        "parallel_llm_max_prompts",
+    )
+    for token in forbidden:
+        assert token not in source

@@ -25,7 +25,6 @@ from ..turns import OutputTurnDecision, resolve_turn_output
 from .base import Json, PathPolicy, PathValidationError, StrictArgs, ToolResult, ToolSpec, coerce_args
 
 if TYPE_CHECKING:
-    from ..core import Harness
     from ..providers import Model
 
 
@@ -99,6 +98,7 @@ class ParallelLlmTool:
         output_type: OutputSpec | None = None,
         output_mode: OutputMode = "auto",
         output_retries: int = 1,
+        _root_is_resolved: bool = False,
     ) -> None:
         from ..providers import _validate_retry_settings
 
@@ -106,7 +106,8 @@ class ParallelLlmTool:
         self.name = name
         self.description = description
         self.instructions = instructions
-        self.root = Path(root).expanduser().resolve()
+        root_path = Path(root).expanduser()
+        self.root = root_path if _root_is_resolved else root_path.resolve()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
         if max_prompts < 1:
@@ -149,7 +150,6 @@ class ParallelLlmTool:
             ParallelLlmArgs,
             handler,
             instructions=self.instructions,
-            kind="parallel_llm",
         )
 
     async def run(self, args: ParallelLlmArgs) -> ToolResult:
@@ -259,40 +259,6 @@ class ParallelLlmTool:
             extra_body=self.extra_body,
         ), True
 
-
-def create_parallel_llm_tool(parent: Harness) -> ToolSpec:
-    """Create the built-in parallel LLM tool from a parent harness."""
-    from ..providers import same_provider_model_ref
-
-    model: Model | str = parent.config.builtin_parallel_llm_model or parent.model
-    model_ref = parent.config.builtin_parallel_llm_model or parent.model_ref
-    api_key = parent.config.api_key
-    base_url = parent.config.base_url
-    if parent.config.builtin_parallel_llm_model is not None:
-        if not same_provider_model_ref(parent.model, parent.config.builtin_parallel_llm_model):
-            api_key = None
-            base_url = None
-    return ParallelLlmTool(
-        model=model,
-        model_ref=model_ref,
-        root=parent.root,
-        description=_defaults.DEFAULT_PARALLEL_LLM_DESCRIPTION,
-        read_paths=parent.config.read_paths,
-        write_paths=parent.config.write_paths,
-        max_prompts=parent.config.parallel_llm_max_prompts,
-        instructions=_defaults.DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
-        api_key=api_key,
-        base_url=base_url,
-        request_timeout=parent.config.request_timeout,
-        request_retries=parent.config.request_retries,
-        request_retry_backoff=parent.config.request_retry_backoff,
-        temperature=parent.config.builtin_parallel_llm_temperature
-        if parent.config.builtin_parallel_llm_temperature is not None
-        else parent.config.temperature,
-        max_tokens=parent.config.max_tokens,
-        effort=parent.config.effort,
-        extra_body=parent.config.extra_body,
-    ).spec()
 
 
 def _load_prompts(args: ParallelLlmArgs, read_policy: PathPolicy) -> list[str]:

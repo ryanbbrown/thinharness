@@ -32,7 +32,9 @@ from thinharness import (
     OpenAIProvider,
     OpenAIResponsesModel,
     OpenRouterModel,
+    ParallelLlmPlugin,
     RequestConstants,
+    SkillsPlugin,
     SubAgentConfig,
     TokenUsage,
     ToolSpec,
@@ -317,9 +319,9 @@ def test_specialized_filesystem_tools_are_explicit_opt_ins(tmp_path: Path) -> No
 
 def test_enabled_tool_instructions_are_appended_after_base_instructions(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=["parallel_llm"], system_prompt="Caller instructions."),
+        HarnessConfig(root=tmp_path, system_prompt="Caller instructions."),
         model=ScriptedModel([]),
-        plugins=[FilesystemPlugin(tools=[])],
+        plugins=[FilesystemPlugin(tools=[]), ParallelLlmPlugin()],
     )
 
     instructions = harness.system_instructions()
@@ -342,12 +344,9 @@ def test_tool_instructions_follow_skill_summary(tmp_path: Path) -> None:
     demo.mkdir(parents=True)
     (demo / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo", encoding="utf-8")
     harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            skills_dir=tmp_path / "skills",
-            builtin_tools=["skill_read", "parallel_llm"],
-        ),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
+        plugins=[SkillsPlugin(tmp_path / "skills", tools=["skill_read"]), ParallelLlmPlugin()],
     )
 
     instructions = harness.system_instructions()
@@ -395,18 +394,19 @@ def test_tool_instructions_do_not_change_tool_schema(tmp_path: Path) -> None:
     }
     assert "Use echo_json only when echoing JSON." in harness.system_instructions()
 
-def test_skill_dirs_require_selected_skill_tools(tmp_path: Path) -> None:
+def test_skills_plugin_requires_explicit_selected_tools(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\n---\nDemo", encoding="utf-8")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["skill_read"]),
+        HarnessConfig(root=tmp_path),
         model=_fake_openai(FakeClient()),
+        plugins=[SkillsPlugin(tmp_path / "skills", tools=["skill_read"])],
     )
     assert "skill_read" in [tool["name"] for tool in harness.tool_schemas()]
-    with pytest.raises(ValueError, match="skill_read or skill_run"):
-        Harness(HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=[]), model=_fake_openai(FakeClient()))
+    with pytest.raises(ValueError, match="must not be empty"):
+        SkillsPlugin(tmp_path / "skills", tools=[])
 
 def test_skills_are_not_discovered_without_explicit_skills_dir(tmp_path: Path) -> None:
     skill = tmp_path / ".agents" / "skills" / "demo"
@@ -427,23 +427,52 @@ def test_selected_skills_are_exposed_when_skill_tool_is_selected(tmp_path: Path)
     (other / "SKILL.md").write_text("---\nname: other\ndescription: Other skill\n---\nOther", encoding="utf-8")
 
     harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            skills_dir=tmp_path / "skills",
-            selected_skills=["demo"],
-            builtin_tools=["skill_read"],
-        ),
+        HarnessConfig(root=tmp_path),
         model=_fake_openai(FakeClient()),
-        plugins=[FilesystemPlugin(tools=["read"])],
+        plugins=[
+            FilesystemPlugin(tools=["read"]),
+            SkillsPlugin(tmp_path / "skills", selected_skills=["demo"], tools=["skill_read"]),
+        ],
     )
 
     assert [tool["name"] for tool in harness.tool_schemas()] == ["read", "skill_read"]
     assert "demo - Demo skill" in harness.system_instructions()
     assert "other - Other skill" not in harness.system_instructions()
 
-def test_selected_skills_without_skills_dir_fails() -> None:
-    with pytest.raises(ValueError, match="selected_skills requires skills_dir"):
-        HarnessConfig(selected_skills=["demo"])
+@pytest.mark.parametrize(
+    ("field", "plugin"),
+    [
+        ("skills_dir", "SkillsPlugin"),
+        ("selected_skills", "SkillsPlugin"),
+        ("read_paths", "ParallelLlmPlugin"),
+        ("write_paths", "ParallelLlmPlugin"),
+        ("builtin_parallel_llm_model", "ParallelLlmPlugin"),
+        ("builtin_parallel_llm_temperature", "ParallelLlmPlugin"),
+        ("parallel_llm_max_prompts", "ParallelLlmPlugin"),
+    ],
+)
+def test_removed_harness_config_fields_fail_loudly(field: str, plugin: str) -> None:
+    with pytest.raises(ValueError, match=rf"HarnessConfig\.{field}.*{plugin}"):
+        HarnessConfig(**{field: "removed"})
+
+
+def test_removed_harness_skills_argument_fails_loudly() -> None:
+    with pytest.raises(TypeError, match="skills"):
+        Harness(HarnessConfig(), skills=object())
+
+
+@pytest.mark.parametrize(
+    ("name", "plugin"),
+    [("skill_read", "SkillsPlugin"), ("skill_run", "SkillsPlugin"), ("parallel_llm", "ParallelLlmPlugin")],
+)
+def test_removed_builtin_tool_names_point_to_plugins(name: str, plugin: str) -> None:
+    with pytest.raises(ValueError, match=plugin):
+        Harness(HarnessConfig(builtin_tools=[name]), model=ScriptedModel([]))
+
+
+def test_unknown_builtin_tool_keeps_normal_error() -> None:
+    with pytest.raises(ValueError, match=r"unknown builtin tool: unknown; available: subagent"):
+        Harness(HarnessConfig(builtin_tools=["unknown"]), model=ScriptedModel([]))
 
 def test_child_harness_tool_surfaces_follow_subagent_policy(tmp_path: Path) -> None:
     parent_echo = echo_tool()

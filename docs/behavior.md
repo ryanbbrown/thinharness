@@ -90,12 +90,12 @@ Callers compose optional harness behavior explicitly while independent custom to
 
 - PLUGIN-1: `Harness` accepts plugins in caller order through `plugins=`; no plugin is loaded through entry points, directories, manifests, or implicit defaults.
 - PLUGIN-2: Plugin names are non-empty and unique within one harness. A duplicate name fails before either plugin binds.
-- PLUGIN-3: Plugin binding is synchronous and performs no file or network I/O. Static tools, instructions, and hooks are validated and visible immediately after harness construction.
+- PLUGIN-3: `PluginContext` contains the canonical harness root and configured model. Plugin binding is synchronous and performs no file or network I/O. Static tools, instructions, and hooks are validated and visible immediately after harness construction.
 - PLUGIN-4: `Harness.connect()` or the first run opens connected plugin bindings once in caller order. Concurrent connection calls share that attempt, and connection completes before `run_start` hooks fire.
 - PLUGIN-5: Dynamic tools, instructions, and hooks are staged and receive the same complete validation as static contributions. ThinHarness commits the full dynamic set only after every binding opens successfully.
 - PLUGIN-6: A connection failure, including cancellation, closes entered bindings in reverse order, installs no dynamic contribution, and leaves connection retryable. `run_start` and `run_end` do not fire for an attempt that fails during connection.
 - PLUGIN-7: Closing a harness closes plugin bindings in reverse order before closing a model owned by the harness. Repeated close calls have no effect.
-- PLUGIN-8: Contribution order is plugin static contributions, direct `tools=` and `hooks=`, then plugin dynamic contributions. System instructions are the configured system prompt, plugin instructions, the transitional skill summary, and per-tool instructions; structured-output instructions are added through the existing output path.
+- PLUGIN-8: Contribution order is plugin static contributions, direct `tools=` and `hooks=`, then plugin dynamic contributions. System instructions are the configured system prompt, plugin instructions in caller plugin order, and all per-tool instructions; structured-output instructions are added through the existing output path. A skill summary is an ordinary plugin instruction at the `SkillsPlugin` position.
 - PLUGIN-9: ThinHarness copies caller-supplied hook registries before adding plugin hooks. Plugin composition never mutates a caller-owned registry.
 - PLUGIN-10: Plugins are trusted in-process code. ThinHarness does not isolate them or resolve dependencies between them.
 
@@ -111,8 +111,40 @@ Callers opt into root-scoped workspace tools without making filesystem behavior 
 - FILESYSTEM-PLUGIN-2: `jsonl_search` is an opt-in tool of `FilesystemPlugin` and shares its root, read policy, search process, truncation, and spill-output handling.
 - FILESYSTEM-PLUGIN-3: `HarnessConfig.root` is the one run root. `FilesystemPlugin` uses that root and cannot configure a different root.
 - FILESYSTEM-PLUGIN-4: Harness construction and plugin binding do not create the workspace root. A harness without `FilesystemPlugin` has a generic default prompt, adds no workspace-root instruction, and has no workspace filesystem side effect. Observability sinks keep their independent configured storage behavior.
-- FILESYSTEM-PLUGIN-5: Filesystem limits, output location, search settings, and path policies belong to `FilesystemPlugin`. `HarnessConfig.read_paths` and `write_paths` remain temporarily as parallel-LLM policy and do not configure filesystem plugin tools.
+- FILESYSTEM-PLUGIN-5: Filesystem limits, output location, search settings, and path policies belong to `FilesystemPlugin`.
 - FILESYSTEM-PLUGIN-6: Independent custom tools continue to use `tools=[ToolSpec(...)]`; callers do not need to wrap one tool in a plugin.
+
+## Skills Plugin
+
+### Purpose
+
+Callers explicitly compose a fixed skill catalog and select which skill operations a harness can use.
+
+### Requirements
+
+- SKILLS-PLUGIN-1: A harness accepts at most one runtime-fixed `SkillsPlugin` named `"skills"`. The plugin requires one or more ordered skill directories and an explicit non-empty ordered selection of `skill_read`, `skill_run`, or both.
+- SKILLS-PLUGIN-2: The plugin discovers and validates its catalog during construction. Its selected tools and summary are static and visible immediately after harness construction, and binding performs no I/O.
+- SKILLS-PLUGIN-3: Relative skill directories resolve from the process working directory, not from `HarnessConfig.root`. Reusing one plugin object across harnesses reuses the same registry and catalog.
+- SKILLS-PLUGIN-4: Catalog names, paths, metadata, selection, and summary are frozen at plugin construction. Existing skill content, file trees, and scripts remain live and are read or executed when a tool is invoked. A new plugin is required to discover added or removed skills.
+- SKILLS-PLUGIN-5: A non-empty catalog contributes selected tools in caller order and one compact summary. The summary mentions `skill_read` only when that tool is selected. A catalog with no skills contributes no tools or summary.
+- SKILLS-PLUGIN-6: `skill_read` preserves live content, tree, containment, and truncation behavior and is parallel-safe. `skill_run` preserves runner, working-directory, merged-output, timeout, metadata, and containment behavior and runs sequentially.
+- SKILLS-PLUGIN-7: An explicitly configured named child uses its own `SkillsPlugin`. A default child or a child that inherits parent tools rebinds the exact parent plugin, sharing its registry, catalog, tool order, and one summary without another discovery pass.
+
+## Parallel LLM Plugin
+
+### Purpose
+
+Callers explicitly compose a stateless parallel batch tool and choose whether it borrows a model or owns per-call provider construction.
+
+### Requirements
+
+- PARALLEL-LLM-PLUGIN-1: A harness accepts at most one runtime-fixed `ParallelLlmPlugin` named `"parallel_llm"`. It contributes one text-only `parallel_llm` tool with no model-visible model override.
+- PARALLEL-LLM-PLUGIN-2: With no model argument, the plugin borrows the configured harness model. With a model object, it borrows that caller-owned object. The plugin does not close either borrowed model.
+- PARALLEL-LLM-PLUGIN-3: A string model uses plugin-owned provider and request settings, creates a provider for each batch invocation, and closes it after success, schema-resolution failure, request failure, or cancellation. Provider and request settings are rejected for borrowed models.
+- PARALLEL-LLM-PLUGIN-4: The plugin uses the canonical harness root. Read and write policies are root-scoped, outputs are atomic JSON files, prompt count and concurrency are bounded, and ordered sparse results report batch-local request, total, success, and failure counts.
+- PARALLEL-LLM-PLUGIN-5: Batch prompts use independent fresh sessions and receive no parent system prompt, tools, memory, or continuation. Batch requests and tokens are outside parent `RunUsage` and `max_model_requests`; the parent counts one batch invocation toward `max_tool_calls`.
+- PARALLEL-LLM-PLUGIN-6: Provider transport retries remain inside one logical batch request. Cancellation propagates and closes plugin-owned string-model providers.
+- PARALLEL-LLM-PLUGIN-7: Callers that need a renamed tool or structured batch output use `ParallelLlmTool(...).spec()` directly. Direct specifications have the ordinary `"user"` tool kind.
 
 ## Run Toolset Freeze
 
@@ -176,7 +208,7 @@ Built-in provider requests recover from transient HTTP failures without repeatin
 - PROVIDER-RETRY-3: Retry delay uses `request_retry_backoff * 2**retry_index` plus up to 25 percent positive jitter. A valid numeric or HTTP-date `Retry-After` can increase that delay, and every delay is capped at 60 seconds.
 - PROVIDER-RETRY-4: Cancellation during a request or delay propagates immediately. Exhaustion raises the final attempt's `ProviderError`, preserving provider-error run classification.
 - PROVIDER-RETRY-5: Transport attempts stay inside one logical model request. They do not increase model request limits, usage counts, stream event counts, trace span counts, parallel completion request counts, or provider session history.
-- PROVIDER-RETRY-6: Named subagent override models and inferred parallel completion models inherit the parent request retry settings. The parallel LLM tool has no separate provider retry loop or attempt budget.
+- PROVIDER-RETRY-6: Named subagent override models inherit the parent request retry settings. A `ParallelLlmPlugin` with a string model uses its own request retry settings, while a plugin that borrows the harness model uses that model's configured transport retries. The parallel LLM tool has no separate provider retry loop or attempt budget.
 - PROVIDER-RETRY-7: Retries use at-least-once HTTP delivery. A transport failure after provider acceptance can cause duplicate provider work or charges because built-in providers do not share a portable idempotency-key contract.
 - PROVIDER-RETRY-8: A custom `http_client` can apply its own retry policy below the provider retry loop. Callers set `request_retries=0` when the custom client owns retries to avoid multiplying attempt budgets.
 

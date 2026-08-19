@@ -67,11 +67,12 @@ class SkillRegistry:
         """Return a copy of the discovered skills map."""
         return dict(self._skills)
 
-    def prompt_summary(self) -> str:
+    def prompt_summary(self, *, include_read_hint: bool = True) -> str:
         """Return a compact skill list for the system prompt."""
         if not self._skills:
             return ""
-        lines = ["Available skills (call skill_read before using details):"]
+        heading = "Available skills (call skill_read before using details):" if include_read_hint else "Available skills:"
+        lines = [heading]
         for skill in self._skills.values():
             desc = f" - {skill.description}" if skill.description else ""
             lines.append(f"- {skill.name}{desc}")

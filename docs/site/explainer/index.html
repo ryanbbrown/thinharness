@@ -164,7 +164,13 @@
 |   |-- hooks.py                     hook dataclasses, registry, context variables
 |   |-- subagents.py                 subagent tool and child harness construction
 |   |-- tracing.py                   OTel-compatible spans and local JSONL tracing
-|   |-- defaults.py                  default filesystem-agent system prompt
+|   |-- defaults.py                  default system and tool instructions
+|   |-- plugins/
+|   |   |-- base.py                  plugin context, binding, contribution contracts
+|   |   |-- filesystem.py            FilesystemPlugin composition and root policy
+|   |   |-- skills.py                SkillsPlugin catalog and tool selection
+|   |   |-- parallel_llm.py           ParallelLlmPlugin model and path composition
+|   |   `-- mcp.py                   MCPPlugin connection and discovery lifecycle
 |   `-- tools/
 |       |-- __init__.py              tool package exports
 |       |-- base.py                  ToolSpec, ToolResult, path policy, invocation
@@ -190,9 +196,9 @@
           <table>
             <thead><tr><th>Name</th><th>Meaning</th><th>Relationship</th></tr></thead>
             <tbody>
-              <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, tool selection, limits, output mode, tracing, MCP, subagents, path policies.</td><td>Configures a <code>Harness</code>.</td></tr>
-              <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns tool maps, model object, hooks, skill registry, MCP server list, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
-              <tr><td><code>RequestConstants</code></td><td>Frozen per-run request constants: instructions, tool schemas, metadata, and the structured-output request. Built once after run-start hooks and MCP connection, so the toolset is frozen for the run.</td><td>Passed to every <code>ModelSession</code> request by the turn machine in <code>turns.py</code>.</td></tr>
+              <tr><td><code>HarnessConfig</code></td><td>Pydantic setup model: root, model ref, deferred subagent selection, limits, output mode, tracing, and subagents.</td><td>Configures a <code>Harness</code>.</td></tr>
+              <tr><td><code>Harness</code></td><td>Long-lived configured runner. It owns the model object, resolved tool map, plugin bindings, hooks, and tracing configuration.</td><td>Creates a fresh <code>RunContext</code> for each run.</td></tr>
+              <tr><td><code>RequestConstants</code></td><td>Frozen per-run request constants: instructions, tool schemas, metadata, and the structured-output request. Built once after run-start hooks and plugin connection, so the toolset is frozen for the run.</td><td>Passed to every <code>ModelSession</code> request by the turn machine in <code>turns.py</code>.</td></tr>
               <tr><td><code>RunContext</code></td><td>Internal state for one <code>Harness.run(...)</code>: responses, tool records, usage, retry/notice state, terminal error, stop reason, tracing span, and final result.</td><td>References the reusable <code>Harness</code>, but is not stored on it after the run.</td></tr>
               <tr><td><code>HarnessResult</code></td><td>Final run result: final text, parsed structured output, raw provider responses, tool call records, usage, stop reason, and resume state.</td><td>Receives finalized state from <code>RunContext</code>.</td></tr>
               <tr><td><code>RunUsage</code></td><td>Counts model requests, tool calls, cancelled tool calls, output retries, per-tool retry counts, and run token totals (<code>input_tokens</code>/<code>output_tokens</code>).</td><td>Per-run counter owned by <code>RunContext</code> and returned in <code>HarnessResult</code>.</td></tr>
@@ -259,9 +265,9 @@
         <div class="plain-panel">
           <h3>Plugin composition</h3>
           <p>
-            ThinHarness has no implicit filesystem tools. <code>plugins=[FilesystemPlugin(...)]</code> contributes an ordered
-            filesystem tool set, workspace instructions, and plugin origin data. <code>builtin_tools</code> remains temporarily
-            for <code>skill_read</code>, <code>skill_run</code>, <code>subagent</code>, and <code>parallel_llm</code>.
+            ThinHarness composes filesystem, skills, MCP, and parallel LLM behavior through explicit plugins. Plugins receive
+            the canonical root and configured model, and contribute ordered tools, instructions, hooks, or connected state.
+            <code>builtin_tools</code> remains temporarily only for <code>subagent</code>.
           </p>
         </div>
       </div>
@@ -280,10 +286,16 @@
               <td>The default set is <code>read</code>, <code>write</code>, <code>edit</code>, <code>search</code>, <code>list</code>, <code>glob</code>; <code>jsonl_search</code> is opt-in. Mutating tools are sequential.</td>
             </tr>
             <tr>
-              <td>Framework-provided</td>
-              <td>Varies: skills, subagents, MCP adapters, JSONL search, and <code>ParallelLlmTool</code></td>
-              <td>Built-in candidates, configured extras, or discovered MCP tools are converted into <code>ToolSpec</code> objects and added to the same runtime tool map.</td>
-              <td>Optional surfaces still use normal tool execution. The <a href="#extras">Extras</a> section covers feature-specific ownership and constraints.</td>
+              <td>Plugin-provided</td>
+              <td><code>SkillsPlugin</code>, <code>ParallelLlmPlugin</code>, and <code>MCPPlugin</code></td>
+              <td>Explicit plugin contributions are normalized into the same <code>ToolSpec</code> map with plugin origin attribution.</td>
+              <td>Skills and parallel LLM contribute static tools; MCP connects lazily and contributes one discovered snapshot.</td>
+            </tr>
+            <tr>
+              <td>Deferred built-in</td>
+              <td>Subagent composition</td>
+              <td><code>builtin_tools=["subagent"]</code> selects the remaining core candidate.</td>
+              <td>Child composition stays in <code>subagents.py</code> until its plugin migration.</td>
             </tr>
             <tr>
               <td>Custom</td>
@@ -441,8 +453,8 @@
           </tr>
           <tr>
             <td>Skills</td>
-            <td><code>skills_dir</code> discovers available skills, but the model only gets skill tools when <code>builtin_tools</code> includes <code>skill_read</code> or <code>skill_run</code>.</td>
-            <td>Skills add prompt summaries plus <code>skill_read</code> and <code>skill_run</code>; they do not create one tool per skill.</td>
+            <td><code>SkillsPlugin(..., tools=[...])</code> discovers one catalog at construction and explicitly selects <code>skill_read</code>, <code>skill_run</code>, or both.</td>
+            <td>Relative directories use the process cwd. Catalog metadata and summary stay fixed, while reads and scripts use live discovered files.</td>
           </tr>
           <tr>
             <td>Subagents</td>
@@ -456,8 +468,8 @@
           </tr>
           <tr>
             <td>Parallel LLM</td>
-            <td>Available built-in tool candidate via <code>create_parallel_llm_tool(parent)</code>, or custom renameable <code>ParallelLlmTool(...).spec()</code>.</td>
-            <td>Runs independent one-shot prompts concurrently. The built-in is configured by application code and text-only; custom <code>ParallelLlmTool</code> can opt into structured output.</td>
+            <td><code>ParallelLlmPlugin(...)</code> contributes the standard text-only tool; custom renameable or structured batches use <code>ParallelLlmTool(...).spec()</code>.</td>
+            <td>The plugin borrows the harness model by default or uses explicit model ownership rules. Paths stay under the canonical harness root.</td>
           </tr>
         </tbody>
       </table>
@@ -914,13 +926,13 @@
               </tr>
               <tr>
                 <td>Skills</td>
-                <td><code>SkillRegistry</code> exposes <code>skill_read</code> and <code>skill_run</code> when skills are configured.</td>
-                <td>Skills add prompt summaries plus <code>skill_read</code> and <code>skill_run</code>; they do not create one tool per skill. Script runners are extension-based.</td>
+                <td><code>SkillsPlugin</code> owns constructor-time discovery and ordered tool selection over <code>SkillRegistry</code>.</td>
+                <td>The catalog and summary are static, discovered file content stays live, and inherited children rebind the exact parent plugin temporarily.</td>
               </tr>
               <tr>
                 <td>Parallel LLM</td>
-                <td>A normal <code>ToolSpec</code> wrapper for independent one-shot model calls.</td>
-                <td>The built-in is configured by application code and text-only; custom <code>ParallelLlmTool</code> can opt into structured output.</td>
+                <td><code>ParallelLlmPlugin</code> composes a normal text-only <code>ToolSpec</code> over independent one-shot model calls.</td>
+                <td>It borrows a harness or caller model, or owns per-call providers for model strings. Custom <code>ParallelLlmTool</code> can rename the tool or opt into structured output.</td>
               </tr>
             </tbody>
           </table>

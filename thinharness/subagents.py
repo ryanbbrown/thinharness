@@ -12,6 +12,7 @@ from .events import RunCompletedEvent, current_stream_emitter
 from .hooks import AfterSubagentRunContext, BeforeSubagentRunContext, HookRegistry, current_tool_call_context, current_tool_runtime_context
 from .plugins.base import Plugin
 from .plugins.mcp import MCPPlugin
+from .plugins.skills import SkillsPlugin
 from .providers import infer_model, same_provider_model_ref
 from .tools.base import Json, ToolResult, ToolSpec
 from .tools.mcp import MCPServer
@@ -34,7 +35,6 @@ class SubAgentConfig(BaseModel):
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     inherit_parent_tools: bool = False
     inherit_mcp_servers: bool = False
-    builtin_tools: list[str] = Field(default_factory=list)
     plugins: list[Plugin] = Field(default_factory=list)
     tools: list[ToolSpec] = Field(default_factory=list)
     mcp_servers: list[MCPServer] = Field(default_factory=list)
@@ -50,8 +50,12 @@ class SubAgentConfig(BaseModel):
     @classmethod
     def reject_removed_fields(cls, data: object) -> object:
         """Fail loudly when callers pass fields removed from the public API."""
-        if isinstance(data, dict) and "background" in data:
-            raise ValueError("SubAgentConfig.background has been removed")
+        if isinstance(data, dict):
+            if "background" in data:
+                raise ValueError("SubAgentConfig.background has been removed")
+            removed_builtin_field = "builtin" + "_tools"
+            if removed_builtin_field in data:
+                raise ValueError("SubAgentConfig.builtin_tools has been removed; use plugins or tools")
         return data
 
     @model_validator(mode="after")
@@ -61,7 +65,7 @@ class SubAgentConfig(BaseModel):
             raise ValueError(f"{DEFAULT_SUBAGENT_NAME!r} is reserved for the framework default subagent")
         if not self.description.strip() or "\n" in self.description or "\r" in self.description:
             raise ValueError("subagent description must be a non-empty single line")
-        exposes_subagent = any(name.lower() == "subagent" for name in self.builtin_tools) or any(_tool_name(tool).lower() == "subagent" for tool in self.tools)
+        exposes_subagent = any(_tool_name(tool).lower() == "subagent" for tool in self.tools)
         if exposes_subagent:
             raise ValueError("subagent cannot be exposed inside a child subagent")
         if any(tool.requires_approval for tool in self.tools):
@@ -69,10 +73,10 @@ class SubAgentConfig(BaseModel):
         has_explicit_mcp_plugin = any(isinstance(plugin, MCPPlugin) for plugin in self.plugins)
         if has_explicit_mcp_plugin and (self.mcp_servers or self.inherit_mcp_servers):
             raise ValueError("an explicit MCPPlugin cannot be combined with mcp_servers or inherit_mcp_servers=True")
-        if self.inherit_parent_tools and (self.builtin_tools or self.plugins or self.tools):
-            raise ValueError("inherit_parent_tools cannot be combined with builtin_tools, plugins, or tools")
-        if not (self.inherit_parent_tools or self.builtin_tools or self.plugins or self.tools or self.inherit_mcp_servers or self.mcp_servers):
-            raise ValueError("named subagents must define builtin_tools, plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers")
+        if self.inherit_parent_tools and (self.plugins or self.tools):
+            raise ValueError("inherit_parent_tools cannot be combined with plugins or tools")
+        if not (self.inherit_parent_tools or self.plugins or self.tools or self.inherit_mcp_servers or self.mcp_servers):
+            raise ValueError("named subagents must define plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers")
         return self
 
 
@@ -236,12 +240,6 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
 
     parent_config = parent.config
     inherit_tools = config is None or config.inherit_parent_tools
-    child_wants_skills = bool(config and any(name.lower() in {"skill_read", "skill_run"} for name in config.builtin_tools))
-    if inherit_tools:
-        child_builtin_tools: list[str] = []
-    else:
-        assert config is not None
-        child_builtin_tools = config.builtin_tools
     # Remove this MCP-specific bridge when subagents migrate to plugin composition.
     child_mcp_servers: list[MCPServer] = []
     if config is not None and config.inherit_mcp_servers:
@@ -260,9 +258,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
             "model": config.model if config is not None and config.model is not None else parent_config.model,
             "root": parent.root,
             "system_prompt": DEFAULT_SYSTEM_PROMPT if config is None else config.system_prompt,
-            "builtin_tools": child_builtin_tools,
-            "skills_dir": parent_config.skills_dir if child_wants_skills and not inherit_tools else None,
-            "selected_skills": parent_config.selected_skills if child_wants_skills and not inherit_tools else None,
+            "builtin_tools": [],
             "max_model_requests": (
                 config.max_model_requests if config is not None and config.max_model_requests is not None else parent_config.max_model_requests
             ),
@@ -295,7 +291,6 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
         plugins=child_plugins,
         tools=_effective_custom_tools(parent, config),
         tracing=_child_tracing(parent, config),
-        skills=parent.skills if inherit_tools else None,
         hooks=_child_hooks(parent, config),
         subagent_hooks={},
         _owns_model=config is not None and config.model is not None,
@@ -316,22 +311,42 @@ def _select_config(configs: list[SubAgentConfig], agent: str | None) -> SubAgent
 def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> list[ToolSpec]:
     """Return custom tools to register on the child harness."""
     if config is None or config.inherit_parent_tools:
+        skills_plugin = _parent_skills_plugin(parent)
+        selected_skill_tools = set(skills_plugin.tools) if skills_plugin is not None else set()
         return [
             tool
             for tool in parent.tools
-            if tool.name != "subagent" and not (tool.origin is not None and tool.origin.plugin == "mcp") and not tool.requires_approval
+            if tool.name != "subagent"
+            and not (tool.origin is not None and tool.origin.plugin == "mcp")
+            and not (
+                skills_plugin is not None
+                and tool.origin is not None
+                and tool.origin.plugin == "skills"
+                and tool.name in selected_skill_tools
+            )
+            and not tool.requires_approval
         ]
     return list(config.tools)
 
 
 def _inherited_instruction_plugins(parent: Harness) -> list[Plugin]:
-    """Preserve instructions for inherited filesystem tools without duplicating them."""
+    """Preserve filesystem and skill plugin instructions for inherited tools."""
+    plugins: list[Plugin] = []
     has_filesystem_tools = any(tool.origin is not None and tool.origin.plugin == "filesystem" for tool in parent.tools)
-    if not has_filesystem_tools:
-        return []
-    from .plugins.filesystem import FilesystemPlugin
+    if has_filesystem_tools:
+        from .plugins.filesystem import FilesystemPlugin
 
-    return [FilesystemPlugin(tools=[])]
+        # Remove this filesystem instruction bridge when subagents migrate to plugin composition.
+        plugins.append(FilesystemPlugin(tools=[]))
+    # Remove this skills bridge when subagents migrate to plugin composition.
+    if skills_plugin := _parent_skills_plugin(parent):
+        plugins.append(skills_plugin)
+    return plugins
+
+
+def _parent_skills_plugin(parent: Harness) -> SkillsPlugin | None:
+    """Return the exact parent skills plugin used by the temporary child bridge."""
+    return next((plugin for plugin in parent.plugins if isinstance(plugin, SkillsPlugin)), None)
 
 
 def _child_tracing(parent: Harness, config: SubAgentConfig | None) -> list[TracingOptions]:

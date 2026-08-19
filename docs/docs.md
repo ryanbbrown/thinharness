@@ -98,7 +98,7 @@ Important groups:
 
 - `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools`, `subagents`, and `skills_dir`, define the model-callable surface. Filesystem and MCP tools use explicit plugins. `builtin_tools` is temporary for features that have not migrated to plugins.
+- The `Harness` constructor's `plugins=` and `tools=` inputs, plus `builtin_tools` and `subagents`, define the model-callable surface. Filesystem, MCP, skills, and parallel LLM tools use explicit plugins. `builtin_tools` temporarily selects only `subagent`.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
@@ -408,7 +408,7 @@ Calling `subagent` without an `agent` argument uses the framework default subage
 Named subagents can:
 
 - inherit parent tools with `inherit_parent_tools=True`
-- choose explicit `plugins` or transitional `builtin_tools`
+- choose explicit `plugins`
 - receive explicit custom `tools`
 - opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
 - use their own model, limits, and structured output
@@ -417,21 +417,28 @@ Named subagents can:
 
 ## Parallel LLM Batches
 
-`parallel_llm` is an opt-in built-in tool for batches of independent one-shot prompts:
+Add `ParallelLlmPlugin` for batches of independent one-shot text prompts:
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["parallel_llm"],
-    builtin_parallel_llm_model="openai:gpt-5.5-mini",
-    builtin_parallel_llm_temperature=0,
-    parallel_llm_max_prompts=100,
-    request_retries=3,
-    request_retry_backoff=1.0,
-))
+from thinharness import Harness, HarnessConfig, ParallelLlmPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[ParallelLlmPlugin(
+        model="openai:gpt-5.5-mini",
+        temperature=0,
+        max_prompts=100,
+        request_retries=3,
+        request_retry_backoff=1.0,
+        read_paths=["inputs"],
+        write_paths=["outputs"],
+    )],
+)
 ```
 
-Each batch call is stateless. Per-prompt calls receive no tools, no memory, no continuation, and no inherited parent harness system prompt. Pass `system` when the batch needs shared instructions.
+Omit `model` to borrow the configured harness model, or pass a model object to borrow a caller-owned model. The plugin never closes a borrowed model. Provider and request settings are accepted only with a model string; that form creates and closes a configured provider for each batch invocation. Alternate string models do not inherit hidden harness provider settings.
+
+Each batch call is stateless and text-only. Per-prompt calls receive no tools, no memory, no continuation, and no inherited parent harness system prompt. Pass `system` when the batch needs shared instructions.
 
 The model-facing prompt source is structurally discriminated:
 
@@ -440,7 +447,7 @@ The model-facing prompt source is structurally discriminated:
 
 Use `output_file` when combined results may be large. Inline output returns compact JSON in `ToolResult.content`; file output writes pretty JSON under the write path policy and returns a summary.
 
-`max_concurrency` is model-controlled per tool call and limits in-flight requests. `parallel_llm_max_prompts` is a host-controlled `HarnessConfig` field. Built-in provider retries use the same `request_retries` and `request_retry_backoff` policy as normal agent requests. Transport attempts do not increase the tool's `model_requests` count or consume `max_model_requests`; the `parallel_llm` invocation still counts as one tool call.
+`max_concurrency` is model-controlled per tool call and limits in-flight requests. `max_prompts` is host-controlled on `ParallelLlmPlugin`. Read and write paths resolve under `HarnessConfig.root`. A plugin that borrows the harness model uses that model's transport retry settings; a string-model plugin uses its own. Transport attempts do not increase the tool's batch-local `model_requests` count. Batch requests and tokens do not enter parent `RunUsage` or consume parent `max_model_requests`; the `parallel_llm` invocation counts as one parent tool call. Cancellation propagates and still closes a string-model provider.
 
 For a custom, renameable version, construct `ParallelLlmTool` directly:
 
@@ -477,23 +484,29 @@ When `output_type` is set on a custom `ParallelLlmTool`, successful entries cont
 
 ## Skills
 
-Skills are explicit tools, not auto-discovery. Configure `skills_dir`, then expose `skill_read` and/or `skill_run` through `builtin_tools`.
+Skills are explicit plugins, not auto-discovery. `SkillsPlugin` requires an ordered, non-empty tool selection, so discovery never silently enables script execution.
 
 ```python
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SkillsPlugin
+
 harness = Harness(
-    HarnessConfig(
-        root=".",
-        skills_dir="skills",
-        selected_skills=["invoice-review"],
-        builtin_tools=["skill_read", "skill_run"],
-    ),
-    plugins=[FilesystemPlugin(tools=["read", "search"])],
+    HarnessConfig(root="."),
+    plugins=[
+        FilesystemPlugin(tools=["read", "search"]),
+        SkillsPlugin(
+            "skills",
+            selected_skills=["invoice-review"],
+            tools=["skill_read", "skill_run"],
+        ),
+    ],
 )
 ```
 
-If skills are configured and skill tools are exposed, the system prompt includes a compact skill summary. The model still has to call `skill_read` to inspect details.
+Relative skill directories resolve from the process working directory, not from `HarnessConfig.root`. The plugin discovers one catalog when it is constructed. Names, paths, selected skills, and summary text stay fixed; added or removed skills require a new plugin. Existing `SKILL.md` content, file trees, and scripts stay live when tools run. Reusing one plugin object across harnesses reuses the same catalog and registry.
 
-`skill_run` runs scripts from trusted skill directories. Python scripts run through `uv run`; shell scripts run through `bash`; JavaScript and Go files use `node` and `go run`.
+A non-empty catalog contributes the selected tools in caller order and one compact summary. The summary tells the model to call `skill_read` only when that tool is selected. `skill_read` is parallel-safe. `skill_run` is sequential and runs scripts from trusted skill directories: Python through `uv run`, shell through `bash`, JavaScript through `node`, and Go through `go run`.
+
+An explicitly configured named child uses its own `SkillsPlugin`. Default children and named children with `inherit_parent_tools=True` temporarily rebind the exact parent plugin, so they share one catalog and one summary.
 
 ## MCP
 

@@ -219,7 +219,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data: ripgrep row prefiltering, jq-style field projection, `where` filters, range filters, and snippets from large multiline fields.
 
-**Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Set `builtin_parallel_llm_model` to enable the default `parallel_llm` tool for plain-text batches; for validated structured output per call, instantiate `ParallelLlmTool` yourself with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
+**Parallel LLM calls, built in.** Fan out from inside the harness when a workflow needs efficient parallel processing or majority vote for reliability. Add `ParallelLlmPlugin()` for a plain-text batch tool that borrows the harness model, or give the plugin a model string and its own provider settings. For validated structured output per call, instantiate `ParallelLlmTool` with `output_type` (a Pydantic model). Each call is stateless, and large batches can write JSON to `output_file`.
 
 **No token streaming.** Streaming is for workflow progress, not live chatbot text. ThinHarness emits run, model-turn, tool, retry, limit, and subagent events, but it does not stream provider token deltas. Token streaming would add provider-specific plumbing, event merging, cancellation edge cases, and more surface area to keep stable. For workflow-style agents, step-level updates are usually the useful signal.
 
@@ -269,6 +269,22 @@ harness = Harness(
 
 MCP tools connect and discover one tool snapshot lazily on `Harness.connect()` or the first run. Install support with `uv add 'thinharness[mcp]'`.
 
+Skills and plain-text parallel batches are explicit plugins too:
+
+```python
+from thinharness import ParallelLlmPlugin, SkillsPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        # Relative skill directories use the process working directory.
+        SkillsPlugin(".agents/skills", tools=["skill_read"]),
+        # Parallel paths use HarnessConfig.root; no model means borrow the harness model.
+        ParallelLlmPlugin(read_paths=["inputs"], write_paths=["outputs"]),
+    ],
+)
+```
+
 Built-in provider requests retry transient HTTP failures three times by default. Configure the shared policy with `request_retries` and `request_retry_backoff` on `HarnessConfig`.
 
 If an injected `http_client` owns retries, set `request_retries=0` on the provider. This prevents nested retry policies from multiplying attempts.
@@ -297,8 +313,8 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.
 - **Hooks:** lifecycle and tool-call interception for prompt submission, tool calls, subagents, limits, and run boundaries.
 - **Subagents:** opt-in delegation through a built-in `subagent` tool and explicit `SubAgentConfig`.
-- **Parallel LLM:** opt-in `parallel_llm` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable tools with explicit model, path, prompt, and provider request settings.
-- **Skills:** explicit `skill_read` and `skill_run` tools for selected skill directories, with Python, shell, JavaScript, and Go script runners.
+- **Parallel LLM:** explicit `ParallelLlmPlugin` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable or structured tools with explicit model, path, prompt, and provider request settings.
+- **Skills:** explicit `SkillsPlugin` composition with an ordered `skill_read` and/or `skill_run` selection, plus Python, shell, JavaScript, and Go script runners.
 - **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
 - **MCP:** optional MCP support built on the FastMCP client, including in-process servers via `FastMCPTransport`, with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.

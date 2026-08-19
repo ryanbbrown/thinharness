@@ -25,7 +25,10 @@ from thinharness import (
     HookRegistry,
     MCPPlugin,
     MCPServerStdio,
+    ParallelLlmPlugin,
+    SkillsPlugin,
     SubAgentConfig,
+    ToolOrigin,
     ToolSpec,
     TracingOptions,
     build_child_harness,
@@ -55,15 +58,18 @@ def test_subagent_config_validation_accepts_tool_specs() -> None:
     assert inherited.inherit_parent_tools is True
     with pytest.raises(ValueError, match="inherit_parent_tools"):
         SubAgentConfig(name="bad", description="Bad helper.", inherit_parent_tools=True, plugins=[FilesystemPlugin(tools=["read"])])
-    with pytest.raises(ValueError, match="cannot be exposed"):
-        SubAgentConfig(name="recursive", description="Recursive helper.", builtin_tools=["subagent"])
+    with pytest.raises(ValueError, match="SubAgentConfig.builtin_tools has been removed"):
+        SubAgentConfig(name="removed", description="Removed helper.", builtin_tools=["subagent"], tools=[spec])
     with pytest.raises(ValueError, match="cannot be exposed"):
         SubAgentConfig(
             name="recursive-custom",
             description="Recursive helper.",
             tools=[ToolSpec("subagent", "Recursive", {"type": "object", "properties": {}}, lambda args: "bad")],
         )
-    with pytest.raises(ValueError, match="must define"):
+    with pytest.raises(
+        ValueError,
+        match="named subagents must define plugins, tools, inherit_parent_tools=True, inherit_mcp_servers=True, or mcp_servers",
+    ):
         SubAgentConfig(name="empty", description="No tools.")
     with pytest.raises(ValueError):
         SubAgentConfig(name="bad name", description="Bad helper.", plugins=[FilesystemPlugin(tools=["read"])])
@@ -245,7 +251,6 @@ def test_named_inherited_subagent_gets_parent_tools_without_subagent(tmp_path: P
     child = build_child_harness(parent, SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True))
 
     assert child.tools == [parent_echo]
-    assert child.skills is parent.skills
     assert child.config.subagents == []
 
 
@@ -271,30 +276,40 @@ def test_inherited_subagent_reuses_parent_skill_registry(tmp_path: Path) -> None
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo body", encoding="utf-8")
+    skills_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
     parent = Harness(
-        HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["skill_read"]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
+        plugins=[skills_plugin],
     )
 
     child = build_child_harness(parent, SubAgentConfig(name="general", description="General helper.", inherit_parent_tools=True))
 
-    assert child.skills is parent.skills
-    assert "demo - Demo skill" in child.system_instructions()
+    child_skills_plugin = next(plugin for plugin in child.plugins if isinstance(plugin, SkillsPlugin))
+    assert child_skills_plugin is skills_plugin
+    assert child_skills_plugin.registry is skills_plugin.registry
+    assert child.system_instructions().count("demo - Demo skill") == 1
     skill_read = next(tool for tool in child.tools if tool.name == "skill_read")
-    assert skill_read.handler.__self__ is parent.skills
+    assert skill_read.handler.__self__ is skills_plugin.registry
 
-def test_explicit_subagent_skill_tools_use_parent_skill_config(tmp_path: Path) -> None:
+def test_explicit_subagent_skill_tools_use_its_own_plugin(tmp_path: Path) -> None:
     skill = tmp_path / "skills" / "demo"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nDemo body", encoding="utf-8")
+    parent_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
+    child_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
     parent = Harness(
-        HarnessConfig(root=tmp_path, skills_dir=tmp_path / "skills", builtin_tools=["skill_read"]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
+        plugins=[parent_plugin],
     )
 
-    child = build_child_harness(parent, SubAgentConfig(name="skilled", description="Skill helper.", builtin_tools=["skill_read"]))
+    child = build_child_harness(
+        parent,
+        SubAgentConfig(name="skilled", description="Skill helper.", plugins=[child_plugin]),
+    )
 
-    assert child.skills is not parent.skills
+    assert child_plugin.registry is not parent_plugin.registry
     assert [tool.name for tool in child.tools] == ["skill_read"]
     assert "demo - Demo skill" in child.system_instructions()
 
@@ -605,3 +620,64 @@ def test_subagent_hook_can_cancel_default_agent_without_child_run(tmp_path: Path
 def test_default_subagent_name_is_reserved() -> None:
     with pytest.raises(ValueError, match="reserved"):
         SubAgentConfig(name=DEFAULT_SUBAGENT_NAME, description="Reserved.", plugins=[FilesystemPlugin(tools=["read"])])
+
+
+def test_inherited_skills_bridge_orders_instructions_and_keeps_unrelated_origin_tools(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill\n---\nBody", encoding="utf-8")
+    unrelated = ToolSpec(
+        "skill_helper",
+        "Unrelated direct tool",
+        {"type": "object", "properties": {}},
+        lambda _args: "ok",
+        origin=ToolOrigin(plugin="skills", source="caller"),
+    )
+    skills_plugin = SkillsPlugin(tmp_path / "skills", tools=["skill_read"])
+    parent = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[skills_plugin, FilesystemPlugin(tools=["read"])],
+        tools=[unrelated],
+    )
+
+    child = build_child_harness(parent, None)
+    instructions = child.system_instructions()
+
+    assert [plugin.name for plugin in child.plugins] == ["filesystem", "skills"]
+    assert [tool.name for tool in child.tools] == ["skill_read", "read", "skill_helper"]
+    assert instructions.index("Workspace root:") < instructions.index("demo - Demo skill")
+    assert instructions.count("demo - Demo skill") == 1
+    assert next(tool for tool in child.tools if tool.name == "skill_helper") is unrelated
+
+
+
+def test_parallel_llm_explicit_child_plugin_and_inherited_handler_behavior(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent_batch_model = ScriptedModel([])
+    parent = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[ParallelLlmPlugin(parent_batch_model)],
+    )
+    parent_spec = next(tool for tool in parent.tools if tool.name == "parallel_llm")
+
+    explicit_plugin = ParallelLlmPlugin(ScriptedModel([]))
+    explicit_child = build_child_harness(
+        parent,
+        SubAgentConfig(name="explicit", description="Explicit helper.", plugins=[explicit_plugin]),
+    )
+    monkeypatch.setattr("thinharness.subagents.infer_model", lambda *_args, **_kwargs: ScriptedModel([]))
+    inherited_child = build_child_harness(
+        parent,
+        SubAgentConfig(
+            name="inherited",
+            description="Inherited helper.",
+            inherit_parent_tools=True,
+            model="openai:child",
+        ),
+    )
+
+    assert [tool.name for tool in explicit_child.tools] == ["parallel_llm"]
+    inherited_spec = next(tool for tool in inherited_child.tools if tool.name == "parallel_llm")
+    assert inherited_spec is parent_spec
+    assert not any(isinstance(plugin, ParallelLlmPlugin) for plugin in inherited_child.plugins)

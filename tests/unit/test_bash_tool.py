@@ -9,7 +9,6 @@ from fakes import MultiCallClient, ScriptedModel, ScriptedSession, _fake_openai,
 
 from thinharness import BashArgs, BashTool, Harness, HarnessConfig, SubAgentConfig, call_tool
 from thinharness.providers import ModelToolCall, ModelTurn
-from thinharness.subagents import build_child_harness
 
 
 def test_bash_spec_exposes_expected_schema() -> None:
@@ -151,12 +150,9 @@ def test_bash_is_not_a_builtin_tool(tmp_path: Path) -> None:
         Harness(HarnessConfig(root=tmp_path, builtin_tools=["bash"]), model=ScriptedModel([]))
 
 
-def test_named_subagent_cannot_opt_into_bash_as_builtin(tmp_path: Path) -> None:
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([]))
-    config = SubAgentConfig(name="shell", description="Shell helper.", builtin_tools=["bash"])
-
-    with pytest.raises(ValueError, match="unknown builtin tool: bash"):
-        build_child_harness(parent, config)
+def test_named_subagent_builtin_selector_is_removed() -> None:
+    with pytest.raises(ValueError, match="SubAgentConfig.builtin_tools has been removed"):
+        SubAgentConfig(name="shell", description="Shell helper.", builtin_tools=["bash"], tools=[BashTool().spec()])
 
 
 def test_mixed_batch_containing_bash_runs_sequentially(tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pydantic import BaseModel
 
-from thinharness import Harness, HarnessConfig, Hook, ParallelLlmTool
+from thinharness import Harness, HarnessConfig, Hook, ParallelLlmPlugin, ParallelLlmTool
 
 AGENT_MODEL = os.getenv("E2E_PARALLEL_AGENT_MODEL", "openai:gpt-5-mini")
 CUSTOM_TOOL_MODEL = os.getenv("E2E_PARALLEL_AGENT_TOOL_MODEL", os.getenv("E2E_PARALLEL_OPENROUTER_MODEL", "openrouter:google/gemini-2.5-flash"))
@@ -76,11 +76,11 @@ def main() -> None:
                 root=root,
                 model=AGENT_MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                builtin_tools=["parallel_llm"],
                 max_model_requests=8,
                 max_tool_calls=4,
                 tool_retries=2,
             ),
+            plugins=[ParallelLlmPlugin()],
             tools=[custom_tool],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
         )

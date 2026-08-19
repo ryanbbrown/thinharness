@@ -5,11 +5,17 @@
 - Added explicit plugin composition with static and connected contributions, atomic connection rollback, unique plugin names, generic tool origin, and plugin-provided hooks and instructions.
 - Added `FilesystemPlugin` for the ordered workspace tool surface; `jsonl_search` remains opt-in through this plugin.
 - Added `MCPPlugin` for lazy MCP server connection, binding-local server identity, atomic tool discovery, and generic tool origin attribution.
+- Added `SkillsPlugin` for constructor-time skill discovery, explicit ordered skill-tool selection, static summaries, and shared inherited-child catalogs.
+- Added `ParallelLlmPlugin` for explicit text-only batch composition with borrowed harness or caller models and plugin-owned string-model provider settings.
+- Added the configured harness model to the I/O-free `PluginContext` alongside the canonical root.
 - **Breaking:** Removed `HarnessConfig.mcp_servers`, `McpToolInfo`, and the MCP `ToolKind`; configure one `MCPPlugin` with all harness servers.
 - **Breaking:** Generic plugin validation now reports MCP tool collisions as duplicate tool names. Use MCP `tool_prefix`, `include_tools`, or `exclude_tools` to prevent collisions.
 - **Breaking:** Removed `MCPServer.resolve_id()` and post-bind mutation of `server.id`. The public `server.id` remains the base ID; binding-local IDs, including duplicate suffixes, appear in tool origin and result metadata.
 - **Breaking:** `Harness` no longer enables filesystem tools by default. Pass `plugins=[FilesystemPlugin(...)]`; independent custom tools still use `tools=`.
-- **Breaking:** Removed filesystem settings from `HarnessConfig` and removed the `builtin_tools()` helper. `read_paths` and `write_paths` remain temporarily for the transitional parallel-LLM built-in.
+- **Breaking:** Removed filesystem settings from `HarnessConfig` and removed the `builtin_tools()` helper.
+- **Breaking:** Removed `HarnessConfig.skills_dir`, `selected_skills`, `read_paths`, `write_paths`, `builtin_parallel_llm_model`, `builtin_parallel_llm_temperature`, and `parallel_llm_max_prompts`; use `SkillsPlugin` and `ParallelLlmPlugin`.
+- **Breaking:** Removed the `Harness(skills=...)` composition path, `SubAgentConfig.builtin_tools`, and `create_parallel_llm_tool`; named children now use explicit plugins or tools.
+- **Breaking:** Removed the `parallel_llm` `ToolKind`; direct and plugin-created `ParallelLlmTool` specifications now use kind `"user"`.
 - Changed connection setup to complete before `run_start` hooks. A connection failure does not fire run lifecycle hooks.
 
 ## 0.6.0 - 2026-08-07
