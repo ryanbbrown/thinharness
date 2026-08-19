@@ -36,3 +36,15 @@ def test_core_has_no_skills_or_parallel_llm_implementation_details() -> None:
     )
     for token in forbidden:
         assert token not in source
+
+    migration_source = (core_path.parent / "_migration.py").read_text(encoding="utf-8")
+    for field_name in (
+        "skills_dir",
+        "selected_skills",
+        "read_paths",
+        "write_paths",
+        "builtin_parallel_llm_model",
+        "builtin_parallel_llm_temperature",
+        "parallel_llm_max_prompts",
+    ):
+        assert f'"{field_name}"' in migration_source

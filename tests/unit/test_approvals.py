@@ -19,10 +19,12 @@ from thinharness import (
     ModelToolCall,
     ModelTurn,
     OpenRouterModel,
+    ParallelLlmPlugin,
     PendingApproval,
     RunCompletedEvent,
     RunStartedEvent,
     RunUsage,
+    SkillsPlugin,
     SubAgentConfig,
     TokenUsage,
     ToolCallCompletedEvent,
@@ -68,6 +70,43 @@ def approval_echo_tool(called: list[dict] | None = None) -> ToolSpec:
         lambda args: sink.append(args) or args["value"],
         requires_approval=True,
     )
+
+
+async def test_approval_state_excludes_plugin_configuration_and_context_model(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "approval-state-skill-sentinel"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: approval-state-skill-sentinel\ndescription: approval-state-description-sentinel\n---\nBody",
+        encoding="utf-8",
+    )
+    session = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="call_1", name="deploy", arguments='{"env":"prod"}')],
+            raw={"id": "start"},
+        )
+    )
+    model = ScriptedModel([session])
+    model.context_marker = object()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=model,
+        plugins=[
+            SkillsPlugin(tmp_path / "skills", tools=["skill_read"]),
+            ParallelLlmPlugin(description="approval-parallel-description-sentinel"),
+        ],
+        tools=[approval_tool()],
+    )
+
+    result = await harness.run("request deployment")
+    state = json.loads(json.dumps(result.resume_state))
+    serialized = json.dumps(state, sort_keys=True)
+
+    assert state == result.resume_state
+    assert "approval-state-skill-sentinel" not in serialized
+    assert "approval-state-description-sentinel" not in serialized
+    assert "approval-parallel-description-sentinel" not in serialized
+    assert "PluginContext" not in serialized
+    assert "context_marker" not in serialized
 
 
 async def test_approval_required_tool_pauses_without_executing_or_hooks(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ._migration import REMOVED_HARNESS_CONFIG_FIELDS, reject_removed_fields
 from .approvals import (
     ApprovalPause,
     copy_restored_run_state,
@@ -132,22 +133,11 @@ class HarnessConfig(BaseModel):
     @classmethod
     def reject_removed_fields(cls, data: object) -> object:
         """Fail loudly when callers use configuration moved to plugins."""
-        if not isinstance(data, dict):
-            return data
-        migrations = (
-            (("skills", "_dir"), "SkillsPlugin"),
-            (("selected", "_skills"), "SkillsPlugin"),
-            (("read", "_paths"), "ParallelLlmPlugin"),
-            (("write", "_paths"), "ParallelLlmPlugin"),
-            (("builtin", "_parallel", "_llm", "_model"), "ParallelLlmPlugin"),
-            (("builtin", "_parallel", "_llm", "_temperature"), "ParallelLlmPlugin"),
-            (("parallel", "_llm", "_max", "_prompts"), "ParallelLlmPlugin"),
+        return reject_removed_fields(
+            data,
+            owner="HarnessConfig",
+            migrations=REMOVED_HARNESS_CONFIG_FIELDS,
         )
-        for parts, plugin_name in migrations:
-            field_name = "".join(parts)
-            if field_name in data:
-                raise ValueError(f"HarnessConfig.{field_name} has been removed; use {plugin_name}")
-        return data
 
 
 class Harness:

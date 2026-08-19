@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fakes import FakeAnthropicProvider, FakeClient, FakeOpenRouterProvider, ScriptedProvider, ScriptedSession, echo_tool
+from fakes import FakeAnthropicProvider, FakeClient, FakeOpenRouterProvider, ScriptedModel, ScriptedProvider, ScriptedSession, echo_tool
 from pydantic import BaseModel
 
 from thinharness import (
@@ -22,6 +22,8 @@ from thinharness import (
     OpenAIProvider,
     OpenAIResponsesModel,
     OpenRouterModel,
+    ParallelLlmPlugin,
+    SkillsPlugin,
     ToolSpec,
 )
 from thinharness.hooks import RunEndContext
@@ -52,6 +54,36 @@ class _MultiToolAnthropicProvider(FakeAnthropicProvider):
                 "stop_reason": "tool_use",
             }
         return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+
+
+async def test_resume_state_excludes_plugin_configuration_and_context_model(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "resume-state-skill-sentinel"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: resume-state-skill-sentinel\ndescription: resume-state-description-sentinel\n---\nBody",
+        encoding="utf-8",
+    )
+    model = ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))])
+    model.context_marker = object()
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=model,
+        plugins=[
+            SkillsPlugin(tmp_path / "skills", tools=["skill_read"]),
+            ParallelLlmPlugin(description="resume-parallel-description-sentinel"),
+        ],
+    )
+
+    result = await harness.run("finish without tools")
+    state = json.loads(json.dumps(result.resume_state))
+    serialized = json.dumps(state, sort_keys=True)
+
+    assert state == result.resume_state
+    assert "resume-state-skill-sentinel" not in serialized
+    assert "resume-state-description-sentinel" not in serialized
+    assert "resume-parallel-description-sentinel" not in serialized
+    assert "PluginContext" not in serialized
+    assert "context_marker" not in serialized
 
 
 async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path) -> None:

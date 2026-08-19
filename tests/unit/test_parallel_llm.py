@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 
+import thinharness.plugins.parallel_llm as parallel_plugin_module
 from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ParallelLlmPlugin, PluginContext, ToolOutput
 from thinharness.providers import ModelSettings, OpenAIProvider, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
@@ -782,6 +783,59 @@ def test_parallel_llm_plugin_rejects_invalid_prompt_cap() -> None:
         ParallelLlmPlugin(max_prompts=0)
 
 
+def test_parallel_llm_plugin_omits_default_sentinels_and_preserves_explicit_falsey_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    real_tool = parallel_plugin_module.ParallelLlmTool
+
+    def capture_tool(**kwargs: Any) -> ParallelLlmTool:
+        captured.append(kwargs)
+        return real_tool(**kwargs)
+
+    monkeypatch.setattr(parallel_plugin_module, "ParallelLlmTool", capture_tool)
+    context = PluginContext(root=tmp_path, model=BatchModel())
+
+    ParallelLlmPlugin("openai:default").bind(context)
+    ParallelLlmPlugin(
+        "openai:explicit",
+        api_key="",
+        base_url="",
+        request_timeout=0,
+        request_retries=0,
+        request_retry_backoff=0,
+        temperature=0,
+        max_tokens=1,
+        effort="",
+        extra_body={},
+    ).bind(context)
+
+    provider_names = {
+        "api_key",
+        "base_url",
+        "request_timeout",
+        "request_retries",
+        "request_retry_backoff",
+        "temperature",
+        "max_tokens",
+        "effort",
+        "extra_body",
+    }
+    assert provider_names.isdisjoint(captured[0])
+    assert {name: captured[1][name] for name in provider_names} == {
+        "api_key": "",
+        "base_url": "",
+        "request_timeout": 0,
+        "request_retries": 0,
+        "request_retry_backoff": 0,
+        "temperature": 0,
+        "max_tokens": 1,
+        "effort": "",
+        "extra_body": {},
+    }
+
+
 async def test_parallel_llm_plugin_reuse_borrows_each_harness_model(tmp_path: Path) -> None:
     plugin = ParallelLlmPlugin()
     first_model = BatchModel(outcomes=["first"])
@@ -809,6 +863,25 @@ async def test_parallel_llm_plugin_borrows_explicit_model_without_closing_it(tmp
     assert result["payload"]["results"][0]["result"] == "explicit"
     assert explicit_model.provider.closed is False
     assert harness_model.provider.closed is False
+
+
+async def test_parallel_llm_plugin_does_not_close_borrowed_harness_owned_model_during_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inferred = BatchModel(outcomes=["borrowed"])
+    monkeypatch.setattr("thinharness.core.infer_model", lambda *_args, **_kwargs: inferred)
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:owned"),
+        plugins=[ParallelLlmPlugin()],
+    )
+
+    result = await _call_parallel(harness, _inline(["x"]))
+
+    assert result["payload"]["results"][0]["result"] == "borrowed"
+    assert inferred.provider.closed is False
+    await harness.aclose()
+    assert inferred.provider.closed is True
 
 
 def test_parallel_llm_plugin_bind_is_io_free_and_does_not_infer_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

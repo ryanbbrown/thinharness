@@ -104,6 +104,21 @@ class ParallelLlmPlugin(metaclass=_ParallelLlmPluginMeta):
     def bind(self, context: PluginContext) -> PluginBinding:
         """Build the static tool with the canonical root and resolved model."""
         model = context.model if self.model is None else self.model
+        provider_options: dict[str, Any] = {}
+        for name in (
+            "api_key",
+            "base_url",
+            "request_timeout",
+            "request_retries",
+            "request_retry_backoff",
+            "temperature",
+            "max_tokens",
+            "effort",
+            "extra_body",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                provider_options[name] = value
         tool = ParallelLlmTool(
             model=model,
             root=context.root,
@@ -112,16 +127,8 @@ class ParallelLlmPlugin(metaclass=_ParallelLlmPluginMeta):
             read_paths=list(self.read_paths) if self.read_paths is not None else None,
             write_paths=list(self.write_paths) if self.write_paths is not None else None,
             max_prompts=self.max_prompts,
-            api_key=self.api_key,
-            base_url=self.base_url,
-            request_timeout=120 if self.request_timeout is None else self.request_timeout,
-            request_retries=3 if self.request_retries is None else self.request_retries,
-            request_retry_backoff=1.0 if self.request_retry_backoff is None else self.request_retry_backoff,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            effort=self.effort,
-            extra_body=self.extra_body,
             _root_is_resolved=True,
+            **provider_options,
         )
         return PluginBinding(static=PluginContribution(tools=(tool.spec(),)))
 

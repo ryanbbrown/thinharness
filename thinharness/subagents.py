@@ -53,8 +53,7 @@ class SubAgentConfig(BaseModel):
         if isinstance(data, dict):
             if "background" in data:
                 raise ValueError("SubAgentConfig.background has been removed")
-            removed_builtin_field = "builtin" + "_tools"
-            if removed_builtin_field in data:
+            if "builtin_tools" in data:
                 raise ValueError("SubAgentConfig.builtin_tools has been removed; use plugins or tools")
         return data
 
@@ -250,7 +249,7 @@ def build_child_harness(parent: Harness, config: SubAgentConfig | None) -> Harne
         for server in config.mcp_servers:
             if not any(server is existing for existing in child_mcp_servers):
                 child_mcp_servers.append(server)
-    child_plugins = list(_inherited_instruction_plugins(parent) if inherit_tools else (config.plugins if config is not None else []))
+    child_plugins = list(_inherited_bridge_plugins(parent) if inherit_tools else (config.plugins if config is not None else []))
     if child_mcp_servers:
         child_plugins.append(MCPPlugin(servers=child_mcp_servers))
     child_config = parent_config.model_copy(
@@ -329,8 +328,8 @@ def _effective_custom_tools(parent: Harness, config: SubAgentConfig | None) -> l
     return list(config.tools)
 
 
-def _inherited_instruction_plugins(parent: Harness) -> list[Plugin]:
-    """Preserve filesystem and skill plugin instructions for inherited tools."""
+def _inherited_bridge_plugins(parent: Harness) -> list[Plugin]:
+    """Return temporary plugins needed to preserve inherited child behavior."""
     plugins: list[Plugin] = []
     has_filesystem_tools = any(tool.origin is not None and tool.origin.plugin == "filesystem" for tool in parent.tools)
     if has_filesystem_tools:
