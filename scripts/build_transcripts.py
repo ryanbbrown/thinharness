@@ -418,10 +418,10 @@ def event_from_span(span: dict[str, Any], trace_rel: str, index: int, call_label
     return event
 
 
-def load_agents() -> list[dict[str, Any]]:
+def load_agents(*, examples_root: Path = EXAMPLES_ROOT) -> list[dict[str, Any]]:
     agents: list[dict[str, Any]] = []
     audit_metadata = spec_audit_metadata()
-    for summary_path in sorted(EXAMPLES_ROOT.glob("*/outputs/run_summary.json")):
+    for summary_path in sorted(examples_root.glob("*/outputs/run_summary.json")):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         root = summary_path.parents[1]
         slug = str(summary.get("slug") or root.name)
@@ -527,13 +527,22 @@ def render_html(agents: list[dict[str, Any]], *, template_path: Path | None = No
     return template
 
 
+def write_transcripts(output: Path, *, examples_root: Path = EXAMPLES_ROOT) -> list[dict[str, Any]]:
+    """Rebuild one tracked transcript page without allowing an empty source set to blank it."""
+    agents = load_agents(examples_root=examples_root)
+    if not agents:
+        raise ValueError("no example transcript sources found; existing output was not changed")
+    rendered = render_html(agents, template_path=output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
+    return agents
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render example agent traces as readable example HTML.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
-    agents = load_agents()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(render_html(agents, template_path=args.output), encoding="utf-8")
+    agents = write_transcripts(args.output)
     print(args.output)
     print(json.dumps({"agents": [agent["slug"] for agent in agents], "count": len(agents)}, indent=2))
 

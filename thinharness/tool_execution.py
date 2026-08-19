@@ -13,7 +13,13 @@ from .events import (
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
 )
-from .hooks import _CURRENT_TOOL_CALL, _CURRENT_TOOL_RUNTIME, AfterToolCallContext, BeforeToolCallContext
+from .hooks import (
+    _CURRENT_TOOL_CALL,
+    _CURRENT_TOOL_RUNTIME,
+    AfterToolCallContext,
+    BeforeToolCallContext,
+    _ToolRuntimeLease,
+)
 from .providers import ModelToolCall, ToolOutput
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec, _invoke_tool
 from .tracing import RunTracer, serialize_attribute_value
@@ -152,8 +158,10 @@ class ToolCallExecutor:
             composition = self.tool_composition.get(str(call.name))
             if composition is not None and composition.delegation:
                 span.set_attribute("subagent.delegation", True)
+            lease = _ToolRuntimeLease()
             call_token = _CURRENT_TOOL_CALL.set({"call_id": call.id, "name": call.name})
             runtime_token = _CURRENT_TOOL_RUNTIME.set({
+                "lease": lease,
                 "run_metadata": dict(self.run_context.metadata),
                 "tool_map": self.tool_map,
                 "tool_composition": self.tool_composition,
@@ -246,6 +254,7 @@ class ToolCallExecutor:
                     )
                 raise
             finally:
+                lease.active = False
                 _CURRENT_STREAM_EMITTER.reset(emitter_token)
                 _CURRENT_TOOL_RUNTIME.reset(runtime_token)
                 _CURRENT_TOOL_CALL.reset(call_token)

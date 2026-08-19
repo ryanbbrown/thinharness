@@ -312,6 +312,26 @@ def test_one_plugin_object_receives_each_harness_root_and_model(tmp_path: Path) 
     assert first.tools[0] is not second.tools[0]
 
 
+def test_filesystem_constructor_inputs_stay_frozen_across_later_child_bindings(tmp_path: Path) -> None:
+    selected = ["read"]
+    read_paths = ["allowed"]
+    excludes = ["*.tmp"]
+    plugin = FilesystemPlugin(tools=selected, read_paths=read_paths, search_exclude_globs=excludes)
+    selected[0] = "write"
+    read_paths[0] = "blocked"
+    excludes[0] = "*.txt"
+
+    for root in (tmp_path / "parent", tmp_path / "child"):
+        (root / "allowed").mkdir(parents=True)
+        (root / "allowed" / "value.txt").write_text(root.name, encoding="utf-8")
+        harness = Harness(HarnessConfig(root=root), model=ScriptedModel([]), plugins=[plugin.for_child()])
+        assert [tool.name for tool in harness.tools] == ["read"]
+        spec = harness.tools[0]
+        result = spec.handler(spec.parse_args({"path": "allowed/value.txt"}))
+        assert result.ok is True
+        assert root.name in result.content
+
+
 def test_filesystem_bind_performs_no_metadata_io(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path.resolve()
 

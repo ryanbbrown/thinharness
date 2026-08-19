@@ -837,6 +837,48 @@ def test_parallel_llm_plugin_omits_default_sentinels_and_preserves_explicit_fals
     }
 
 
+def test_parallel_llm_constructor_and_public_values_stay_frozen_across_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    real_tool = parallel_plugin_module.ParallelLlmTool
+
+    def capture_tool(**kwargs: Any) -> ParallelLlmTool:
+        captured.append(kwargs)
+        return real_tool(**kwargs)
+
+    monkeypatch.setattr(parallel_plugin_module, "ParallelLlmTool", capture_tool)
+    read_paths = ["inputs"]
+    write_paths = ["outputs"]
+    extra_body = {"nested": {"stable": True}}
+    plugin = ParallelLlmPlugin(
+        "openai:fixed",
+        read_paths=read_paths,
+        write_paths=write_paths,
+        extra_body=extra_body,
+    )
+    read_paths[0] = "mutated"
+    write_paths[0] = "mutated"
+    extra_body["nested"]["stable"] = False
+    returned = plugin.extra_body
+    returned["nested"]["stable"] = False
+
+    first_model = BatchModel()
+    second_model = BatchModel()
+    plugin.bind(PluginContext(root=tmp_path / "first", model=first_model, child_harnesses=FakeChildHarnessHost()))
+    plugin.for_child().bind(
+        PluginContext(root=tmp_path / "second", model=second_model, child_harnesses=FakeChildHarnessHost())
+    )
+
+    assert [entry["read_paths"] for entry in captured] == [["inputs"], ["inputs"]]
+    assert [entry["write_paths"] for entry in captured] == [["outputs"], ["outputs"]]
+    assert [entry["extra_body"] for entry in captured] == [
+        {"nested": {"stable": True}},
+        {"nested": {"stable": True}},
+    ]
+
+
 async def test_parallel_llm_plugin_reuse_borrows_each_harness_model(tmp_path: Path) -> None:
     plugin = ParallelLlmPlugin()
     first_model = BatchModel(outcomes=["first"])

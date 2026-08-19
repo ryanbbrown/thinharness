@@ -29,7 +29,7 @@ def test_tool_spec_sequential_default_and_not_in_schema() -> None:
     assert flagged.sequential is True
     assert "sequential" not in flagged.response_tool()
 
-def test_builtin_tools_mark_mutating_specs_sequential(tmp_path: Path) -> None:
+def test_mutating_tool_specs_are_sequential(tmp_path: Path) -> None:
     by_name = {spec.name: spec for spec in FileTools(tmp_path).specs()}
     assert by_name["read"].sequential is False
     assert by_name["search"].sequential is False

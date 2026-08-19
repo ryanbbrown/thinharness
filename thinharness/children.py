@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -13,6 +14,7 @@ from .hooks import (
     BeforeSubagentRunContext,
     Hook,
     HookRegistry,
+    _ToolRuntimeLease,
     current_tool_call_context,
     current_tool_runtime_context,
 )
@@ -192,6 +194,9 @@ class _ParentChildHarnessHost:
         tool_call = current_tool_call_context()
         if runtime is None or tool_call is None:
             raise HarnessError("child harness request requires an active parent tool call")
+        lease = runtime.get("lease")
+        if not isinstance(lease, _ToolRuntimeLease) or not lease.active:
+            raise HarnessError("child harness request requires an active parent tool call")
         tool_map = runtime.get("tool_map")
         composition_map = runtime.get("tool_composition")
         if not isinstance(tool_map, dict) or not isinstance(composition_map, dict):
@@ -269,6 +274,8 @@ class _ParentChildHarnessHost:
                 run_traceback = exc.__traceback__
             try:
                 await child.aclose()
+            except asyncio.CancelledError:
+                raise
             except BaseException as close_error:
                 if run_error is None:
                     raise
@@ -414,6 +421,8 @@ async def _close_model_after_failure(model: Model, original_error: BaseException
         return
     try:
         await aclose()
+    except asyncio.CancelledError:
+        raise
     except BaseException as close_error:
         original_error.add_note(f"cleanup also failed: {type(close_error).__name__}: {close_error}")
 

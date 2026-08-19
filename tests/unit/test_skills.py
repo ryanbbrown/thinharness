@@ -195,6 +195,32 @@ def test_skills_plugin_catalog_is_frozen_but_discovered_content_and_scripts_are_
 
 
 
+def test_skills_plugin_public_catalog_and_constructor_inputs_are_deep_detached(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        '---\nname: demo\ndescription: Stable summary\nlabels: {"nested":{"value":"stable"}}\n---\nLive body',
+        encoding="utf-8",
+    )
+    selected = ["demo"]
+    tools = ["skill_read"]
+    plugin = SkillsPlugin(tmp_path / "skills", selected_skills=selected, tools=tools)
+    selected[0] = "missing"
+    tools[0] = "skill_run"
+    public = plugin.registry.skills
+    public["demo"].metadata["labels"]["nested"]["value"] = "mutated"
+    public.clear()
+
+    first = Harness(HarnessConfig(root=tmp_path / "parent"), model=ScriptedModel([]), plugins=[plugin])
+    second = Harness(HarnessConfig(root=tmp_path / "child"), model=ScriptedModel([]), plugins=[plugin.for_child()])
+
+    assert [tool.name for tool in first.tools] == ["skill_read"]
+    assert [tool.name for tool in second.tools] == ["skill_read"]
+    assert "demo - Stable summary" in first.system_instructions()
+    assert "demo - Stable summary" in second.system_instructions()
+    assert plugin.registry.skills["demo"].metadata["labels"]["nested"]["value"] == "stable"
+
+
 def test_skills_plugin_relative_paths_use_cwd_and_reuse_one_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     process_dir = tmp_path / "process"
     _write_skill(process_dir / "skills", "demo")

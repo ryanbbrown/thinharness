@@ -865,8 +865,13 @@ class Harness:
                 normalized = self._normalize_contribution(plugin.name, contribution)
                 dynamic_tools.extend(normalized.tools)
                 dynamic_compositions.extend(
-                    _ToolComposition(source="plugin", plugin_index=plugin_index)
-                    for _ in normalized.tools
+                    _ToolComposition(
+                        source="plugin",
+                        plugin_index=plugin_index,
+                        delegation=isinstance(self._child_harnesses, _ParentChildHarnessHost)
+                        and self._child_harnesses.is_delegation_tool(raw_tool),
+                    )
+                    for raw_tool in contribution.tools
                 )
                 dynamic_instructions.extend(normalized.instructions)
                 dynamic_hooks.extend(normalized.hooks)

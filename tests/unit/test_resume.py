@@ -24,6 +24,8 @@ from thinharness import (
     OpenRouterModel,
     ParallelLlmPlugin,
     SkillsPlugin,
+    SubAgentConfig,
+    SubagentsPlugin,
     ToolSpec,
 )
 from thinharness.hooks import RunEndContext
@@ -71,6 +73,12 @@ async def test_resume_state_excludes_plugin_configuration_and_context_model(tmp_
         plugins=[
             SkillsPlugin(tmp_path / "skills", tools=["skill_read"]),
             ParallelLlmPlugin(description="resume-parallel-description-sentinel"),
+            SubagentsPlugin(agents=[SubAgentConfig(
+                name="resume-child-sentinel",
+                description="resume-child-description-sentinel",
+                system_prompt="resume-child-prompt-sentinel",
+                model="openai:resume-child-model-sentinel",
+            )]),
         ],
     )
 
@@ -82,6 +90,11 @@ async def test_resume_state_excludes_plugin_configuration_and_context_model(tmp_
     assert "resume-state-skill-sentinel" not in serialized
     assert "resume-state-description-sentinel" not in serialized
     assert "resume-parallel-description-sentinel" not in serialized
+    assert "resume-child-sentinel" not in serialized
+    assert "resume-child-description-sentinel" not in serialized
+    assert "resume-child-prompt-sentinel" not in serialized
+    assert "resume-child-model-sentinel" not in serialized
+    assert "ChildHarnessHost" not in serialized
     assert "PluginContext" not in serialized
     assert "context_marker" not in serialized
 

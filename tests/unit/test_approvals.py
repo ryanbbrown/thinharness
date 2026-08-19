@@ -94,6 +94,12 @@ async def test_approval_state_excludes_plugin_configuration_and_context_model(tm
         plugins=[
             SkillsPlugin(tmp_path / "skills", tools=["skill_read"]),
             ParallelLlmPlugin(description="approval-parallel-description-sentinel"),
+            SubagentsPlugin(agents=[SubAgentConfig(
+                name="approval-child-sentinel",
+                description="approval-child-description-sentinel",
+                system_prompt="approval-child-prompt-sentinel",
+                model="openai:approval-child-model-sentinel",
+            )]),
         ],
         tools=[approval_tool()],
     )
@@ -106,6 +112,11 @@ async def test_approval_state_excludes_plugin_configuration_and_context_model(tm
     assert "approval-state-skill-sentinel" not in serialized
     assert "approval-state-description-sentinel" not in serialized
     assert "approval-parallel-description-sentinel" not in serialized
+    assert "approval-child-sentinel" not in serialized
+    assert "approval-child-description-sentinel" not in serialized
+    assert "approval-child-prompt-sentinel" not in serialized
+    assert "approval-child-model-sentinel" not in serialized
+    assert "ChildHarnessHost" not in serialized
     assert "PluginContext" not in serialized
     assert "context_marker" not in serialized
 

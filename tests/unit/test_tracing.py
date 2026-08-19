@@ -39,7 +39,9 @@ from thinharness.projections import model_request_delta_from_prompt, model_reque
 from thinharness.providers import ModelNotice, ModelToolCall, ModelTurn, TokenUsage, ToolOutput
 from thinharness.tracing import _SpanAdapter, annotate_model_request, create_local_tracing_options, serialize_attribute_value
 
-event_from_span = run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "build_transcripts.py"))["event_from_span"]
+_transcript_script = run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "build_transcripts.py"))
+event_from_span = _transcript_script["event_from_span"]
+write_transcripts = _transcript_script["write_transcripts"]
 
 
 class Person(BaseModel):
@@ -568,6 +570,17 @@ def test_provider_error_keeps_trace_input_without_output(tmp_path: Path) -> None
     assert "gen_ai.system_instructions" in root.attributes
     assert "gen_ai.completion" not in root.attributes
     assert root.status is not None
+
+def test_transcript_generation_refuses_to_blank_existing_output_without_sources(tmp_path: Path) -> None:
+    output = tmp_path / "index.html"
+    original = '<script id="trace-data" type="application/json">{"agents":[{"slug":"kept"}]}</script>'
+    output.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="existing output was not changed"):
+        write_transcripts(output, examples_root=tmp_path / "empty-examples")
+
+    assert output.read_text(encoding="utf-8") == original
+
 
 def test_transcript_classification_requires_authoritative_delegation_marker() -> None:
     base = {

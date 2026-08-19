@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import FailingSession, FakeTracer, ScriptedModel, ScriptedSession, echo_tool, tool_output
@@ -17,10 +20,12 @@ from thinharness import (
     HarnessConfig,
     Hook,
     HookRegistry,
+    ParallelLlmPlugin,
     PluginBinding,
     PluginContext,
     PluginContribution,
     SkillsPlugin,
+    StreamOptions,
     SubAgentConfig,
     SubagentsPlugin,
     ToolOrigin,
@@ -712,6 +717,441 @@ def test_plugin_object_reuse_binds_independent_hosts(tmp_path: Path) -> None:
 
     assert first.tools[0].handler is not second.tools[0].handler
     assert first._child_harnesses is not second._child_harnesses
+
+
+async def test_detached_delegation_task_loses_active_call_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = asyncio.Event()
+    detached: list[asyncio.Task[ChildHarnessOutcome]] = []
+    inferred: list[str] = []
+    request = ChildHarnessRequest(
+        agent_name="late",
+        agent_description="Late child",
+        trace_agent_name="subagent.late",
+        task="late",
+        inherited=False,
+        tool_mode="explicit",
+        system_prompt="late",
+        model="openai:late",
+    )
+
+    class DetachedPlugin:
+        name = "detached"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            async def invoke(_args: Any) -> str:
+                async def delayed() -> ChildHarnessOutcome:
+                    await release.wait()
+                    return await context.child_harnesses.run(request)
+
+                detached.append(asyncio.create_task(delayed()))
+                return "scheduled"
+
+            tool = ToolSpec("delegate_later", "Delegate later", {"type": "object"}, invoke)
+            registered = context.child_harnesses.register_delegation_tool(tool, [request])
+            return PluginBinding(static=PluginContribution(tools=(registered,)))
+
+    def infer(model_ref: str, **_kwargs: Any) -> ScriptedModel:
+        inferred.append(model_ref)
+        return ScriptedModel([])
+
+    monkeypatch.setattr("thinharness.children.infer_model", infer)
+    parent = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="late_call", name="delegate_later", arguments="{}")],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([parent]), plugins=[DetachedPlugin()])
+
+    assert (await harness.run("go")).text == "done"
+    release.set()
+    with pytest.raises(Exception, match="active parent tool call"):
+        await detached[0]
+    assert inferred == []
+
+
+async def test_connected_registered_delegation_keeps_provenance_and_host_access(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+    marker_at_hook: list[bool] = []
+
+    class ConnectedDelegationPlugin:
+        name = "connected-delegation"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            request = ChildHarnessRequest(
+                agent_name="connected",
+                agent_description="Connected child",
+                trace_agent_name="subagent.connected",
+                task="",
+                inherited=False,
+                tool_mode="explicit",
+                system_prompt="connected",
+            )
+
+            async def invoke(args: dict[str, Any]) -> str:
+                outcome = await context.child_harnesses.run(replace(request, task=str(args["task"])))
+                return outcome.content
+
+            raw = ToolSpec(
+                "connected_delegate",
+                "Connected delegate",
+                {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]},
+                invoke,
+            )
+            registered = context.child_harnesses.register_delegation_tool(raw, [request])
+
+            @asynccontextmanager
+            async def connect():
+                yield PluginContribution(tools=(registered,))
+
+            return PluginBinding(connect=connect)
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="connected_call", name="connected_delegate", arguments='{"task":"help"}')],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="parent done", raw={}),
+    )
+    child = ScriptedSession(start_turn=ModelTurn(text="connected child done", raw={}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[ConnectedDelegationPlugin()],
+        hooks=[Hook(
+            "before_tool_call",
+            lambda _ctx: marker_at_hook.append(tracer.stack[-1].attributes.get("subagent.delegation") is True),
+            tools=["connected_delegate"],
+        )],
+        tracing=[TracingOptions(tracer=tracer)],
+    )
+
+    assert (await harness.run("go")).text == "parent done"
+    output = tool_output(parent.continue_calls[0][0][0].output)
+    span = next(span for span in tracer.spans if span.name == "execute_tool connected_delegate")
+    assert output["content"] == "connected child done"
+    assert marker_at_hook == [True]
+    assert span.attributes["subagent.delegation"] is True
+
+
+@pytest.mark.parametrize(
+    ("child_ref", "expected_key", "expected_base"),
+    [
+        ("openai:child", "parent-key", "https://parent.test"),
+        ("anthropic:child", None, None),
+    ],
+)
+async def test_child_override_projects_only_same_provider_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_ref: str,
+    expected_key: str | None,
+    expected_base: str | None,
+) -> None:
+    captured: dict[str, Any] = {}
+    child_model = ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="child", raw={}))])
+
+    def infer(model_ref: str, **kwargs: Any) -> ScriptedModel:
+        captured.update(model_ref=model_ref, **kwargs)
+        return child_model
+
+    monkeypatch.setattr("thinharness.children.infer_model", infer)
+    parent = ScriptedSession(start_turn=_parent_call(agent="override"), continue_turn=ModelTurn(text="done", raw={}))
+    harness = Harness(
+        HarnessConfig(
+            root=tmp_path,
+            api_key="parent-key",
+            base_url="https://parent.test",
+            request_timeout=17,
+            request_retries=2,
+            temperature=0.4,
+        ),
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="override", description="Override.", model=child_ref)
+        ])],
+    )
+
+    assert (await harness.run("go")).text == "done"
+    assert captured["model_ref"] == child_ref
+    assert captured["api_key"] == expected_key
+    assert captured["base_url"] == expected_base
+    assert captured["timeout"] == 17
+    assert captured["request_retries"] == 2
+    assert captured["temperature"] == 0.4
+
+
+async def test_default_child_borrows_parent_model_without_closing_provider(tmp_path: Path) -> None:
+    parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="done", raw={}))
+    model = ScriptedModel([parent, ScriptedSession(start_turn=ModelTurn(text="child", raw={}))])
+    provider = ClosingProvider()
+    model.provider = provider
+    harness = Harness(HarnessConfig(root=tmp_path), model=model, plugins=[SubagentsPlugin()])
+
+    assert (await harness.run("go")).text == "done"
+    assert provider.closed == 0
+
+
+async def test_concurrent_override_delegations_own_and_close_distinct_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models = [
+        ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="one", raw={}))]),
+        ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="two", raw={}))]),
+    ]
+    providers = [ClosingProvider(), ClosingProvider()]
+    for model, provider in zip(models, providers, strict=True):
+        model.provider = provider
+    created: list[ScriptedModel] = []
+
+    def infer(*_args: Any, **_kwargs: Any) -> ScriptedModel:
+        model = models[len(created)]
+        created.append(model)
+        return model
+
+    monkeypatch.setattr("thinharness.children.infer_model", infer)
+    parent = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[
+                ModelToolCall(id="one", name="subagent", arguments='{"task":"one","agent":"worker"}'),
+                ModelToolCall(id="two", name="subagent", arguments='{"task":"two","agent":"worker"}'),
+            ],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="worker", description="Worker.", model="openai:child")
+        ])],
+    )
+
+    assert (await harness.run("go")).text == "done"
+    assert len({id(model) for model in created}) == 2
+    assert [provider.closed for provider in providers] == [1, 1]
+
+
+async def test_strict_sibling_abort_does_not_hang_concurrent_delegation(tmp_path: Path) -> None:
+    class BlockingSession:
+        async def start(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def continue_with_tools(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
+            raise AssertionError("unreachable")
+
+        async def continue_with_user_text(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
+            raise AssertionError("unreachable")
+
+        def dump_state(self) -> None:
+            return None
+
+    def fail_sibling(ctx: Any) -> None:
+        if ctx.tool_name == "fail":
+            raise RuntimeError("strict sibling abort")
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[
+                ModelToolCall(id="delegate", name="subagent", arguments='{"task":"wait"}'),
+                ModelToolCall(id="fail", name="fail", arguments="{}"),
+            ],
+            raw={},
+        )
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path, strict_hooks=True),
+        model=ScriptedModel([parent, BlockingSession()]),
+        plugins=[SubagentsPlugin()],
+        tools=[ToolSpec("fail", "Fail", {"type": "object"}, lambda _args: "unused")],
+        hooks=[Hook("before_tool_call", fail_sibling)],
+    )
+
+    with pytest.raises(RuntimeError, match="strict sibling abort"):
+        await asyncio.wait_for(harness.run("go"), timeout=1)
+
+
+async def test_child_budgets_notices_and_tool_retry_fallback_are_fresh(tmp_path: Path) -> None:
+    observed: list[tuple[str, int, int | None, int]] = []
+
+    def record(label: str):
+        def hook(ctx: Any) -> None:
+            observed.append((label, ctx.max_model_requests, ctx.max_tool_calls, ctx.harness.config.tool_retries))
+
+        return hook
+
+    first_parent = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text="first", raw={}))
+    first_child = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="echo", name="echo", arguments='{"value":"ok"}')],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="child first", raw={}),
+    )
+    second_parent = ScriptedSession(
+        start_turn=_parent_call(agent="named", call_id="named_call"),
+        continue_turn=ModelTurn(text="second", raw={}),
+    )
+    second_child = ScriptedSession(start_turn=ModelTurn(text="child second", raw={}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, max_model_requests=2, max_tool_calls=8, tool_retries=4),
+        model=ScriptedModel([first_parent, first_child, second_parent, second_child]),
+        plugins=[SubagentsPlugin(
+            default_hooks=[Hook("run_start", record("default"))],
+            agents=[SubAgentConfig(
+                name="named",
+                description="Named.",
+                max_model_requests=3,
+                max_tool_calls=2,
+                hooks=[Hook("run_start", record("named"))],
+            )],
+        )],
+        tools=[echo_tool()],
+    )
+
+    assert (await harness.run("first")).text == "first"
+    assert (await harness.run("second")).text == "second"
+    first_envelope = tool_output(first_parent.continue_calls[0][0][0].output)
+    assert first_envelope["metadata"]["model_requests"] == 2
+    assert [(notice.limit_kind, notice.remaining) for notice in first_child.notice_calls[1][1]] == [
+        ("model_requests", 1)
+    ]
+    assert observed == [
+        ("default", 2, 8, 4),
+        ("named", 3, 2, 1),
+    ]
+
+
+async def test_inherited_parallel_model_resolution_follows_frozen_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import thinharness.plugins.parallel_llm as parallel_module
+
+    real_tool = parallel_module.ParallelLlmTool
+    captured: list[Any] = []
+
+    def capture(**kwargs: Any):
+        captured.append(kwargs["model"])
+        return real_tool(**kwargs)
+
+    monkeypatch.setattr(parallel_module, "ParallelLlmTool", capture)
+
+    async def run_case(plugin: ParallelLlmPlugin) -> tuple[Any, Any, Any]:
+        parent_model = ScriptedModel([
+            ScriptedSession(start_turn=_parent_call(agent="worker"), continue_turn=ModelTurn(text="done", raw={}))
+        ])
+        child_model = ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="child", raw={}))])
+        monkeypatch.setattr("thinharness.children.infer_model", lambda *_args, **_kwargs: child_model)
+        before = len(captured)
+        harness = Harness(
+            HarnessConfig(root=tmp_path),
+            model=parent_model,
+            plugins=[plugin, SubagentsPlugin(agents=[
+                SubAgentConfig(name="worker", description="Worker.", inherit_parent=True, model="openai:child")
+            ])],
+        )
+        await harness.run("go")
+        return parent_model, child_model, tuple(captured[before:])
+
+    borrowed_parent, borrowed_child, borrowed = await run_case(ParallelLlmPlugin())
+    explicit_model = ScriptedModel([])
+    _object_parent, _object_child, object_models = await run_case(ParallelLlmPlugin(explicit_model))
+    _string_parent, _string_child, string_models = await run_case(ParallelLlmPlugin("openai:fixed"))
+
+    assert borrowed == (borrowed_parent, borrowed_child)
+    assert object_models == (explicit_model, explicit_model)
+    assert string_models == ("openai:fixed", "openai:fixed")
+
+
+async def test_reused_subagents_plugin_keeps_parent_runs_fully_isolated(tmp_path: Path) -> None:
+    plugin = SubagentsPlugin()
+    hook_metadata: list[tuple[str, dict[str, Any]]] = []
+    child_inputs: list[tuple[str, list[str], dict[str, Any]]] = []
+
+    def parent(label: str, child_text: str, tool_name: str) -> Harness:
+        parent_session = ScriptedSession(start_turn=_parent_call(), continue_turn=ModelTurn(text=f"{label} parent", raw={}))
+
+        def child_start(_prompt: str, instructions: str, tools: list[dict[str, Any]], metadata: dict[str, Any], _previous: Any) -> None:
+            child_inputs.append((instructions, [tool["name"] for tool in tools], dict(metadata)))
+
+        child_session = ScriptedSession(
+            start_turn=ModelTurn(text=child_text, raw={}),
+            on_start=child_start,
+        )
+        return Harness(
+            HarnessConfig(root=tmp_path / label),
+            model=ScriptedModel([parent_session, child_session], model=f"{label}-model"),
+            plugins=[FilesystemPlugin(tools=["read"]), plugin],
+            tools=[ToolSpec(tool_name, tool_name, {"type": "object"}, lambda _args: label)],
+            hooks=[Hook(
+                "before_subagent_run",
+                lambda ctx: hook_metadata.append((label, dict(ctx.metadata))),
+                agents=["default"],
+            )],
+        )
+
+    first = parent("first", "first child", "first_tool")
+    second = parent("second", "second child", "second_tool")
+
+    async def collect(harness: Harness, metadata: dict[str, Any]) -> tuple[str, list[Any]]:
+        events: list[Any] = []
+        stream = harness.stream("go", metadata=metadata, stream_options=StreamOptions(include_subagents=True))
+        async with stream as values:
+            async for event in values:
+                events.append(event)
+        result = next(event.result for event in events if event.kind == "run_completed" and event.parent_run_id is None)
+        return result.text, events
+
+    first_text, first_events = await collect(first, {"conversation_id": "first-conversation"})
+    second_text, second_events = await collect(second, {"conversation_id": "second-conversation"})
+
+    assert (first_text, second_text) == ("first parent", "second parent")
+    assert [entry[1] for entry in child_inputs] == [["read", "first_tool"], ["read", "second_tool"]]
+    assert str((tmp_path / "first").resolve()) in child_inputs[0][0]
+    assert str((tmp_path / "second").resolve()) in child_inputs[1][0]
+    assert child_inputs[0][2]["conversation_id"] == "first-conversation"
+    assert child_inputs[1][2]["conversation_id"] == "second-conversation"
+    assert hook_metadata == [
+        ("first", {"conversation_id": "first-conversation"}),
+        ("second", {"conversation_id": "second-conversation"}),
+    ]
+    assert [event.text for event in first_events if event.kind == "model_message" and event.agent_name == "default"] == ["first child"]
+    assert [event.text for event in second_events if event.kind == "model_message" and event.agent_name == "default"] == ["second child"]
+
+
+async def test_failed_child_run_with_cancelled_cleanup_propagates_cancellation(tmp_path: Path) -> None:
+    class CancelOnClosePlugin:
+        name = "cancel-on-close"
+
+        def bind(self, _context: PluginContext) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                try:
+                    yield PluginContribution()
+                finally:
+                    raise asyncio.CancelledError
+
+            return PluginBinding(connect=connect)
+
+    parent = ScriptedSession(start_turn=_parent_call(agent="cancel"), continue_turn=ModelTurn(text="unused", raw={}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, FailingSession()]),
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="cancel", description="Cancel cleanup.", plugins=[CancelOnClosePlugin()])
+        ])],
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(harness.run("go"), timeout=1)
 
 
 def test_harness_removed_fields_and_constructor_helpers_are_gone() -> None:

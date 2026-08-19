@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,13 +17,24 @@ from .base import Json, PathValidationError, ToolResult, ToolSpec, _path_error, 
 
 @dataclass(frozen=True)
 class Skill:
-    """A discovered skill directory and its metadata."""
+    """A discovered skill directory and its detached metadata."""
 
     name: str
     description: str
     root: Path
     skill_file: Path
     metadata: Json
+
+
+@dataclass(frozen=True)
+class _CatalogSkill:
+    """One deeply immutable constructor-time catalog entry."""
+
+    name: str
+    description: str
+    root: Path
+    skill_file: Path
+    metadata: object
 
 
 class SkillArgs(BaseModel):
@@ -58,14 +70,33 @@ class SkillRegistry:
         *,
         selected_skills: Sequence[str] | None = None,
     ) -> None:
-        self.skills_dirs = _normalize_skill_dirs(skills_dir)
-        self.selected_skills = list(selected_skills) if selected_skills is not None else None
-        self._skills = self._select_skills(self._discover())
+        self._skills_dirs = tuple(_normalize_skill_dirs(skills_dir))
+        self._selected_skills = tuple(selected_skills) if selected_skills is not None else None
+        self._skills = MappingProxyType(self._select_skills(self._discover()))
+
+    @property
+    def skills_dirs(self) -> tuple[Path, ...]:
+        """Return the frozen discovery directories."""
+        return self._skills_dirs
+
+    @property
+    def selected_skills(self) -> tuple[str, ...] | None:
+        """Return the frozen selected skill names."""
+        return self._selected_skills
 
     @property
     def skills(self) -> dict[str, Skill]:
-        """Return a copy of the discovered skills map."""
-        return dict(self._skills)
+        """Return deep detached public catalog values."""
+        return {
+            name: Skill(
+                name=skill.name,
+                description=skill.description,
+                root=skill.root,
+                skill_file=skill.skill_file,
+                metadata=_thaw_metadata(skill.metadata),
+            )
+            for name, skill in self._skills.items()
+        }
 
     def prompt_summary(self, *, include_read_hint: bool = True) -> str:
         """Return a compact skill list for the system prompt."""
@@ -137,10 +168,10 @@ class SkillRegistry:
         result.metadata.update({"returncode": proc.returncode, "cmd": command})
         return result
 
-    def _discover(self) -> dict[str, Skill]:
+    def _discover(self) -> dict[str, _CatalogSkill]:
         """Discover skill files from the configured directories."""
-        found: dict[str, Skill] = {}
-        for skills_dir in self.skills_dirs:
+        found: dict[str, _CatalogSkill] = {}
+        for skills_dir in self._skills_dirs:
             if not skills_dir.exists():
                 continue
             files = [path for path in skills_dir.rglob("SKILL.md") if path.is_file()]
@@ -151,24 +182,24 @@ class SkillRegistry:
                 name = str(metadata.get("name") or default_name).strip()
                 if not name:
                     continue
-                skill = Skill(
+                skill = _CatalogSkill(
                     name=name,
                     description=str(metadata.get("description") or "").strip(),
                     root=path.parent.resolve(),
                     skill_file=path.resolve(),
-                    metadata=metadata,
+                    metadata=_freeze_metadata(metadata),
                 )
                 if name in found:
                     raise ValueError(f"duplicate skill name: {name} in {found[name].skill_file} and {skill.skill_file}")
                 found[name] = skill
         return found
 
-    def _select_skills(self, discovered: dict[str, Skill]) -> dict[str, Skill]:
-        """Return discovered skills filtered by selected_skills."""
-        if self.selected_skills is None:
+    def _select_skills(self, discovered: dict[str, _CatalogSkill]) -> dict[str, _CatalogSkill]:
+        """Return discovered skills filtered by the frozen selection."""
+        if self._selected_skills is None:
             return discovered
-        selected: dict[str, Skill] = {}
-        for name in self.selected_skills:
+        selected: dict[str, _CatalogSkill] = {}
+        for name in self._selected_skills:
             if name in selected:
                 raise ValueError(f"duplicate selected skill: {name}")
             if name not in discovered:
@@ -177,7 +208,7 @@ class SkillRegistry:
             selected[name] = discovered[name]
         return selected
 
-    def _get(self, name: str) -> Skill:
+    def _get(self, name: str) -> _CatalogSkill:
         """Look up a skill by name."""
         try:
             return self._skills[name]
@@ -207,6 +238,30 @@ class SkillRegistry:
         head = max_chars // 2
         tail = max_chars - head
         return ToolResult(True, f"[truncated {len(text)} chars to {max_chars}]\n{text[:head]}\n...\n{text[-tail:]}", {"truncated": True, "chars": len(text)})
+
+
+def _freeze_metadata(value: Any) -> object:
+    """Convert JSON-like metadata to recursively immutable storage."""
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_metadata(item) for item in value)
+    return value
+
+
+def _thaw_metadata(value: object) -> Json:
+    """Return a deep mutable JSON copy of frozen metadata."""
+    def thaw(item: object) -> Any:
+        if isinstance(item, Mapping):
+            return {str(key): thaw(child) for key, child in item.items()}
+        if isinstance(item, tuple):
+            return [thaw(child) for child in item]
+        return item
+
+    detached = thaw(value)
+    if not isinstance(detached, dict):
+        raise TypeError("skill metadata must be an object")
+    return detached
 
 
 def parse_frontmatter(text: str) -> tuple[Json, str]:

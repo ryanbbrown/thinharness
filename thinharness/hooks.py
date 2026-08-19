@@ -16,6 +16,14 @@ _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar
 _CURRENT_TOOL_RUNTIME: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
 
 
+@dataclass
+class _ToolRuntimeLease:
+    """Shared mutable validity for one tool call's copied runtime context."""
+
+    active: bool = True
+
+
+
 def current_tool_call_context() -> Json | None:
     """Return the current tool call context for nested tool handlers."""
     return _CURRENT_TOOL_CALL.get()
