@@ -343,8 +343,8 @@ def test_correction_following_resume_uses_same_session(tmp_path: Path) -> None:
     # The resumed session answers the resume prompt first, then the correction
     # lands on the same session as a continuation.
     assert [method for method, _notices in resumed_session.notice_calls] == [
-        "continue_with_user_text",
-        "continue_with_user_text",
+        "continue_with_user_content",
+        "continue_with_user_content",
     ]
     assert resumed.responses == [{"id": "resumed-bad"}, {"id": "corrected"}]
 

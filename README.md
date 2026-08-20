@@ -256,6 +256,19 @@ asyncio.run(main())
 
 There's a synchronous wrapper too: `Harness(...).run_sync(...)`.
 
+Prompts can contain ordered local text and images:
+
+```python
+from thinharness import ImageBlock, TextBlock
+
+result = await harness.run([
+    TextBlock("Describe this image."),
+    ImageBlock(open("diagram.png", "rb").read(), "image/png"),
+])
+```
+
+Supported image types are JPEG, PNG, GIF, and WebP. ThinHarness does not fetch image URLs or infer vision support from model names.
+
 Optional MCP servers use the same plugin composition model:
 
 ```python
@@ -337,7 +350,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 
 ## Features
 
-- **Filesystem plugin:** explicit `FilesystemPlugin` composition for `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
+- **Filesystem plugin:** explicit `FilesystemPlugin` composition for `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob`, plus opt-in bounded `read_image`, with root-scoped path policies.
 - **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
 - **Bash plugin:** explicit `BashPlugin` composition for one-shot non-interactive commands with contained cwd, filtered environment, bounded output, timeouts, cancellation cleanup, and optional approval.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
@@ -347,7 +360,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 - **Subagents:** explicit `SubagentsPlugin` composition with a default child, ordered named `SubAgentConfig` recipes, additive safe-plugin inheritance, local child hooks, and no recursive delegation.
 - **Parallel LLM:** explicit `ParallelLlmPlugin` fan-out for batches of independent one-shot prompts, plus `ParallelLlmTool(...).spec()` for renameable or structured tools with explicit model, path, prompt, and provider request settings.
 - **Skills:** explicit `SkillsPlugin` composition with an ordered `skill_read` and/or `skill_run` selection, plus Python, shell, JavaScript, and Go script runners.
-- **Resume:** clean new-turn continuation through self-contained transcript state that can replay across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
+- **Resume:** clean new-turn continuation through self-contained transcript state that can replay text and images across built-in providers and models, preserving native reasoning on same-provider resume and degrading it to text across providers.
 - **MCP:** optional MCP support built on the FastMCP client, including in-process servers via `FastMCPTransport`, with lazy tool discovery and collision checks.
 - **Parallel tool calls:** same-turn tool batches run concurrently when every called tool is parallel-safe.
 - **Human approvals:** mark custom tools as approval-required so a run pauses before side effects, returns pending call details plus resume state, then continues after an approve/reject decision.

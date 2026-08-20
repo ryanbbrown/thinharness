@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import copy
 import json
 import re
@@ -11,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from ..content import ImageBlock, TextBlock
 from .base import Json, ToolOrigin, ToolResult, ToolSpec
 
 _INSTALL_HINT = "Install MCP support with: pip install thinharness[mcp]"
@@ -163,9 +166,12 @@ class MCPServer:
             )
         structured_content = getattr(result, "structuredContent", None)
         if structured_content is not None:
-            content = json.dumps(structured_content, ensure_ascii=False)
+            structured = TextBlock(json.dumps(structured_content, ensure_ascii=False))
+            content = (structured, *_content_to_blocks(result.content, include_text=False))
         else:
-            content = _content_to_text(result.content)
+            content = _content_to_blocks(result.content, include_text=True)
+        if all(isinstance(block, TextBlock) for block in content):
+            return ToolResult(True, "\n".join(block.text for block in content if isinstance(block, TextBlock)), base_metadata)
         return ToolResult(True, content, base_metadata)
 
 
@@ -362,7 +368,7 @@ def _clean_mcp_schema(schema: Any, tool_name: str) -> Json:
 
 
 def _content_to_text(blocks: list[Any]) -> str:
-    """Convert MCP content blocks to model-visible text."""
+    """Convert MCP content blocks to text for protocol-level failures."""
     parts: list[str] = []
     for block in blocks:
         block_type = getattr(block, "type", "")
@@ -373,11 +379,48 @@ def _content_to_text(blocks: list[Any]) -> str:
         elif block_type == "audio":
             parts.append(f"[audio: {getattr(block, 'mimeType', 'unknown')}]")
         elif block_type in {"resource", "resource_link"}:
-            uri = getattr(block, "uri", None)
-            resource = getattr(block, "resource", None)
-            if uri is None and resource is not None:
-                uri = getattr(resource, "uri", None)
-            parts.append(f"[resource: {uri or 'unknown'}]")
+            parts.append(_resource_placeholder(block))
         else:
             parts.append(str(block))
     return "\n".join(parts)
+
+
+def _content_to_blocks(blocks: list[Any], *, include_text: bool) -> tuple[TextBlock | ImageBlock, ...]:
+    """Preserve supported MCP images and ordered text placeholders."""
+    parts: list[TextBlock | ImageBlock] = []
+    for block in blocks:
+        block_type = getattr(block, "type", "")
+        if block_type == "text":
+            if include_text:
+                text = str(getattr(block, "text", ""))
+                if text:
+                    parts.append(TextBlock(text))
+            continue
+        if block_type == "image":
+            media_type = str(getattr(block, "mimeType", "unknown"))
+            data = getattr(block, "data", "")
+            if media_type in {"image/jpeg", "image/png", "image/gif", "image/webp"} and isinstance(data, str):
+                try:
+                    decoded = base64.b64decode(data, validate=True)
+                except (binascii.Error, ValueError):
+                    decoded = b""
+                if decoded:
+                    parts.append(ImageBlock(decoded, media_type))  # type: ignore[arg-type]
+                    continue
+            parts.append(TextBlock(f"[image: {media_type}]"))
+        elif block_type == "audio":
+            parts.append(TextBlock(f"[audio: {getattr(block, 'mimeType', 'unknown')}]"))
+        elif block_type in {"resource", "resource_link"}:
+            parts.append(TextBlock(_resource_placeholder(block)))
+        else:
+            parts.append(TextBlock(str(block)))
+    return tuple(parts)
+
+
+def _resource_placeholder(block: Any) -> str:
+    """Return the existing resource placeholder text."""
+    uri = getattr(block, "uri", None)
+    resource = getattr(block, "resource", None)
+    if uri is None and resource is not None:
+        uri = getattr(resource, "uri", None)
+    return f"[resource: {uri or 'unknown'}]"

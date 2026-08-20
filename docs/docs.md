@@ -62,7 +62,7 @@ Streaming is coarse turn/tool/run streaming, not token-delta streaming. Provider
 
 Stream events are high-level workflow events intended for app consumption:
 
-- `RunStartedEvent.prompt` includes the submitted prompt.
+- `RunStartedEvent.prompt` includes the submitted text, or compact ordered JSON with redacted image descriptors for a multimodal prompt.
 - `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
 - `ToolCallCompletedEvent.output` includes model-visible tool output.
 - Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
@@ -131,7 +131,18 @@ The core harness has no implicit filesystem tools. Add `FilesystemPlugin()` to g
 - `list`: list files or directories.
 - `glob`: find files by glob pattern.
 
-Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` is opt-in:
+Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` and `read_image` are opt-in. `read_image` reads a bounded JPEG, PNG, GIF, or WebP file under the read path policy and returns metadata text followed by the image. It does not change the text-only `read` tool. Configure its independent positive byte limit with `max_image_bytes` (default 5,000,000).
+
+For example:
+
+```python
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin(tools=["read", "read_image"])],
+)
+```
+
+`jsonl_search` is also opt-in:
 
 ```python
 harness = Harness(
@@ -233,7 +244,7 @@ Cwd containment and environment filtering reduce mistakes; they are not a sandbo
 
 ## Custom Tools
 
-Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, or JSON-serializable data. The model always receives a JSON envelope with `ok`, `content`, and `metadata`.
+Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, JSON-serializable data, or an ordered sequence of `TextBlock` and `ImageBlock` values. Text-only results keep the JSON envelope with `ok`, `content`, and `metadata`; image-bearing results use provider-native blocks while keeping `ok` and metadata visible to the model.
 
 ```python
 from pydantic import BaseModel
@@ -353,6 +364,12 @@ ThinHarness resolves structured output when the harness is constructed and eager
 
 Tool-mode structured output uses a harness-created `final_result` tool. It is not a normal registered tool, does not fire tool hooks, and clean exits through it are not resumable because the provider transcript would contain an unanswered synthetic tool call.
 
+## Image Content
+
+`Harness.run()`, `stream()`, and `run_sync()` accept a non-empty string or an ordered sequence of `TextBlock` and `ImageBlock` values. Images use immutable bytes with an explicit `image/jpeg`, `image/png`, `image/gif`, or `image/webp` media type. Empty content, unsupported media types, URLs, paths, and mutable byte containers are rejected before provider work. Provider or model errors report unsupported vision models.
+
+OpenAI, Anthropic, and OpenRouter receive provider-native image parts. OpenRouter projects tool-result images into a labelled follow-up user message because multimodal tool-role support is inconsistent. Bash, subagent tasks, and `parallel_llm` prompts remain text-only. Completed results and resume state can contain full base64 image data, so treat them as sensitive and potentially large.
+
 ## Hooks
 
 Hooks are runtime callables registered on a `Harness`. They can observe lifecycle events, append prompt context, cancel selected before-events, or rewrite tool output.
@@ -382,7 +399,7 @@ Hook events:
 - `limit_reached`
 - `run_end`
 
-`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. `after_tool_call` can rewrite `ctx.output`, but retry control flow is captured before that rewrite. Tool filters apply only to tool events; agent filters apply only to subagent events.
+`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. Run-start and prompt-submit hooks receive normalized content-block tuples and can replace the prompt with a string or valid block sequence. `after_tool_call` can rewrite canonical `ctx.output` or structured `ctx.envelope`; either form is strictly validated and keeps the other synchronized. These after-tool fields can contain full base64 image data and can be sensitive and large. Tool filters apply only to tool events; agent filters apply only to subagent events.
 
 By default, hook exceptions are logged and the run continues. Set `strict_hooks=True` to make hook exceptions fail the run.
 
@@ -569,7 +586,7 @@ Available wrappers:
 - `MCPServerSSE`
 - `MCPServerStreamableHTTP`
 
-ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
+ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. Successful supported MCP images remain ordered image blocks. When `structuredContent` exists, its canonical JSON is the authoritative first text block, MCP text blocks are discarded, and image blocks or placeholders keep their relative order. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
 
 ## Resume
 
@@ -603,8 +620,8 @@ Budgets span the pause. The paused batch counts against `usage.tool_calls` exact
 
 Built-in provider resume details:
 
-- `resume_state["kind"] == "transcript"` and `version == 3`.
-- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention.
+- `resume_state["kind"] == "transcript"` and `version == 4`. Older transcript versions must be regenerated; approval envelopes with version 3 nested provider state also fail.
+- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead.
 - Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
 - Cross-provider resume is supported by the built-in renderers, but real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
 - `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` remains available as a low-level escape hatch, but later resume state captures only the new prompt onward, not the externally seeded prior turns.
@@ -644,7 +661,7 @@ Local tracing is on by default. It writes plaintext JSONL traces under:
 ~/.thinharness/traces/<encoded-project-root>/
 ```
 
-Those traces can include prompts, model outputs, tool arguments, and tool results. Treat them as sensitive local data.
+Those traces can include prompt text, model outputs, tool arguments, and tool-result text. Image bytes, base64, and data URLs are replaced with ordered descriptors that contain media type, byte size, and block index. Completed results and resume state still retain full images; treat them as sensitive local data.
 
 Disable local trace files with:
 

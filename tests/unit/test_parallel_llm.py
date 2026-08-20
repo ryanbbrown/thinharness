@@ -99,7 +99,7 @@ class BatchSession:
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
@@ -141,7 +141,7 @@ class MainSession:
         payload = json.loads(parsed["content"])
         return ModelTurn(text=f"done:{payload['succeeded']}", raw={"id": "done"})
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Main session never receives user-text continuations."""
         raise AssertionError("should not continue with user text")
 

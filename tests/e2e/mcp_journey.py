@@ -30,7 +30,7 @@ class DeterministicSession:
         assert "product=42" in outputs[0].output
         return ModelTurn(text="product=42 MCP_DONE", raw={"id": "done"})
 
-    async def continue_with_user_text(self, text: str, constants: Any, **_kwargs: Any) -> ModelTurn:
+    async def continue_with_user_content(self, text: str, constants: Any, **_kwargs: Any) -> ModelTurn:
         raise AssertionError(f"unexpected user continuation: {text!r}, {constants!r}")
 
     def dump_state(self) -> None:

@@ -427,7 +427,7 @@ async def test_multi_part_reasoning_renders_in_order(tmp_path: Path) -> None:
 async def test_reasoning_state_round_trips(tmp_path: Path) -> None:
     state = (await _harness(tmp_path, OpenAIResponsesModel(REASONING_OPENAI_MODEL, provider=ReasoningOpenAIProvider())).run("first")).resume_state
 
-    assert state["version"] == 3
+    assert state["version"] == 4
     assert json.loads(json.dumps(state)) == state
     assert _assistant_reasoning(state)[0]["signature"] == "enc-blob-1"
 

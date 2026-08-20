@@ -44,7 +44,7 @@ class SequenceSession:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """No tests in this file expect user-text continuations."""
         raise AssertionError("unexpected user-text continuation")
 
@@ -376,7 +376,7 @@ def test_after_tool_hook_sees_retry_envelope_and_cannot_break_budget(tmp_path: P
         hooks=[Hook("after_tool_call", after)],
     )
 
-    with pytest.raises(HarnessError):
+    with pytest.raises(ValueError, match="valid canonical ToolResult"):
         harness.run_sync("go")
 
     assert seen == ["ModelRetry"]
@@ -402,7 +402,7 @@ def test_after_tool_hook_sees_validation_retry_envelope(tmp_path: Path) -> None:
     assert seen[0]["retry"] is True
 
 
-def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
+def test_tracing_uses_mutated_retry_kind(tmp_path: Path) -> None:
     tracer = FakeTracer()
 
     def rewrite(ctx):
@@ -421,7 +421,7 @@ def test_tracing_uses_pre_hook_retry_kind(tmp_path: Path) -> None:
     harness.run_sync("go")
 
     span = next(span for span in tracer.spans if span.name == "execute_tool flaky")
-    assert span.attributes["error.type"] == "ModelRetry"
+    assert span.attributes["error.type"] == "Rewritten"
 
 
 def test_subagent_tool_retry_budget_recipes(tmp_path: Path) -> None:

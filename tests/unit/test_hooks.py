@@ -471,7 +471,7 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
         async def continue_with_tools(self, outputs, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
-        async def continue_with_user_text(self, text, constants, *, notices=None):
+        async def continue_with_user_content(self, text, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
     harness = Harness(

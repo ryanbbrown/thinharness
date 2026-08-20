@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import logging
@@ -17,7 +18,18 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, Field
 
-from .tools.base import Json
+from .content import (
+    ImageBlock,
+    NormalizedContent,
+    Prompt,
+    TextBlock,
+    append_text_block,
+    content_from_json,
+    content_to_json,
+    normalize_content,
+    text_only_value,
+)
+from .tools.base import Json, ToolResult
 from .types import HarnessError
 
 logger = logging.getLogger(__name__)
@@ -91,7 +103,7 @@ class AssistantEntry:
 class UserEntry:
     """Provider-neutral user transcript entry."""
 
-    content: str
+    content: NormalizedContent
     notice: bool = False
 
 
@@ -100,7 +112,7 @@ class ToolResultEntry:
     """Provider-neutral tool-result transcript entry."""
 
     call_id: str
-    output: str
+    result: ToolResult
 
 
 TranscriptEntry = AssistantEntry | UserEntry | ToolResultEntry
@@ -111,7 +123,19 @@ class ToolOutput:
     """A normalized local tool output."""
 
     call_id: str
-    output: str
+    result: ToolResult
+
+    def __post_init__(self) -> None:
+        """Normalize direct low-level text outputs into tool envelopes."""
+        if isinstance(self.result, str):
+            self.result = ToolResult(True, self.result)
+        elif not isinstance(self.result, ToolResult):
+            raise TypeError("ToolOutput.result must be a ToolResult")
+
+    @property
+    def output(self) -> str:
+        """Return the canonical text envelope."""
+        return self.result.to_json()
 
 
 @dataclass(frozen=True)
@@ -201,7 +225,7 @@ class ModelSession(Protocol):
 
     async def start(
         self,
-        prompt: str,
+        prompt: Prompt,
         constants: RequestConstants,
         *,
         previous_response_id: str | None = None,
@@ -220,14 +244,14 @@ class ModelSession(Protocol):
         """Continue a model run with tool outputs."""
         ...
 
-    async def continue_with_user_text(
+    async def continue_with_user_content(
         self,
-        text: str,
+        content: Prompt,
         constants: RequestConstants,
         *,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue a model run with user text (a correction or a resumed prompt)."""
+        """Continue a model run with user content (a correction or resumed prompt)."""
         ...
 
     def dump_state(self) -> dict[str, Any] | None:
@@ -292,10 +316,10 @@ _TRANSCRIPT_RESUME_KEYS = frozenset({"kind", "version", "origin_provider", "orig
 _TRANSCRIPT_ENTRY_KEYS = {
     "assistant": frozenset({"role", "text", "tool_calls", "reasoning"}),
     "user": frozenset({"role", "content", "notice"}),
-    "tool": frozenset({"role", "call_id", "output"}),
+    "tool": frozenset({"role", "call_id", "ok", "content", "metadata"}),
 }
 _REASONING_PART_KEYS = frozenset({"text", "signature", "id", "provider_name", "provider_details"})
-_TRANSCRIPT_VERSION = 3
+_TRANSCRIPT_VERSION = 4
 
 
 def _validate_resume_state(state: dict[str, Any]) -> list[TranscriptEntry]:
@@ -334,9 +358,9 @@ def _transcript_state(*, model: Model, entries: list[TranscriptEntry]) -> dict[s
 
 def _transcript_entry_to_dict(entry: TranscriptEntry) -> Json:
     if isinstance(entry, UserEntry):
-        return {"role": "user", "content": entry.content, "notice": entry.notice}
+        return {"role": "user", "content": content_to_json(entry.content), "notice": entry.notice}
     if isinstance(entry, ToolResultEntry):
-        return {"role": "tool", "call_id": entry.call_id, "output": entry.output}
+        return {"role": "tool", "call_id": entry.call_id, **entry.result.to_value()}
     return {
         "role": "assistant",
         "text": entry.text,
@@ -370,13 +394,21 @@ def _transcript_entry_from_dict(value: Any) -> TranscriptEntry:
     if set(value) != _TRANSCRIPT_ENTRY_KEYS[role]:
         raise HarnessError(f"resume_from entry {role!r} has wrong keys")
     if role == "user":
-        if not isinstance(value["content"], str) or type(value["notice"]) is not bool:
+        if type(value["notice"]) is not bool:
             raise HarnessError("resume_from user entry has wrong type")
-        return UserEntry(content=value["content"], notice=value["notice"])
+        try:
+            content = content_from_json(value["content"], label="resume_from user content")
+        except (TypeError, ValueError) as exc:
+            raise HarnessError(str(exc)) from exc
+        return UserEntry(content=content, notice=value["notice"])
     if role == "tool":
-        if not isinstance(value["call_id"], str) or not isinstance(value["output"], str):
+        if not isinstance(value["call_id"], str):
             raise HarnessError("resume_from tool entry has wrong type")
-        return ToolResultEntry(call_id=value["call_id"], output=value["output"])
+        try:
+            result = ToolResult.from_value({key: value[key] for key in ("ok", "content", "metadata")}, label="resume_from tool entry")
+        except (TypeError, ValueError) as exc:
+            raise HarnessError(str(exc)) from exc
+        return ToolResultEntry(call_id=value["call_id"], result=result)
     if not isinstance(value["text"], str) or not isinstance(value["tool_calls"], list) or not isinstance(value["reasoning"], list):
         raise HarnessError("resume_from assistant entry has wrong type")
     return AssistantEntry(
@@ -415,9 +447,9 @@ def _model_tool_call_from_dict(value: Any) -> ModelToolCall:
 
 
 def _append_tool_results(transcript: list[TranscriptEntry], outputs: list[ToolOutput], notice_text: str) -> None:
-    transcript.extend(ToolResultEntry(call_id=output.call_id, output=output.output) for output in outputs)
+    transcript.extend(ToolResultEntry(call_id=output.call_id, result=copy.deepcopy(output.result)) for output in outputs)
     if notice_text:
-        transcript.append(UserEntry(content=notice_text, notice=True))
+        transcript.append(UserEntry(content=(TextBlock(notice_text),), notice=True))
 
 
 def _append_assistant_turn(transcript: list[TranscriptEntry], turn: ModelTurn) -> None:
@@ -744,7 +776,7 @@ class OpenAIResponsesSession:
 
     async def start(
         self,
-        prompt: str,
+        prompt: Prompt,
         constants: RequestConstants,
         *,
         previous_response_id: str | None = None,
@@ -752,10 +784,11 @@ class OpenAIResponsesSession:
     ) -> ModelTurn:
         """Start a Responses API run."""
         self.previous_response_id = previous_response_id
-        input_text = append_notices_to_text(prompt, notices)
-        self.transcript = [UserEntry(content=input_text)]
+        content = append_notices_to_content(normalize_content(prompt, label="prompt"), notices)
+        self.transcript = [UserEntry(content=content)]
+        input_payload = _openai_user_input(content)
         payload = self.model.build_payload(
-            input_payload=input_text,
+            input_payload=input_payload,
             instructions=constants.instructions,
             tools=constants.tools,
             metadata=constants.metadata,
@@ -774,7 +807,7 @@ class OpenAIResponsesSession:
     ) -> ModelTurn:
         """Continue a Responses API run with function_call_output items."""
         input_payload: list[Json] = [
-            {"type": "function_call_output", "call_id": output.call_id, "output": output.output}
+            {"type": "function_call_output", "call_id": output.call_id, "output": _openai_tool_output(output.result)}
             for output in outputs
         ]
         notice_text = render_model_notices(notices)
@@ -797,18 +830,19 @@ class OpenAIResponsesSession:
             payload["previous_response_id"] = self.previous_response_id
         return await self._complete(payload)
 
-    async def continue_with_user_text(
+    async def continue_with_user_content(
         self,
-        text: str,
+        content: Prompt,
         constants: RequestConstants,
         *,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue a Responses API run with user text."""
-        input_text = append_notices_to_text(text, notices)
-        self.transcript.append(UserEntry(content=input_text))
+        """Continue a Responses API run with user content."""
+        normalized = append_notices_to_content(normalize_content(content), notices)
+        self.transcript.append(UserEntry(content=normalized))
+        input_payload = _openai_user_input(normalized)
         payload = self.model.build_payload(
-            input_payload=self._prepend_replay(input_text),
+            input_payload=self._prepend_replay(input_payload),
             instructions=constants.instructions,
             tools=constants.tools,
             metadata=constants.metadata,
@@ -844,7 +878,7 @@ class OpenAIResponsesSession:
         replay = _render_openai_transcript(self._pending_replay, encrypted_reasoning_ok=_openai_supports_encrypted_reasoning(self.model.model))
         self._pending_replay = None
         if isinstance(input_payload, str):
-            return [*replay, _openai_user_item(input_payload)]
+            return [*replay, _openai_user_item((TextBlock(input_payload),))]
         return [*replay, *input_payload]
 
 
@@ -898,7 +932,7 @@ class AnthropicMessagesSession:
 
     async def start(
         self,
-        prompt: str,
+        prompt: Prompt,
         constants: RequestConstants,
         *,
         previous_response_id: str | None = None,
@@ -908,8 +942,8 @@ class AnthropicMessagesSession:
         if previous_response_id:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
         self.system = constants.instructions
-        content = append_notices_to_text(prompt, notices)
-        self.messages = [{"role": "user", "content": content}]
+        content = append_notices_to_content(normalize_content(prompt, label="prompt"), notices)
+        self.messages = [{"role": "user", "content": _anthropic_user_content(content)}]
         self.transcript = [UserEntry(content=content)]
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
@@ -921,7 +955,7 @@ class AnthropicMessagesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
-        content = [{"type": "tool_result", "tool_use_id": output.call_id, "content": output.output} for output in outputs]
+        content = [{"type": "tool_result", "tool_use_id": output.call_id, "content": _anthropic_tool_output(output.result)} for output in outputs]
         notice_text = render_model_notices(notices)
         if notice_text:
             content.append({"type": "text", "text": notice_text})
@@ -933,18 +967,18 @@ class AnthropicMessagesSession:
         })
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
-    async def continue_with_user_text(
+    async def continue_with_user_content(
         self,
-        text: str,
+        content: Prompt,
         constants: RequestConstants,
         *,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue an Anthropic Messages run with user text."""
-        content = append_notices_to_text(text, notices)
-        self.transcript.append(UserEntry(content=content))
+        """Continue an Anthropic Messages run with user content."""
+        normalized = append_notices_to_content(normalize_content(content), notices)
+        self.transcript.append(UserEntry(content=normalized))
         self._apply_resume(constants.instructions)
-        self.messages.append({"role": "user", "content": content})
+        self.messages.append({"role": "user", "content": _anthropic_user_content(normalized)})
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     def dump_state(self) -> dict[str, Any] | None:
@@ -1063,7 +1097,7 @@ class OpenRouterSession:
 
     async def start(
         self,
-        prompt: str,
+        prompt: Prompt,
         constants: RequestConstants,
         *,
         previous_response_id: str | None = None,
@@ -1072,10 +1106,10 @@ class OpenRouterSession:
         """Start an OpenRouter run."""
         if previous_response_id:
             raise ProviderError("previous_response_id is only supported by OpenAI Responses")
-        content = append_notices_to_text(prompt, notices)
+        content = append_notices_to_content(normalize_content(prompt, label="prompt"), notices)
         self.messages = [
             {"role": "system", "content": constants.instructions},
-            {"role": "user", "content": content},
+            {"role": "user", "content": _openrouter_user_content(content)},
         ]
         self.transcript = [UserEntry(content=content)]
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
@@ -1092,23 +1126,28 @@ class OpenRouterSession:
         _append_tool_results(self.transcript, outputs, notice_text)
         self._apply_resume(constants.instructions)
         for output in outputs:
-            self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": output.output})
-        if notice_text:
+            self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": _openrouter_tool_output_json(output.result)})
+        image_parts = _openrouter_tool_image_parts(outputs)
+        if image_parts:
+            if notice_text:
+                image_parts.append({"type": "text", "text": notice_text})
+            self.messages.append({"role": "user", "content": image_parts})
+        elif notice_text:
             self.messages.append({"role": "user", "content": notice_text})
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
-    async def continue_with_user_text(
+    async def continue_with_user_content(
         self,
-        text: str,
+        content: Prompt,
         constants: RequestConstants,
         *,
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
-        """Continue an OpenRouter run with user text."""
-        content = append_notices_to_text(text, notices)
-        self.transcript.append(UserEntry(content=content))
+        """Continue an OpenRouter run with user content."""
+        normalized = append_notices_to_content(normalize_content(content), notices)
+        self.transcript.append(UserEntry(content=normalized))
         self._apply_resume(constants.instructions)
-        self.messages.append({"role": "user", "content": content})
+        self.messages.append({"role": "user", "content": _openrouter_user_content(normalized)})
         return await self._complete(tools=constants.tools, metadata=constants.metadata, structured_output=constants.structured_output)
 
     def dump_state(self) -> dict[str, Any] | None:
@@ -1269,6 +1308,117 @@ def append_notices_to_text(text: str, notices: list[ModelNotice] | None) -> str:
     return text if not notice_text else f"{text}\n\n{notice_text}"
 
 
+def append_notices_to_content(content: NormalizedContent, notices: list[ModelNotice] | None) -> NormalizedContent:
+    """Append notices as one final text block."""
+    return append_text_block(content, render_model_notices(notices))
+
+
+def _data_url(block: ImageBlock) -> str:
+    """Encode one image as a provider data URL."""
+    return f"data:{block.media_type};base64,{base64.b64encode(block.data).decode('ascii')}"
+
+
+def _openai_content_parts(content: NormalizedContent, *, text_type: str = "input_text", image_type: str = "input_image") -> list[Json]:
+    """Map neutral content to OpenAI Responses content parts."""
+    return [
+        {"type": text_type, "text": block.text}
+        if isinstance(block, TextBlock)
+        else {"type": image_type, "image_url": _data_url(block)}
+        for block in content
+    ]
+
+
+def _openai_user_input(content: NormalizedContent) -> str | list[Json]:
+    """Keep all-text input scalar and use a message item for images."""
+    text = text_only_value(content)
+    return text if text is not None else [_openai_user_item(content)]
+
+
+def _openai_tool_output(result: ToolResult) -> str | list[Json]:
+    """Map one canonical result to Responses function-call output."""
+    if not result.has_image:
+        return result.to_json()
+    header = json.dumps({"ok": result.ok, "metadata": result.metadata}, ensure_ascii=False, separators=(",", ":"))
+    return [{"type": "input_text", "text": header}, *_openai_content_parts(result.blocks)]
+
+
+def _anthropic_content_parts(content: NormalizedContent) -> list[Json]:
+    """Map neutral content to Anthropic content blocks."""
+    return [
+        {"type": "text", "text": block.text}
+        if isinstance(block, TextBlock)
+        else {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": block.media_type,
+                "data": base64.b64encode(block.data).decode("ascii"),
+            },
+        }
+        for block in content
+    ]
+
+
+def _anthropic_user_content(content: NormalizedContent) -> str | list[Json]:
+    """Keep all-text messages scalar and use blocks for images."""
+    return text_only_value(content) or _anthropic_content_parts(content)
+
+
+def _anthropic_tool_output(result: ToolResult) -> str | list[Json]:
+    """Map one canonical result to an Anthropic tool-result value."""
+    if not result.has_image:
+        return result.to_json()
+    header = json.dumps({"ok": result.ok, "metadata": result.metadata}, ensure_ascii=False, separators=(",", ":"))
+    return [{"type": "text", "text": header}, *_anthropic_content_parts(result.blocks)]
+
+
+def _openrouter_content_parts(content: NormalizedContent) -> list[Json]:
+    """Map neutral content to OpenRouter chat parts."""
+    return [
+        {"type": "text", "text": block.text}
+        if isinstance(block, TextBlock)
+        else {"type": "image_url", "image_url": {"url": _data_url(block)}}
+        for block in content
+    ]
+
+
+def _openrouter_user_content(content: NormalizedContent) -> str | list[Json]:
+    """Keep all-text messages scalar and use parts for images."""
+    return text_only_value(content) or _openrouter_content_parts(content)
+
+
+def _openrouter_tool_output_json(result: ToolResult) -> str:
+    """Serialize a tool result with image descriptors instead of image bytes."""
+    if not result.has_image:
+        return result.to_json()
+    projected: list[Json] = []
+    for index, block in enumerate(result.blocks):
+        if isinstance(block, TextBlock):
+            projected.append({"type": "text", "text": block.text})
+        else:
+            projected.append({
+                "type": "image",
+                "media_type": block.media_type,
+                "size_bytes": len(block.data),
+                "block_index": index,
+            })
+    return json.dumps({"ok": result.ok, "content": projected, "metadata": result.metadata}, ensure_ascii=False)
+
+
+def _openrouter_tool_image_parts(outputs: list[ToolOutput]) -> list[Json]:
+    """Build labelled user-message parts for an ordered tool batch."""
+    parts: list[Json] = []
+    for output in outputs:
+        for index, block in enumerate(output.result.blocks):
+            if not isinstance(block, ImageBlock):
+                continue
+            parts.extend([
+                {"type": "text", "text": f"[tool image call_id={output.call_id} block={index}]"},
+                {"type": "image_url", "image_url": {"url": _data_url(block)}},
+            ])
+    return parts
+
+
 def _thinking_fallback(text: str) -> str:
     """Render reasoning text as a degraded cross-provider thinking block."""
     return f"<thinking>\n{text}\n</thinking>"
@@ -1297,10 +1447,7 @@ def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_ena
     while index < len(entries):
         entry = entries[index]
         if isinstance(entry, UserEntry):
-            if entry.notice:
-                messages.append({"role": "user", "content": [{"type": "text", "text": entry.content}]})
-            else:
-                messages.append({"role": "user", "content": entry.content})
+            messages.append({"role": "user", "content": _anthropic_user_content(entry.content)})
             index += 1
             continue
         if isinstance(entry, AssistantEntry):
@@ -1328,12 +1475,12 @@ def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_ena
         while index < len(entries) and isinstance(entries[index], ToolResultEntry):
             tool_entry = entries[index]
             assert isinstance(tool_entry, ToolResultEntry)
-            content.append({"type": "tool_result", "tool_use_id": tool_entry.call_id, "content": tool_entry.output})
+            content.append({"type": "tool_result", "tool_use_id": tool_entry.call_id, "content": _anthropic_tool_output(tool_entry.result)})
             index += 1
         if index < len(entries):
             notice_entry = entries[index]
             if isinstance(notice_entry, UserEntry) and notice_entry.notice:
-                content.append({"type": "text", "text": notice_entry.content})
+                content.extend(_anthropic_content_parts(notice_entry.content))
                 index += 1
         messages.append({"role": "user", "content": content})
     return messages
@@ -1342,46 +1489,69 @@ def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_ena
 def _render_openrouter_transcript(entries: list[TranscriptEntry]) -> list[Json]:
     """Render neutral transcript entries as OpenRouter chat history."""
     messages: list[Json] = []
-    for entry in entries:
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
         if isinstance(entry, UserEntry):
-            messages.append({"role": "user", "content": entry.content})
-        elif isinstance(entry, ToolResultEntry):
-            messages.append({"role": "tool", "tool_call_id": entry.call_id, "content": entry.output})
-        else:
-            message: Json = {"role": "assistant"}
-            reasoning_details = [
-                part.provider_details
-                for part in entry.reasoning
-                if part.provider_name == "openrouter" and part.provider_details is not None
+            messages.append({"role": "user", "content": _openrouter_user_content(entry.content)})
+            index += 1
+            continue
+        if isinstance(entry, ToolResultEntry):
+            outputs: list[ToolOutput] = []
+            while index < len(entries) and isinstance(entries[index], ToolResultEntry):
+                tool_entry = entries[index]
+                assert isinstance(tool_entry, ToolResultEntry)
+                output = ToolOutput(tool_entry.call_id, tool_entry.result)
+                outputs.append(output)
+                messages.append({"role": "tool", "tool_call_id": output.call_id, "content": _openrouter_tool_output_json(output.result)})
+                index += 1
+            notice: UserEntry | None = None
+            if index < len(entries):
+                candidate = entries[index]
+                if isinstance(candidate, UserEntry) and candidate.notice:
+                    notice = candidate
+                    index += 1
+            image_parts = _openrouter_tool_image_parts(outputs)
+            if image_parts:
+                if notice is not None:
+                    image_parts.extend(_openrouter_content_parts(notice.content))
+                messages.append({"role": "user", "content": image_parts})
+            elif notice is not None:
+                messages.append({"role": "user", "content": _openrouter_user_content(notice.content)})
+            continue
+        message: Json = {"role": "assistant"}
+        reasoning_details = [
+            part.provider_details
+            for part in entry.reasoning
+            if part.provider_name == "openrouter" and part.provider_details is not None
+        ]
+        fallback_blocks = [
+            _thinking_fallback(part.text)
+            for part in entry.reasoning
+            if not (part.provider_name == "openrouter" and part.provider_details is not None) and part.text
+        ]
+        if reasoning_details:
+            message["reasoning_details"] = reasoning_details
+        text = "\n\n".join([*fallback_blocks, *([entry.text] if entry.text else [])])
+        if text:
+            message["content"] = text
+        if entry.tool_calls:
+            message["tool_calls"] = [
+                {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": call.arguments}}
+                for call in entry.tool_calls
             ]
-            fallback_blocks = [
-                _thinking_fallback(part.text)
-                for part in entry.reasoning
-                if not (part.provider_name == "openrouter" and part.provider_details is not None) and part.text
-            ]
-            if reasoning_details:
-                message["reasoning_details"] = reasoning_details
-            text = "\n\n".join([*fallback_blocks, *([entry.text] if entry.text else [])])
-            if text:
-                message["content"] = text
-            if entry.tool_calls:
-                message["tool_calls"] = [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {"name": call.name, "arguments": call.arguments},
-                    }
-                    for call in entry.tool_calls
-                ]
-            if not text and not entry.tool_calls:
-                message["content"] = ""
-            messages.append(message)
+        if not text and not entry.tool_calls:
+            message["content"] = ""
+        messages.append(message)
+        index += 1
     return messages
 
 
-def _openai_user_item(text: str) -> Json:
+def _openai_user_item(content: NormalizedContent) -> Json:
     """Render one Responses API user message item."""
-    return {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
+    text = text_only_value(content)
+    parts = [{"type": "input_text", "text": text}] if text is not None else _openai_content_parts(content)
+    return {"type": "message", "role": "user", "content": parts}
 
 
 def _render_openai_transcript(entries: list[TranscriptEntry], *, encrypted_reasoning_ok: bool = False) -> list[Json]:
@@ -1391,7 +1561,7 @@ def _render_openai_transcript(entries: list[TranscriptEntry], *, encrypted_reaso
         if isinstance(entry, UserEntry):
             items.append(_openai_user_item(entry.content))
         elif isinstance(entry, ToolResultEntry):
-            items.append({"type": "function_call_output", "call_id": entry.call_id, "output": entry.output})
+            items.append({"type": "function_call_output", "call_id": entry.call_id, "output": _openai_tool_output(entry.result)})
         else:
             for part in entry.reasoning:
                 if encrypted_reasoning_ok and part.provider_name == "openai" and part.signature and part.id:

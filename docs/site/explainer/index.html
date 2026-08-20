@@ -211,7 +211,7 @@
             <thead><tr><th>Name</th><th>Meaning</th></tr></thead>
             <tbody>
               <tr><td><code>Model</code></td><td>Protocol for reusable model configuration. It creates isolated <code>ModelSession</code> objects.</td></tr>
-              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Built-in sessions keep native in-run state plus a parallel neutral transcript; <code>dump_state</code> returns the transcript for provider-agnostic resume. All expose three request methods &mdash; <code>start</code>, <code>continue_with_tools</code>, and <code>continue_with_user_text</code> &mdash; each taking per-run <code>RequestConstants</code>, plus <code>dump_state</code>.</td></tr>
+              <tr><td><code>ModelSession</code></td><td>Per-run provider conversation state. Built-in sessions keep native in-run state plus a parallel neutral transcript; <code>dump_state</code> returns the transcript for provider-agnostic resume. All expose three request methods &mdash; <code>start</code>, <code>continue_with_tools</code>, and <code>continue_with_user_content</code> &mdash; each taking per-run <code>RequestConstants</code>, plus <code>dump_state</code>.</td></tr>
               <tr><td><code>ModelTurn</code></td><td>Normalized provider response: assistant text, requested <code>ModelToolCall</code> entries, raw provider JSON, plus normalized <code>TokenUsage</code>, finish reason, and response model.</td></tr>
               <tr><td><code>ModelToolCall</code></td><td>Normalized tool request with id, name, and raw JSON argument string.</td></tr>
               <tr><td><code>ToolOutput</code></td><td>Tool result sent back to the provider so the model can continue after a tool call: call id plus model-visible output string.</td></tr>
@@ -731,7 +731,7 @@
               <tr>
                 <td>ModelSession</td>
                 <td>Yes</td>
-                <td>The per-run conversation object. The turn machine calls its <code>start(...)</code>, <code>continue_with_tools(...)</code>, and <code>continue_with_user_text(...)</code> methods with per-run <code>RequestConstants</code>, plus <code>dump_state()</code>.</td>
+                <td>The per-run conversation object. The turn machine calls its <code>start(...)</code>, <code>continue_with_tools(...)</code>, and <code>continue_with_user_content(...)</code> methods with per-run <code>RequestConstants</code>, plus <code>dump_state()</code>.</td>
               </tr>
               <tr>
                 <td><code>ModelTurn</code></td>

@@ -947,7 +947,7 @@ async def test_strict_sibling_abort_does_not_hang_concurrent_delegation(tmp_path
         async def continue_with_tools(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
             raise AssertionError("unreachable")
 
-        async def continue_with_user_text(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
+        async def continue_with_user_content(self, *_args: Any, **_kwargs: Any) -> ModelTurn:
             raise AssertionError("unreachable")
 
         def dump_state(self) -> None:

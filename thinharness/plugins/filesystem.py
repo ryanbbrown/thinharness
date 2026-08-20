@@ -19,6 +19,7 @@ class _FilesystemConfig:
     output_dir: str | Path | None
     max_read_chars: int
     max_read_bytes: int
+    max_image_bytes: int
     max_tool_chars: int
     max_search_line_chars: int
     rg_timeout: int
@@ -77,6 +78,7 @@ class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
         output_dir: str | Path | None = None,
         max_read_chars: int = 40_000,
         max_read_bytes: int = 1_000_000,
+        max_image_bytes: int = 5_000_000,
         max_tool_chars: int = 40_000,
         max_search_line_chars: int = 180,
         rg_timeout: int = 30,
@@ -84,6 +86,8 @@ class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
         read_paths: Sequence[str | Path] | None = None,
         write_paths: Sequence[str | Path] | None = None,
     ) -> None:
+        if not isinstance(max_image_bytes, int) or isinstance(max_image_bytes, bool) or max_image_bytes <= 0:
+            raise ValueError("max_image_bytes must be a positive integer")
         if isinstance(tools, (set, frozenset)):
             raise TypeError("FilesystemPlugin tools must be an ordered sequence, not a set")
         selected = tuple(_DEFAULT_TOOLS if tools is None else tools)
@@ -94,6 +98,7 @@ class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
             output_dir=output_dir,
             max_read_chars=max_read_chars,
             max_read_bytes=max_read_bytes,
+            max_image_bytes=max_image_bytes,
             max_tool_chars=max_tool_chars,
             max_search_line_chars=max_search_line_chars,
             rg_timeout=rg_timeout,
@@ -115,6 +120,7 @@ class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
             output_dir=config.output_dir,
             max_read_chars=config.max_read_chars,
             max_read_bytes=config.max_read_bytes,
+            max_image_bytes=config.max_image_bytes,
             max_tool_chars=config.max_tool_chars,
             max_search_line_chars=config.max_search_line_chars,
             rg_timeout=config.rg_timeout,

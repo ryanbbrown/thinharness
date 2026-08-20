@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from .approvals import build_approval_envelope
+from .content import ImageBlock, NormalizedContent, Prompt, redact_image_data
 from .events import (
     HarnessStreamEvent,
     LimitWarningEvent,
@@ -166,7 +167,7 @@ class RunContext:
     """Mutable state for one harness run."""
 
     harness: Harness
-    prompt: str
+    prompt: Prompt
     metadata: Json
     usage: RunUsage
     responses: list[Json] = field(default_factory=list)
@@ -181,6 +182,16 @@ class RunContext:
     agent_span: _TraceSpan | None = None
     stream: RunStreamContext | None = None
     emitter: StreamEmitter | None = None
+    image_blocks: list[ImageBlock] = field(default_factory=list)
+
+    def set_prompt_content(self, content: NormalizedContent) -> None:
+        """Record normalized prompt images for later error redaction."""
+        self.prompt = content
+        self.image_blocks.extend(block for block in content if isinstance(block, ImageBlock))
+
+    def record_tool_result_images(self, result: Any) -> None:
+        """Record tool-result images for later error redaction."""
+        self.image_blocks.extend(block for block in result.blocks if isinstance(block, ImageBlock))
 
     def stream_base(self) -> dict[str, Any]:
         """Return common event metadata for this run."""
@@ -271,7 +282,7 @@ class RunContext:
         *,
         request_kind: ModelRequestKind,
         structured_output: str | None,
-        prompt: str | None = None,
+        prompt: NormalizedContent | None = None,
         tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
@@ -335,8 +346,9 @@ class RunContext:
                     self.usage.output_tokens += turn.usage.output_tokens or 0
                     self.usage.cached_tokens += turn.usage.cached_tokens or 0
             except Exception as exc:
-                model_span.record_exception(exc)
-                model_span.set_error(str(exc), type(exc).__name__)
+                message = redact_image_data(str(exc), self.image_blocks)
+                model_span.record_exception(HarnessError(message))
+                model_span.set_error(message, type(exc).__name__)
                 raise
             model_span.for_each(
                 lambda span, option: annotate_model_span(

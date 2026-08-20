@@ -676,7 +676,7 @@ async def test_external_cancellation_records_run_end_and_allows_rerun(tmp_path: 
         async def continue_with_tools(self, outputs, constants, *, notices=None):
             raise AssertionError("should not continue")
 
-        async def continue_with_user_text(self, text, constants, *, notices=None):
+        async def continue_with_user_content(self, text, constants, *, notices=None):
             raise AssertionError("should not continue")
 
     model = ScriptedModel([
@@ -770,7 +770,7 @@ async def test_tool_added_mid_run_is_not_executable_in_current_run(tmp_path: Pat
             outputs_seen.extend(output.output for output in outputs)
             return self.turns.pop(0)
 
-        async def continue_with_user_text(self, text, constants, *, notices=None):
+        async def continue_with_user_content(self, text, constants, *, notices=None):
             raise AssertionError("unexpected user-text continuation")
 
         def dump_state(self):

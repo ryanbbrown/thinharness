@@ -89,11 +89,13 @@ class ToolBatchExecutor:
             results = await self._run_calls_concurrently(calls, indices)
         records = []
         for call, execution in zip(calls, results, strict=True):
-            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": execution.output}
+            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "result": execution.envelope.to_value()}
+            if not execution.envelope.has_image:
+                record["output"] = execution.output
             if execution.cancelled:
                 record["cancelled"] = True
             records.append(record)
-        outputs = [ToolOutput(call.id, execution.output) for call, execution in zip(calls, results, strict=True)]
+        outputs = [ToolOutput(call.id, execution.envelope) for call, execution in zip(calls, results, strict=True)]
         return records, outputs, results
 
     def _should_run_sequentially(self, calls: list[ModelToolCall]) -> bool:
@@ -216,11 +218,14 @@ class ToolCallExecutor:
                 self.harness.hooks.fire_after_tool_call(after)
                 output = after.output
                 envelope = after.envelope
+                retry_kind = None if cancelled else envelope.retry_kind()
+                self.run_context.record_tool_result_images(envelope)
+                projected_output = envelope.redacted_json()
                 self._annotate_special_tool(span, call.name, envelope, composition)
                 span.set_attribute_where(
                     lambda option: option.capture_tool_results,
                     "gen_ai.tool.call.result",
-                    serialize_attribute_value(output),
+                    serialize_attribute_value(projected_output),
                 )
                 if retry_kind is not None:
                     span.set_error(f'Tool "{call.name}" failed', retry_kind)
@@ -249,7 +254,7 @@ class ToolCallExecutor:
                             error_type=type(exc).__name__,
                             message=str(exc),
                             duration_ms=(time.perf_counter() - start) * 1000,
-                            output=output,
+                            output=(envelope.redacted_json() if envelope is not None else output),
                         )
                     )
                 raise
@@ -279,9 +284,9 @@ class ToolCallExecutor:
                 cancelled=cancelled,
                 retry_kind=retry_kind,
                 error_type=envelope.error_type(),
-                message=envelope.content if not envelope.ok else None,
+                message=envelope.message_text() if not envelope.ok else None,
                 duration_ms=duration_ms,
-                output=output,
+                output=envelope.redacted_json(),
             )
         )
 

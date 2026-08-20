@@ -15,6 +15,7 @@ from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ..content import ContentBlock, ImageBlock, TextBlock, content_from_json, content_to_json, normalize_content, redacted_content_json
 from ..types import Json
 
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
@@ -72,38 +73,88 @@ class ToolResult:
     """Structured internal tool output envelope."""
 
     ok: bool
-    content: str
+    content: str | Sequence[ContentBlock]
     metadata: Json = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Detach and validate multimodal content."""
+        if not isinstance(self.ok, bool):
+            raise TypeError("ToolResult.ok must be a bool")
+        if not isinstance(self.metadata, dict):
+            raise TypeError("ToolResult.metadata must be a dict")
+        if isinstance(self.content, str):
+            if not self.content:
+                raise ValueError("ToolResult.content must not be empty")
+        else:
+            self.content = normalize_content(self.content, label="ToolResult.content")
+
+    @property
+    def blocks(self) -> tuple[ContentBlock, ...]:
+        """Return content in normalized block form."""
+        return normalize_content(self.content, label="ToolResult.content")
+
+    @property
+    def has_image(self) -> bool:
+        """Return whether this result contains image content."""
+        return any(isinstance(block, ImageBlock) for block in self.blocks)
+
+    def to_value(self) -> Json:
+        """Return the canonical JSON-compatible envelope value."""
+        content: str | list[Json]
+        if isinstance(self.content, str):
+            content = self.content
+        else:
+            content = content_to_json(self.blocks)
+        return {"ok": self.ok, "content": content, "metadata": self.metadata}
+
     @classmethod
-    def from_json(cls, output: str) -> ToolResult:
-        """Parse a provider-facing tool output string into an envelope."""
+    def from_value(cls, parsed: Any, *, label: str = "tool output") -> ToolResult:
+        """Strictly decode one canonical envelope value."""
+        if not isinstance(parsed, dict) or set(parsed) != {"ok", "content", "metadata"}:
+            raise ValueError(f"{label} has wrong keys")
+        if not isinstance(parsed["ok"], bool) or not isinstance(parsed["metadata"], dict):
+            raise ValueError(f"{label} has wrong type")
+        content = parsed["content"]
+        if isinstance(content, str):
+            if not content:
+                raise ValueError(f"{label} content must not be empty")
+            return cls(parsed["ok"], content, parsed["metadata"])
+        return cls(parsed["ok"], content_from_json(content, label=f"{label} content"), parsed["metadata"])
+
+    @classmethod
+    def from_json(cls, output: str, *, strict: bool = False) -> ToolResult:
+        """Parse a canonical provider-facing tool output string."""
         try:
             parsed = json.loads(output)
-        except json.JSONDecodeError:
+            return cls.from_value(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            if strict:
+                raise ValueError("tool output is not a valid canonical ToolResult") from None
             return cls(False, output, {"error_type": "InvalidToolOutput"})
-        if not isinstance(parsed, dict):
-            return cls(False, output, {"error_type": "InvalidToolOutput"})
-        ok = parsed.get("ok")
-        content = parsed.get("content")
-        metadata = parsed.get("metadata")
-        return cls(
-            ok if isinstance(ok, bool) else False,
-            content if isinstance(content, str) else output,
-            metadata if isinstance(metadata, dict) else {},
-        )
 
     def to_json(self) -> str:
-        """Serialize the envelope for a provider-facing tool output."""
-        return json.dumps(
-            {"ok": self.ok, "content": self.content, "metadata": self.metadata},
-            ensure_ascii=False,
-            default=str,
-        )
+        """Serialize the canonical provider-facing tool envelope."""
+        return json.dumps(self.to_value(), ensure_ascii=False)
 
     def as_json(self) -> str:
-        """Serialize the envelope for compatibility with existing callers."""
+        """Serialize the canonical provider-facing tool envelope."""
         return self.to_json()
+
+    def message_text(self) -> str:
+        """Return a plain-text summary suitable for progress events."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n\n".join(block.text for block in self.blocks if isinstance(block, TextBlock))
+
+    def redacted_json(self) -> str:
+        """Return the canonical envelope without image bytes."""
+        if not self.has_image:
+            return self.to_json()
+        return json.dumps(
+            {"ok": self.ok, "content": redacted_content_json(self.blocks), "metadata": self.metadata},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     def retry_kind(self) -> str | None:
         """Return the retry error type if this envelope asks the model to retry."""
@@ -219,7 +270,9 @@ def _normalize_result(result: Any) -> ToolEnvelope:
         return result
     if isinstance(result, str):
         return ToolResult(True, result)
-    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str))
+    if isinstance(result, Sequence) and all(isinstance(block, (TextBlock, ImageBlock)) for block in result):
+        return ToolResult(True, result)
+    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True))
 
 
 def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> ToolEnvelope:

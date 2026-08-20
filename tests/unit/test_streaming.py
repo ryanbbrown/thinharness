@@ -53,7 +53,7 @@ class SequenceSession:
         self.tool_outputs.append(outputs)
         return self._next_turn()
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Return the first turn for a resume or record a correction and continue."""
         is_resume = self.requests_made == 0
         self.requests_made += 1

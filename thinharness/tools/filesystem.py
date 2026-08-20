@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import json
 import subprocess
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import Any
 
 from pydantic import Field
 
+from ..content import ImageBlock, TextBlock
 from ..defaults import (
     DEFAULT_EDIT_DESCRIPTION,
     DEFAULT_EDIT_INSTRUCTIONS,
@@ -58,6 +60,12 @@ class ReadArgs(StrictArgs):
     offset: int = Field(default=1, ge=1)
     limit: int | None = Field(default=None, ge=1)
     max_chars: int | None = Field(default=None, ge=1)
+
+
+class ReadImageArgs(StrictArgs):
+    """Arguments for read_image."""
+
+    path: str
 
 
 class WriteArgs(StrictArgs):
@@ -124,6 +132,7 @@ class FileTools:
         output_dir: str | Path | None = None,
         max_read_chars: int = 40_000,
         max_read_bytes: int = 1_000_000,
+        max_image_bytes: int = 5_000_000,
         max_tool_chars: int = 40_000,
         max_search_line_chars: int = 180,
         rg_timeout: int = 30,
@@ -141,7 +150,10 @@ class FileTools:
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
         self.max_read_chars = max_read_chars
+        if not isinstance(max_image_bytes, int) or isinstance(max_image_bytes, bool) or max_image_bytes <= 0:
+            raise ValueError("max_image_bytes must be a positive integer")
         self.max_read_bytes = max_read_bytes
+        self.max_image_bytes = max_image_bytes
         self.max_tool_chars = max_tool_chars
         self.max_search_line_chars = max_search_line_chars
         self.rg_timeout = rg_timeout
@@ -164,6 +176,12 @@ class FileTools:
         """Return built-in filesystem tool specs."""
         return [
             ToolSpec("read", DEFAULT_READ_DESCRIPTION, ReadArgs, self.read, instructions=DEFAULT_READ_INSTRUCTIONS),
+            ToolSpec(
+                "read_image",
+                "Read one local PNG, JPEG, GIF, or WebP image for visual inspection.",
+                ReadImageArgs,
+                self.read_image,
+            ),
             ToolSpec("write", DEFAULT_WRITE_DESCRIPTION, WriteArgs, self.write, sequential=True, instructions=DEFAULT_WRITE_INSTRUCTIONS),
             ToolSpec("edit", DEFAULT_EDIT_DESCRIPTION, EditArgs, self.edit, sequential=True, instructions=DEFAULT_EDIT_INSTRUCTIONS),
             ToolSpec("search", DEFAULT_SEARCH_DESCRIPTION, SearchArgs, self.search, instructions=DEFAULT_SEARCH_INSTRUCTIONS),
@@ -218,6 +236,36 @@ class FileTools:
         result = self._truncate(f"{note}\n{body}" if body else note, prefix="read", max_chars=limit_chars)
         result.metadata.update({"path": str(path), "total_lines": total_lines, "returned_lines": len(selected), "size_bytes": size})
         return result
+
+    def read_image(self, args: ReadImageArgs | Json) -> ToolResult:
+        """Read one bounded contained image without format conversion."""
+        args = coerce_args(args, ReadImageArgs)
+        try:
+            path = self._resolve_read_path(args.path)
+        except PathValidationError as exc:
+            return _path_error(exc)
+        display = self._display(path)
+        try:
+            if not path.exists():
+                return ToolResult(False, f"file not found: {display}", {"path": str(path)})
+            if path.is_dir():
+                return ToolResult(False, f"path is a directory: {display}", {"path": str(path)})
+            size = path.stat().st_size
+            if size > self.max_image_bytes:
+                return ToolResult(
+                    False,
+                    f"image is {size} bytes, over max_image_bytes={self.max_image_bytes}",
+                    {"path": str(path), "size_bytes": size, "max_image_bytes": self.max_image_bytes},
+                )
+            data = path.read_bytes()
+        except OSError as exc:
+            return ToolResult(False, f"{type(exc).__name__}: {exc}", {"path": str(path), "error_type": type(exc).__name__})
+        media_type = _detect_image_media_type(data)
+        if media_type is None:
+            return ToolResult(False, f"unsupported or invalid image format: {display}", {"path": str(path), "size_bytes": len(data)})
+        metadata: Json = {"path": str(path), "media_type": media_type, "size_bytes": len(data)}
+        summary = json.dumps({"path": display, "media_type": media_type, "size_bytes": len(data)}, ensure_ascii=False, separators=(",", ":"))
+        return ToolResult(True, (TextBlock(summary), ImageBlock(data, media_type)), metadata)  # type: ignore[arg-type]
 
     def write(self, args: WriteArgs | Json) -> ToolResult:
         """Write a contained UTF-8 file."""
@@ -577,6 +625,25 @@ class FileTools:
             content,
             {"truncated": True, "saved_to": str(resolved_artifact), "saved_to_display": saved_to_display, "chars": len(text)},
         )
+
+
+def _detect_image_media_type(data: bytes) -> str | None:
+    """Detect supported image containers from complete minimum signatures."""
+    if len(data) >= 33 and data.startswith(b"\x89PNG\r\n\x1a\n") and data[8:12] == b"\x00\x00\x00\r" and data[12:16] == b"IHDR":
+        return "image/png"
+    if len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+        return "image/jpeg"
+    if len(data) >= 13 and data[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if (
+        len(data) >= 20
+        and data.startswith(b"RIFF")
+        and data[8:12] == b"WEBP"
+        and data[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}
+        and int.from_bytes(data[4:8], "little") == len(data) - 8
+    ):
+        return "image/webp"
+    return None
 
 
 # =============================================================================

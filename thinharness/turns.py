@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from .content import NormalizedContent, normalize_content
 from .events import ToolCallCompletedEvent, ToolCallStartedEvent
 from .output import FINAL_RESULT_TOOL_NAME, OutputSchema, OutputValidationError, ResolvedOutputMode
 from .providers import ModelSession, ModelToolCall, ModelTurn, RequestConstants, ToolOutput
@@ -42,7 +43,7 @@ class TurnStart:
     """First-turn production input for one run."""
 
     kind: Literal["start", "resume", "approval_resume"]
-    prompt: str = ""
+    prompt: NormalizedContent = ()
     approval_pause: ApprovalPause | None = None
     approval_decisions: dict[str, ApprovalDecision] | None = None
 
@@ -122,17 +123,17 @@ async def advance_until_terminal(
     output_mode = _trace_output_mode(harness.output_schema)
     require_dump_state = harness._model_supports_approval_resume()
 
-    async def send_user_text(
-        text: str,
+    async def send_user_content(
+        content: NormalizedContent,
         *,
         kind: Literal["resume", "correction"],
         output_retry: bool = False,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
-        """Continue the run with user text."""
+        """Continue the run with user content."""
         return await run_ctx.advance_model(
-            lambda notices: session.continue_with_user_text(text, constants, notices=notices),
+            lambda notices: session.continue_with_user_content(content, constants, notices=notices),
             request_kind=kind,
-            prompt=text,
+            prompt=content,
             structured_output=output_mode,
             output_retry=output_retry,
         )
@@ -160,7 +161,7 @@ async def advance_until_terminal(
             structured_output=output_mode,
         )
     elif start.kind == "resume":
-        turn, decision = await send_user_text(start.prompt, kind="resume")
+        turn, decision = await send_user_content(start.prompt, kind="resume")
     else:
         assert start.approval_pause is not None
         assert start.approval_decisions is not None
@@ -184,7 +185,7 @@ async def advance_until_terminal(
             retry_message = decision.retry_message
             run_ctx.emit_retry_event("structured_output", retry_message, final_id)
             turn, decision = await send_tool_outputs(
-                [ToolOutput(final_id, retry_message)],
+                [ToolOutput(final_id, ToolResult(True, retry_message))],
                 kind="output_retry_tool",
                 output_retry=True,
             )
@@ -193,7 +194,7 @@ async def advance_until_terminal(
             run_ctx.retry_or_fail()
             retry_message = decision.retry_message
             run_ctx.emit_retry_event("structured_output", retry_message, decision.retry_call_id)
-            turn, decision = await send_user_text(retry_message, kind="correction", output_retry=True)
+            turn, decision = await send_user_content(normalize_content(retry_message), kind="correction", output_retry=True)
             continue
         if decision.kind == "unexpected":
             raise UnexpectedModelBehavior(decision.unexpected_message)
@@ -269,7 +270,8 @@ def _reject_approval_call(
     message = "Tool call was rejected by a human reviewer."
     if decision.reason:
         message = f"{message}\nReason: {decision.reason}"
-    output = ToolResult(False, message, {"error_type": "ApprovalRejected"}).to_json()
+    envelope = ToolResult(False, message, {"error_type": "ApprovalRejected"})
+    output = envelope.to_json()
     start = time.perf_counter()
     assert run_ctx.tracer is not None
     with run_ctx.tracer.tool(tool_name=call.name, call_id=call.id, arguments=call.arguments) as span:
@@ -299,10 +301,11 @@ def _reject_approval_call(
     return (
         {
             "call": {"id": call.id, "name": call.name, "arguments": call.arguments},
+            "result": envelope.to_value(),
             "output": output,
             "approval": {"approved": False, "reason": decision.reason},
         },
-        ToolOutput(call.id, output),
+        ToolOutput(call.id, envelope),
     )
 
 

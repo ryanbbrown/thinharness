@@ -113,7 +113,7 @@ async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path
     second = await harness.run("follow-up", resume_from=state)
 
     assert first.resume_state["kind"] == "transcript"
-    assert first.resume_state["version"] == 3
+    assert first.resume_state["version"] == 4
     assert first.resume_state["origin_provider"] == "openai"
     assert first.resume_state["origin_model"] == "gpt-test"
     assert [entry["role"] for entry in first.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
@@ -324,7 +324,7 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
 
     with pytest.raises(HarnessError, match="resume_from must be a dict"):
         harness().run_sync("follow-up", resume_from="resp_abc")  # type: ignore[arg-type]
-    base_state = {"kind": "transcript", "version": 3, "origin_provider": "anthropic", "origin_model": "claude-test"}
+    base_state = {"kind": "transcript", "version": 4, "origin_provider": "anthropic", "origin_model": "claude-test"}
     with pytest.raises(HarnessError, match="resume_from kind None is not supported"):
         harness().run_sync("follow-up", resume_from={"version": 2, "origin_provider": "anthropic", "origin_model": "claude-test", "entries": []})
     with pytest.raises(HarnessError, match="missing required field: 'entries'"):
@@ -354,7 +354,7 @@ def test_anthropic_resume_rejects_non_json_tool_arguments() -> None:
     with pytest.raises(HarnessError, match="resume_from assistant tool call arguments must be JSON"):
         model.resume_session({
             "kind": "transcript",
-            "version": 3,
+            "version": 4,
             "origin_provider": "openrouter",
             "origin_model": "openai/test",
             "entries": [{
@@ -429,7 +429,7 @@ def test_resumed_user_prompt_receives_limit_notice(tmp_path: Path) -> None:
     assert resumed.text == "done"
 
     assert [(method, [(notice.limit_kind, notice.remaining) for notice in notices]) for method, notices in resumed_session.notice_calls] == [
-        ("continue_with_user_text", [("model_requests", 1)])
+        ("continue_with_user_content", [("model_requests", 1)])
     ]
 
 def test_resumed_user_prompt_runs_prompt_submit_hooks_before_notices(tmp_path: Path) -> None:
@@ -761,6 +761,6 @@ class _NoResumeSession:
         """Reject unexpected tool continuation."""
         raise AssertionError("unexpected tool continuation")
 
-    async def continue_with_user_text(self, text, constants, *, notices=None) -> ModelTurn:
+    async def continue_with_user_content(self, text, constants, *, notices=None) -> ModelTurn:
         """Reject unexpected user-text continuation."""
         raise AssertionError("unexpected user-text continuation")

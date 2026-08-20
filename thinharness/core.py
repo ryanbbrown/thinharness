@@ -20,6 +20,7 @@ from .approvals import (
     validate_approval_pause_state,
 )
 from .children import ChildHarnessHost, _ParentChildHarnessHost, _ToolComposition
+from .content import NormalizedContent, Prompt, normalize_content, redact_image_data, redacted_content_string, text_only_value
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import (
     ApprovalResumedEvent,
@@ -78,11 +79,12 @@ def _local_tracing_enabled(configured: bool) -> bool:
 
 def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exception:
     """Record a run failure and return the exception to raise."""
-    agent_span.record_exception(exc)
-    agent_span.set_error(str(exc), type(exc).__name__)
+    message = redact_image_data(str(exc), getattr(run_ctx, "image_blocks", ()))
+    agent_span.record_exception(exc if message == str(exc) else HarnessError(message))
+    agent_span.set_error(message, type(exc).__name__)
     if isinstance(exc, ProviderError):
         run_ctx.stop_reason = "provider_error"
-        run_ctx.terminal_error = HarnessError(str(exc))
+        run_ctx.terminal_error = HarnessError(message)
         return run_ctx.terminal_error
     if isinstance(exc, UnexpectedModelBehavior):
         run_ctx.stop_reason = "unexpected_model_behavior"
@@ -96,6 +98,13 @@ def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exce
     run_ctx.stop_reason = "error"
     run_ctx.terminal_error = exc
     return exc
+
+
+def _event_prompt(prompt: Prompt) -> str:
+    """Keep text-only stream values and redact multimodal values."""
+    content = normalize_content(prompt, label="prompt")
+    text = text_only_value(content)
+    return text if text is not None else redacted_content_string(content)
 
 
 class HarnessConfig(BaseModel):
@@ -268,7 +277,7 @@ class Harness:
         self._running = False
         self._closed = False
 
-    async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
+    async def run(self, prompt: Prompt, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         result: HarnessResult | None = None
         stream = self.stream(prompt, resume_from=resume_from, metadata=metadata)
@@ -326,7 +335,7 @@ class Harness:
 
     def stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         resume_from: dict[str, Any] | None = None,
         metadata: Json | None = None,
@@ -396,7 +405,7 @@ class Harness:
 
     async def _run_streaming(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         resume_from: dict[str, Any] | None,
         approval_state: dict[str, Any] | None,
@@ -445,7 +454,7 @@ class Harness:
             run_ctx.emit(
                 RunStartedEvent(
                     **run_ctx.stream_base(),
-                    prompt=None if approval_pause is not None else prompt,
+                    prompt=None if approval_pause is not None else _event_prompt(prompt),
                     root=str(self.root),
                     max_model_requests=self.config.max_model_requests,
                     max_tool_calls=self.config.max_tool_calls,
@@ -553,7 +562,7 @@ class Harness:
                     **run_ctx.stream_base(),
                     stop_reason=run_ctx.stop_reason,
                     error_type=type(exc).__name__,
-                    message=str(exc),
+                    message=redact_image_data(str(exc), run_ctx.image_blocks),
                 )
             )
             raise
@@ -563,39 +572,41 @@ class Harness:
 
     async def _prepare_run_start(
         self,
-        prompt: str,
+        prompt: Prompt,
         run_metadata: Json,
         run_ctx: Any,
         agent_span: Any,
         *,
         skip_user_prompt: bool = False,
-    ) -> tuple[str, str]:
-        """Fire start hooks and return the effective prompt plus instructions."""
-        self.hooks.fire(
-            RunStartContext(
-                harness=self,
-                metadata=dict(run_metadata),
-                prompt=prompt,
-                root=self.root,
-                max_model_requests=self.config.max_model_requests,
-                max_tool_calls=self.config.max_tool_calls,
-            )
+    ) -> tuple[NormalizedContent, str]:
+        """Fire start hooks and return effective normalized content plus instructions."""
+        initial: NormalizedContent = () if skip_user_prompt else normalize_content(prompt, label="prompt")
+        start_ctx = RunStartContext(
+            harness=self,
+            metadata=dict(run_metadata),
+            prompt=initial,
+            root=self.root,
+            max_model_requests=self.config.max_model_requests,
+            max_tool_calls=self.config.max_tool_calls,
         )
-        effective_prompt = prompt
+        self.hooks.fire(start_ctx)
+        effective_prompt = initial if skip_user_prompt else normalize_content(start_ctx.prompt, label="run_start prompt")
         if not skip_user_prompt:
-            prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
+            prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=effective_prompt)
             self.hooks.fire(prompt_ctx)
             if prompt_ctx.cancelled:
                 reason = prompt_ctx.cancel_reason or "unspecified"
                 run_ctx.stop_reason = "cancelled_by_hook"
                 run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
                 raise run_ctx.terminal_error
-            effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
+            submitted = normalize_content(prompt_ctx.prompt, label="user_prompt_submit prompt")
+            effective_prompt = apply_prompt_context(submitted, prompt_ctx.additional_context)
+            run_ctx.set_prompt_content(effective_prompt)
         instructions = structured_instructions(self.system_instructions(), self.output_schema)
         agent_span.for_each(
             lambda span, option: annotate_agent_start(
                 span,
-                prompt=prompt,
+                prompt=effective_prompt,
                 instructions=instructions,
                 capture_messages=option.capture_messages,
                 top_level=not self._is_child_harness,
@@ -617,7 +628,7 @@ class Harness:
         """Return the host-facing pending approval shape for one call."""
         return PendingApproval(call_id=call.id, tool_name=call.name, arguments=call.arguments)
 
-    def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
+    def run_sync(self, prompt: Prompt, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")

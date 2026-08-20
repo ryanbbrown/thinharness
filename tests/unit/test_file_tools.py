@@ -26,6 +26,7 @@ def test_file_tool_descriptions_use_defaults(tmp_path: Path) -> None:
 
     assert descriptions == {
         "read": DEFAULT_READ_DESCRIPTION,
+        "read_image": "Read one local PNG, JPEG, GIF, or WebP image for visual inspection.",
         "write": DEFAULT_WRITE_DESCRIPTION,
         "edit": DEFAULT_EDIT_DESCRIPTION,
         "search": DEFAULT_SEARCH_DESCRIPTION,

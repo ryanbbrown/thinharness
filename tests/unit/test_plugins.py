@@ -670,7 +670,7 @@ async def test_connected_plugin_toolset_is_frozen_during_run(tmp_path: Path) -> 
                 return ModelTurn(tool_calls=[ModelToolCall(id="call_2", name="late", arguments="{}")], raw={"id": "late"})
             return ModelTurn(text="done", raw={"id": "done"})
 
-        async def continue_with_user_text(self, text, constants, **_kwargs):
+        async def continue_with_user_content(self, text, constants, **_kwargs):
             raise AssertionError("not used")
 
         def dump_state(self):

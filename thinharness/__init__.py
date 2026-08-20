@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
+from .content import ContentBlock, ImageBlock, Prompt, TextBlock
 from .core import Harness, HarnessConfig
 from .events import (
     ApprovalResumedEvent,
@@ -114,6 +115,10 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "BashPlugin",
+    "ContentBlock",
+    "ImageBlock",
+    "Prompt",
+    "TextBlock",
     "ChildHarnessHost",
     "ChildHarnessOutcome",
     "ChildHarnessRequest",

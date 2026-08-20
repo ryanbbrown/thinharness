@@ -20,6 +20,7 @@ from thinharness import (
     HarnessConfig,
     HarnessError,
     Hook,
+    ImageBlock,
     MCPError,
     MCPPlugin,
     MCPServer,
@@ -31,6 +32,7 @@ from thinharness import (
     PluginContribution,
     SubAgentConfig,
     SubagentsPlugin,
+    TextBlock,
     ToolOrigin,
     TracingOptions,
 )
@@ -196,7 +198,7 @@ class SequenceSession:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Return the scripted turn for a resumed prompt; no tests expect corrections."""
         if self.requests_made:
             raise AssertionError("unexpected user-text correction")
@@ -392,7 +394,7 @@ async def test_structured_content_wins_over_blocks(monkeypatch) -> None:
     ("block_builder", "expected"),
     [
         pytest.param(lambda types: types.TextContent(type="text", text="plain"), "plain", id="text"),
-        pytest.param(lambda types: types.ImageContent(type="image", data="aGk=", mimeType="image/png"), "[image: image/png]", id="image"),
+        pytest.param(lambda types: types.ImageContent(type="image", data="aGk=", mimeType="image/png"), (ImageBlock(b"hi", "image/png"),), id="image"),
         pytest.param(lambda types: types.AudioContent(type="audio", data="aGk=", mimeType="audio/wav"), "[audio: audio/wav]", id="audio"),
         pytest.param(
             lambda types: types.EmbeddedResource(
@@ -409,7 +411,7 @@ async def test_structured_content_wins_over_blocks(monkeypatch) -> None:
         ),
     ],
 )
-async def test_content_block_conversion(monkeypatch, block_builder, expected: str) -> None:
+async def test_content_block_conversion(monkeypatch, block_builder, expected: str | tuple[ImageBlock, ...]) -> None:
     """Each supported MCP content block keeps its text conversion."""
     from mcp import types
 
@@ -442,7 +444,12 @@ async def test_mixed_content_blocks_preserve_order(monkeypatch) -> None:
 
     result = await server.call_tool("mixed", {})
 
-    assert result.content == "first\n[image: image/png]\n[resource: file:///data.bin]\nlast"
+    assert result.content == (
+        TextBlock("first"),
+        ImageBlock(b"hi", "image/png"),
+        TextBlock("[resource: file:///data.bin]"),
+        TextBlock("last"),
+    )
 
 
 async def test_tool_error_with_structured_content_stays_error_text(monkeypatch) -> None:

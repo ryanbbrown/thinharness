@@ -94,9 +94,9 @@ async def test_model_sessions_advance_independently() -> None:
     await second.continue_with_tools([ToolOutput(second_turn.tool_calls[0].id, "second result")], constants)
 
     assert provider.payloads[2]["messages"][0] == {"role": "user", "content": "first"}
-    assert provider.payloads[2]["messages"][-1]["content"][0]["content"] == "first result"
+    assert provider.payloads[2]["messages"][-1]["content"][0]["content"] == '{"ok": true, "content": "first result", "metadata": {}}'
     assert provider.payloads[3]["messages"][0] == {"role": "user", "content": "second"}
-    assert provider.payloads[3]["messages"][-1]["content"][0]["content"] == "second result"
+    assert provider.payloads[3]["messages"][-1]["content"][0]["content"] == '{"ok": true, "content": "second result", "metadata": {}}'
 
 async def test_openai_previous_response_id_is_session_scoped() -> None:
     client = FakeClient()
@@ -127,15 +127,15 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
         constants,
         notices=[notice],
     )
-    await session.continue_with_user_text("fix this", constants, notices=[notice])
+    await session.continue_with_user_content("fix this", constants, notices=[notice])
     resumed = model.resume_session({
         "kind": "transcript",
-        "version": 3,
+        "version": 4,
         "origin_provider": "openai",
         "origin_model": "gpt-test",
-        "entries": [{"role": "user", "content": "prior", "notice": False}],
+        "entries": [{"role": "user", "content": [{"type": "text", "text": "prior"}], "notice": False}],
     })
-    await resumed.continue_with_user_text("follow-up", constants, notices=[notice])
+    await resumed.continue_with_user_content("follow-up", constants, notices=[notice])
 
     assert client.payloads[0]["input"].endswith("<harness_notice kind=\"limit_warning\">\nFinal request.\n</harness_notice>")
     assert [item["type"] for item in client.payloads[1]["input"][:-1]] == ["function_call_output", "function_call_output"]
@@ -171,7 +171,11 @@ async def test_openai_no_notice_payloads_are_unchanged() -> None:
     await session.continue_with_tools([ToolOutput("call_1", "ok")], constants)
 
     assert client.payloads[0]["input"] == "hi"
-    assert client.payloads[1]["input"] == [{"type": "function_call_output", "call_id": "call_1", "output": "ok"}]
+    assert client.payloads[1]["input"] == [{
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"ok": true, "content": "ok", "metadata": {}}',
+    }]
 
 async def test_anthropic_appends_notices_to_messages() -> None:
     provider = FakeAnthropicProvider()
@@ -186,8 +190,8 @@ async def test_anthropic_appends_notices_to_messages() -> None:
         constants,
         notices=[notice],
     )
-    await session.continue_with_user_text("fix this", constants, notices=[notice])
-    await session.continue_with_user_text("follow-up", constants, notices=[notice])
+    await session.continue_with_user_content("fix this", constants, notices=[notice])
+    await session.continue_with_user_content("follow-up", constants, notices=[notice])
 
     assert provider.payloads[0]["messages"][0]["content"] == f"hi\n\n<hook_context>\npolicy\n</hook_context>\n\n{_notice_text()}"
     assert [block["type"] for block in provider.payloads[1]["messages"][-1]["content"][:-1]] == ["tool_result", "tool_result"]
@@ -211,8 +215,8 @@ async def test_openrouter_appends_notices_to_messages() -> None:
         constants,
         notices=[notice],
     )
-    await session.continue_with_user_text("fix this", constants, notices=[notice])
-    await session.continue_with_user_text("follow-up", constants, notices=[notice])
+    await session.continue_with_user_content("fix this", constants, notices=[notice])
+    await session.continue_with_user_content("follow-up", constants, notices=[notice])
 
     assert provider.payloads[0]["messages"][1]["content"] == f"hi\n\n<hook_context>\npolicy\n</hook_context>\n\n{_notice_text()}"
     continuation_messages = provider.payloads[1]["messages"]
@@ -232,7 +236,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     assert anthropic_state == json.loads(json.dumps(anthropic_state))
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_provider).resume_session(anthropic_state)
-    await anthropic_resumed.continue_with_user_text("next", constants)
+    await anthropic_resumed.continue_with_user_content("next", constants)
     assert anthropic_provider.payloads[2]["messages"][2]["content"][-1] == {"type": "text", "text": _notice_text()}
 
     openai_capture = FakeClient()
@@ -242,7 +246,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
-    await openai_resumed.continue_with_user_text("next", constants)
+    await openai_resumed.continue_with_user_content("next", constants)
     assert {
         "type": "message",
         "role": "user",
@@ -255,7 +259,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_provider).resume_session(openrouter_state)
-    await openrouter_resumed.continue_with_user_text("next", constants)
+    await openrouter_resumed.continue_with_user_content("next", constants)
     assert {"role": "user", "content": _notice_text()} in openrouter_provider.payloads[2]["messages"]
 
 async def test_resume_replays_preserved_user_notices() -> None:
@@ -269,7 +273,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     anthropic_replay = FakeAnthropicProvider()
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_replay).resume_session(anthropic_state)
-    await anthropic_resumed.continue_with_user_text("next", constants)
+    await anthropic_resumed.continue_with_user_content("next", constants)
     assert anthropic_replay.payloads[0]["messages"][0]["content"] == f"hi\n\n{_notice_text()}"
 
     openai_capture = FakeClient()
@@ -279,7 +283,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
-    await openai_resumed.continue_with_user_text("next", constants)
+    await openai_resumed.continue_with_user_content("next", constants)
     assert openai_replay.payloads[0]["input"][0]["content"][0]["text"] == f"hi\n\n{_notice_text()}"
 
     openrouter_capture = FakeOpenRouterProvider()
@@ -289,7 +293,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_replay = FakeOpenRouterProvider()
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_replay).resume_session(openrouter_state)
-    await openrouter_resumed.continue_with_user_text("next", constants)
+    await openrouter_resumed.continue_with_user_content("next", constants)
     assert openrouter_replay.payloads[0]["messages"][1]["content"] == f"hi\n\n{_notice_text()}"
 
 def test_openai_native_structured_output_overrides_extra_body_text() -> None:

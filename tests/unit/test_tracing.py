@@ -112,7 +112,7 @@ def test_model_request_delta_includes_rendered_tool_output_notices() -> None:
     span = FakeSpan("chat", {})
     delta = model_request_delta_from_tool_outputs(
         kind="tool_outputs",
-        outputs=[ToolOutput(call_id="call_1", output='{"ok":true,"content":"real output"}')],
+        outputs=[ToolOutput(call_id="call_1", result=ToolResult(True, "real output"))],
         notices=[ModelNotice(kind="limit_warning", content="notice text", limit_kind="model_requests", remaining=1)],
         structured_output=None,
     )
@@ -121,7 +121,7 @@ def test_model_request_delta_includes_rendered_tool_output_notices() -> None:
 
     input_messages = json.loads(span.attributes["gen_ai.input.messages"])
     notices = json.loads(span.attributes["thinharness.model.notices"])
-    assert input_messages[0]["parts"][0]["content"] == '{"ok":true,"content":"real output"}'
+    assert input_messages[0]["parts"][0]["content"] == '{"ok": true, "content": "real output", "metadata": {}}'
     assert input_messages[1]["parts"][0]["content"] == '<harness_notice kind="limit_warning">\nnotice text\n</harness_notice>'
     assert "notice text" in span.attributes["gen_ai.prompt"]
     assert notices[0]["content"] == "notice text"
@@ -482,7 +482,8 @@ def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> No
     assert "correction" in kinds
     assert "resume" in kinds
     retry_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "output_retry_tool")
-    assert json.loads(retry_chat.attributes["gen_ai.input.messages"])[0]["parts"][0]["content"].startswith("The previous response failed")
+    retry_content = json.loads(retry_chat.attributes["gen_ai.input.messages"])[0]["parts"][0]["content"]
+    assert json.loads(retry_content)["content"].startswith("The previous response failed")
     assert "Final request" in retry_chat.attributes["gen_ai.input.messages"]
     assert "Final request" in retry_chat.attributes["thinharness.model.notices"]
     correction_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "correction")

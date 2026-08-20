@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from .content import ContentBlock, Prompt, TextBlock, normalize_content
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec
 from .types import HarnessResult, RunUsage, StopReason
 
@@ -105,7 +106,7 @@ class RunStartContext(HookContext):
     """Context for a run before the first model request."""
 
     event: ClassVar[HookEvent] = "run_start"
-    prompt: str
+    prompt: Prompt
     root: Path
     max_model_requests: int
     max_tool_calls: int | None = None
@@ -116,7 +117,7 @@ class UserPromptSubmitContext(HookContext):
     """Context for the submitted user prompt before querying the model."""
 
     event: ClassVar[HookEvent] = "user_prompt_submit"
-    prompt: str
+    prompt: Prompt
     additional_context: list[str] = field(default_factory=list)
     cancelled: bool = False
     cancel_reason: str = ""
@@ -241,7 +242,7 @@ class HookRegistry:
                     _mark_strict_hook_exception(exc)
                     raise
             if ctx.output != before_output:
-                ctx.envelope = ToolResult.from_json(ctx.output)
+                ctx.envelope = ToolResult.from_json(ctx.output, strict=True)
             elif ctx.envelope.to_json() != before_envelope:
                 ctx.output = ctx.envelope.to_json()
 
@@ -264,12 +265,13 @@ class HookRegistry:
         return True
 
 
-def apply_prompt_context(prompt: str, additional_context: list[str]) -> str:
-    """Append hook-provided context to the submitted prompt."""
+def apply_prompt_context(prompt: Prompt, additional_context: list[str]) -> tuple[ContentBlock, ...]:
+    """Append hook-provided context to normalized submitted content."""
+    content = normalize_content(prompt, label="hook prompt")
     if not additional_context:
-        return prompt
+        return content
     context = "\n\n".join(additional_context)
-    return f"{prompt}\n\n<hook_context>\n{context}\n</hook_context>"
+    return (*content, TextBlock(f"<hook_context>\n{context}\n</hook_context>"))
 
 
 def _handler_name(handler: HookHandler) -> str:

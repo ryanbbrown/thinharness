@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .content import Prompt, TextBlock, normalize_content, redacted_content_json, text_only_value
 from .events import StreamToolCall
 from .providers import (
     AssistantEntry,
@@ -14,7 +15,7 @@ from .providers import (
     ToolResultEntry,
     TranscriptEntry,
     UserEntry,
-    append_notices_to_text,
+    append_notices_to_content,
     render_model_notices,
 )
 from .types import Json
@@ -35,14 +36,14 @@ class ModelRequestDelta:
 def model_request_delta_from_prompt(
     *,
     kind: Literal["start", "resume", "correction"],
-    prompt: str,
+    prompt: Prompt,
     notices: list[ModelNotice],
     structured_output: str | None,
 ) -> ModelRequestDelta:
     """Build a request delta for a user-text provider continuation."""
     return ModelRequestDelta(
         kind=kind,
-        entries=[UserEntry(content=append_notices_to_text(prompt, notices))],
+        entries=[UserEntry(content=append_notices_to_content(normalize_content(prompt), notices))],
         notices=list(notices),
         structured_output=structured_output,
     )
@@ -57,11 +58,11 @@ def model_request_delta_from_tool_outputs(
 ) -> ModelRequestDelta:
     """Build a request delta for a tool-output provider continuation."""
     entries: list[TranscriptEntry] = [
-        ToolResultEntry(call_id=output.call_id, output=output.output)
+        ToolResultEntry(call_id=output.call_id, result=output.result)
         for output in outputs
     ]
     if notice_text := render_model_notices(notices):
-        entries.append(UserEntry(content=notice_text, notice=True))
+        entries.append(UserEntry(content=(TextBlock(notice_text),), notice=True))
     return ModelRequestDelta(
         kind=kind,
         entries=entries,
@@ -75,14 +76,25 @@ def trace_input_messages_from_entries(entries: list[TranscriptEntry]) -> list[Js
     messages: list[Json] = []
     for entry in entries:
         if isinstance(entry, UserEntry):
-            messages.append({"role": "user", "parts": [{"type": "text", "content": entry.content}]})
+            text = text_only_value(entry.content)
+            parts = (
+                [{"type": "text", "content": text}]
+                if text is not None
+                else [
+                    {"type": "text", "content": part["text"]}
+                    if part["type"] == "text"
+                    else part
+                    for part in redacted_content_json(entry.content)
+                ]
+            )
+            messages.append({"role": "user", "parts": parts})
         elif isinstance(entry, ToolResultEntry):
             messages.append({
                 "role": "tool",
                 "parts": [{
                     "type": "tool_result",
                     "id": entry.call_id,
-                    "content": entry.output,
+                    "content": entry.result.redacted_json(),
                 }],
             })
         else:
@@ -113,13 +125,14 @@ def model_request_input_from_delta(delta: ModelRequestDelta) -> Json | None:
     """Return the trace display payload for one model-visible request delta."""
     if len(delta.entries) == 1 and isinstance(delta.entries[0], UserEntry):
         content = delta.entries[0].content
+        projected: str | list[Json] = text_only_value(content) or redacted_content_json(content)
         if delta.kind in {"start", "resume"}:
-            return {"prompt": content}
+            return {"prompt": projected}
         if delta.kind == "correction":
-            return {"correction": content}
+            return {"correction": projected}
 
     tool_outputs = [
-        {"call_id": entry.call_id, "output": entry.output}
+        {"call_id": entry.call_id, "output": entry.result.redacted_json()}
         for entry in delta.entries
         if isinstance(entry, ToolResultEntry)
     ]
