@@ -215,7 +215,7 @@ ThinHarness has opinions. They are the reason it stays small.
 
 **Purpose-built agents, not universal agents.** ThinHarness is for bounded agent loops, not open-ended interactive assistants like Claude Code or OpenClaw. For business use cases, focused agent loops orchestrated by deterministic code are usually a better fit than sprawling multi-agent systems with broad authority.
 
-**No bash by default.** Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness has no implicit tools and exposes Bash only through an opt-in `BashTool` for exploratory runs before the workflow is hardened with typed tools.
+**No bash by default.** Purpose-built business agents usually don't need a shell. Bash is a broad security and reliability surface: it gives the model open-ended authority instead of typed, bounded actions. ThinHarness has no implicit tools. Add `BashPlugin()` explicitly for bounded exploratory commands, then harden repeated workflow actions as typed tools.
 
 **Search is a top priority.** The `search` tool exposes ripgrep as compact grouped path/line results, tuned for document and business-workflow agents rather than code navigation. There's also a `jsonl_search` variant, because JSONL is the right shape when you're replacing RAG with agent-driven search over structured data: ripgrep row prefiltering, jq-style field projection, `where` filters, range filters, and snippets from large multiline fields.
 
@@ -268,6 +268,19 @@ harness = Harness(
 ```
 
 MCP tools connect and discover one tool snapshot lazily on `Harness.connect()` or the first run. Install support with `uv add 'thinharness[mcp]'`.
+
+Local Bash is also an explicit plugin:
+
+```python
+from thinharness import BashPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[BashPlugin()],
+)
+```
+
+Each call runs a fresh non-interactive shell from a workspace-contained cwd. Bash is sequential, has bounded stdout and stderr, uses a filtered environment by default, and performs best-effort process-group cleanup after normal shell exit, timeout, or run cancellation. It is not a sandbox.
 
 Delegation is also an explicit plugin:
 
@@ -326,7 +339,7 @@ Streaming emits coarse run, model, tool, retry, limit, and subagent events, then
 
 - **Filesystem plugin:** explicit `FilesystemPlugin` composition for `read`, `write`, batched exact-replacement `edit`, `search`, `list`, and `glob` with root-scoped path policies.
 - **JSONL search:** opt-in `jsonl_search` for structured line-delimited data, with ripgrep prefiltering, field projection, equality/contains/regex/range `where` filters, and field-level snippets from large multiline string values.
-- **Bash prototype tool:** opt-in `BashTool` for exploratory shell commands. It is lightweight and available only through direct custom registration.
+- **Bash plugin:** explicit `BashPlugin` composition for one-shot non-interactive commands with contained cwd, filtered environment, bounded output, timeouts, cancellation cleanup, and optional approval.
 - **Provider adapters:** built-in OpenAI, Anthropic, and OpenRouter adapters, plus public model/session protocols for implementing another provider.
 - **Custom typed tools:** define sync or async `ToolSpec` handlers with Pydantic argument models, normalized `ToolResult` envelopes, sequential/approval flags, and per-tool retry settings.
 - **Structured output:** Pydantic-validated results with native, tool, prompted, and text modes.

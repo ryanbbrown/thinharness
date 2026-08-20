@@ -13,6 +13,7 @@ Credential-based scripts skip when `CI` is set or when the required provider key
 Current journeys:
 
 - `workspace_tools_journey.py`: filesystem tools plus `jsonl_search`.
+- `bash_plugin_journey.py`: explicit Bash composition, bounded output, and parent receipt of the tool result.
 - `skills_journey.py`: skill discovery, `skill_read`, and `skill_run`.
 - `control_plane_journey.py`: hooks, sequential execution, and retry-limit behavior.
 - `structured_output_journey.py`: Pydantic structured output after tool use.

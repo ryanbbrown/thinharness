@@ -4,12 +4,14 @@
 
 - Added explicit plugin composition with static and connected contributions, atomic connection rollback, unique plugin names, generic tool origin, and plugin-provided hooks and instructions.
 - Added `FilesystemPlugin` for the ordered workspace tool surface; `jsonl_search` remains opt-in through this plugin.
+- Added `BashPlugin` for explicit one-shot local Bash commands with strict arguments, contained cwd, minimal environment inheritance, bounded separate head-and-tail output, host-capped timeouts, process-group cleanup, and cancellation propagation.
 - Added `MCPPlugin` for lazy MCP server connection, binding-local server identity, atomic tool discovery, and generic tool origin attribution.
 - Added `SkillsPlugin` for constructor-time skill discovery, explicit ordered skill-tool selection, static summaries, and shared inherited-child catalogs.
 - Added `ParallelLlmPlugin` for explicit text-only batch composition with borrowed harness or caller models and plugin-owned string-model provider settings.
 - Added explicit `SubagentsPlugin` composition for the default child, named child recipes, child-local hooks, additive inheritance, and delegation result shaping.
 - Added a narrow `ChildHarnessHost` to `PluginContext`, public child request/outcome contracts, and structural `ChildInheritablePlugin.for_child()` rebinding.
 - Added run-frozen authoritative tool composition provenance for direct-tool inheritance and `subagent.delegation` tracing.
+- **Breaking:** Removed the public `BashTool` and `BashArgs` interfaces. Configure `plugins=[BashPlugin()]`; Bash no longer accepts model-selected output limits or direct tool registration.
 - **Breaking:** Removed `HarnessConfig.mcp_servers`, `McpToolInfo`, and the MCP `ToolKind`; configure one `MCPPlugin` with all harness servers.
 - **Breaking:** Generic plugin validation now reports MCP tool collisions as duplicate tool names. Use MCP `tool_prefix`, `include_tools`, or `exclude_tools` to prevent collisions.
 - **Breaking:** Removed `MCPServer.resolve_id()` and post-bind mutation of `server.id`. The public `server.id` remains the base ID; binding-local IDs, including duplicate suffixes, appear in tool origin and result metadata.

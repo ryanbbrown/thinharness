@@ -39,6 +39,7 @@ from .hooks import (
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
 from .plugins import (
     DEFAULT_SUBAGENT_NAME,
+    BashPlugin,
     ChildHarnessHost,
     ChildHarnessOutcome,
     ChildHarnessRequest,
@@ -79,8 +80,6 @@ from .providers import (
     parse_model_ref,
 )
 from .tools import (
-    BashArgs,
-    BashTool,
     FilePromptSource,
     FileTools,
     InlinePromptSource,
@@ -114,12 +113,11 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
-    "BashArgs",
+    "BashPlugin",
     "ChildHarnessHost",
     "ChildHarnessOutcome",
     "ChildHarnessRequest",
     "ChildInheritablePlugin",
-    "BashTool",
     "FileTools",
     "FilesystemPlugin",
     "FilePromptSource",

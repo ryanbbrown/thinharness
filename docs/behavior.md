@@ -102,6 +102,25 @@ Callers compose optional harness behavior explicitly while independent custom to
 - PLUGIN-12: Core records authoritative direct, plugin, and delegation composition roles independently of caller-visible `ToolOrigin`; these records control inheritance and delegation tracing and cannot be forged through tool metadata.
 - PLUGIN-13: Automatic child inheritance is explicit and structural. Only a plugin with synchronous `for_child()` is rebound against the child context; its returned plugin must be valid and keep the expected fixed name. `for_child()` and I/O-free `bind()` can run during parent construction and later child-recipe revalidation, so both operations must be repeatable and side-effect-free.
 
+## Bash Plugin
+
+### Purpose
+
+Callers explicitly add one bounded, non-interactive local Bash tool through plugin composition.
+
+### Requirements
+
+- BASH-PLUGIN-1: A plain harness has no Bash tool. `BashPlugin` has the fixed name `"bash"` and contributes one sequential tool named `bash`; normal plugin and tool collision rules apply.
+- BASH-PLUGIN-2: Bash uses the canonical harness root. A model-selected working directory must resolve to an existing directory inside that root.
+- BASH-PLUGIN-3: Each call starts a fresh non-interactive `bash -c` process with no stdin or shared shell state. Persistent background work is not supported. After the direct shell exits, times out, or is cancelled, the plugin performs bounded, best-effort process-group cleanup and final output drain. A descendant that leaves the process group can escape termination, and signalling after shell exit has an unavoidable process-group-ID reuse race.
+- BASH-PLUGIN-4: The host controls default and maximum command timeouts. Run cancellation signals the process group, completes bounded cleanup after process handoff despite repeated cancellation, and then propagates cancellation. Cancellation during process creation waits for handoff and cleans up any created process before it propagates.
+- BASH-PLUGIN-5: Stdout and stderr are drained concurrently into separate bounded head-and-tail buffers without spill files. Each buffer retains `ceil(limit / 2)` bytes from the start and `floor(limit / 2)` bytes from the end, and inserts `\n... {omitted_bytes} bytes omitted ...\n` between them when truncated.
+- BASH-PLUGIN-6: Minimal environment mode inherits only `PATH`, `HOME`, temporary-directory, locale, and timezone values. Full host-environment inheritance is explicit. Both modes remove inherited `BASH_ENV` and `ENV`, set non-interactive defaults, and then apply host-configured environment values.
+- BASH-PLUGIN-7: Bash calls execute sequentially. Optional approval uses the existing top-level approval flow.
+- BASH-PLUGIN-8: `BashPlugin` does not inherit automatically into children. A child that needs Bash must list its own plugin, subject to existing child approval rules.
+- BASH-PLUGIN-9: Bash support is POSIX-only, requires process groups, runs `bash` from `PATH`, and has no shell fallback.
+- BASH-PLUGIN-10: Local Bash is not a sandbox. Working-directory containment and environment filtering do not restrict absolute paths, network access, host files, or other host authority.
+
 ## Subagents Plugin
 
 ### Purpose

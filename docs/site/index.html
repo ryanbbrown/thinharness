@@ -45,7 +45,7 @@
       <div class="sechead"><span class="num">// 01</span><h2>Opinions</h2><div class="rule"></div><span class="meta">the reason it stays small</span></div>
       <div class="oplist">
         <div class="op"><div class="tag">purpose_built</div><h3>Purpose-built agents</h3><p>ThinHarness is for bounded agent loops inside software you control, not open-ended interactive assistants.</p></div>
-        <div class="op"><div class="tag">no_bash</div><h3>No bash by default</h3><p>Bash stays out of the default tools, with an opt-in <code>BashTool</code> only for prototyping before typed tools.</p></div>
+        <div class="op"><div class="tag">no_bash</div><h3>No bash by default</h3><p>Bash stays out of the default tools. Add <code>BashPlugin</code> explicitly for bounded exploratory commands before typed tools.</p></div>
         <div class="op"><div class="tag">search</div><h3>Search is a top priority</h3><p>Ripgrep exposed as compact grouped results, tuned for documents and business workflows — plus a custom JSONL search tool for structured corpuses.</p></div>
         <div class="op"><div class="tag">parallel_llm</div><h3>Parallel LLM calls, built in</h3><p>Add <code>ParallelLlmPlugin</code> to fan out independent prompts with the harness model, or configure a separate batch model.</p></div>
         <div class="op"><div class="tag">no_compaction</div><h3>No compaction</h3><p>Compaction makes sense for sprawling coding sessions. For business agents the fix is smarter task decomposition and context management</p></div>

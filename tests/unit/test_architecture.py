@@ -4,6 +4,26 @@ import ast
 from pathlib import Path
 
 
+def test_core_has_no_bash_imports_or_construction() -> None:
+    """Core stays independent from Bash process behavior."""
+    root = Path(__file__).resolve().parents[2]
+    core_source = (root / "thinharness" / "core.py").read_text(encoding="utf-8")
+    tools_init = (root / "thinharness" / "tools" / "__init__.py").read_text(encoding="utf-8")
+    plugin_source = (root / "thinharness" / "plugins" / "bash.py").read_text(encoding="utf-8")
+
+    assert "BashPlugin" not in core_source
+    assert "plugins.bash" not in core_source
+    assert "tools.bash" not in core_source
+    assert "create_subprocess" not in core_source
+    assert not (root / "thinharness" / "tools" / "bash.py").exists()
+    assert "BashTool" not in tools_init
+    assert "BashArgs" not in tools_init
+    assert "class BashPlugin" in plugin_source
+    assert "create_subprocess_exec" in plugin_source
+    assert "def for_child" not in plugin_source
+    assert "Executor" not in plugin_source
+
+
 def test_core_has_no_mcp_imports_or_lifecycle_state() -> None:
     """Core stays independent from MCP composition and lifecycle details."""
     core_path = Path(__file__).resolve().parents[2] / "thinharness" / "core.py"

@@ -98,7 +98,7 @@ Important groups:
 
 - `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- The `Harness` constructor's ordered `plugins=` and direct `tools=` inputs define the complete model-callable surface. ThinHarness has no implicit or selected built-in tool path. Filesystem, MCP, skills, parallel LLM, and subagent delegation use explicit plugins.
+- The `Harness` constructor's ordered `plugins=` and direct `tools=` inputs define the complete model-callable surface. ThinHarness has no implicit or selected built-in tool path. Filesystem, Bash, MCP, skills, parallel LLM, and subagent delegation use explicit plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
@@ -209,6 +209,28 @@ harness = Harness(
 
 With this configuration, `read` can access `src/app.py` and `tests/test_app.py`, but not `docs/notes.md`. `write` can create or update `outputs/report.md`, but not `src/generated.py`. Omit `read_paths` or `write_paths` to allow that operation anywhere under `root`.
 
+## Bash Plugin
+
+`BashPlugin` explicitly adds one sequential, non-interactive `bash` tool. A plain harness has no Bash tool. The plugin uses `HarnessConfig.root`; the model can select only an existing cwd contained by that canonical root.
+
+```python
+from thinharness import BashPlugin, Harness, HarnessConfig
+
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[BashPlugin()],
+)
+```
+
+Each call starts a fresh `bash -c` process with no stdin, PTY, shared shell state, or persistent background-job interface. The host configures default and maximum timeouts and a byte limit for each output stream. The model can request only a timeout, which is capped by the host. Stdout and stderr are drained concurrently into separate bounded head-and-tail buffers; omitted middle bytes get a visible marker and are not written to spill files.
+
+By default, commands inherit only `PATH`, `HOME`, temporary-directory, locale, and timezone values, plus fixed non-interactive defaults. Set `inherit_env=True` to copy the full host environment. In either mode, inherited `BASH_ENV` and `ENV` are removed before explicit host `env` values are applied.
+
+Timeout and run cancellation signal the command process group, allow one second for termination, and escalate to `SIGKILL`. Cleanup and final pipe drain are bounded, and cancellation then propagates. Normal shell exit also performs best-effort same-group descendant cleanup. A descendant that starts a new session can escape termination, and signalling after direct shell exit has an unavoidable process-group-ID reuse race. Bash is POSIX-only, runs `bash` from `PATH`, does not fall back to another shell, and does not inherit automatically into child harnesses. Configure `requires_approval=True` only for a top-level harness.
+
+Cwd containment and environment filtering reduce mistakes; they are not a sandbox. Commands can use absolute paths, network access, host files, and other authority available to the local process. Use Bash to explore workflow shape, then promote repeated actions into typed tools.
+
 ## Custom Tools
 
 Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, or JSON-serializable data. The model always receives a JSON envelope with `ok`, `content`, and `metadata`.
@@ -267,23 +289,7 @@ The paused result includes:
 
 Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
 
-Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child harnesses. Configure approval only on direct top-level `ToolSpec` values.
-
-### Bash Prototype Tool
-
-`BashTool` is an opt-in custom tool for exploratory agent runs. ThinHarness has no implicit tools; add `BashTool(...).spec()` through direct `tools=` composition.
-
-```python
-from thinharness import BashTool, Harness, HarnessConfig
-
-
-harness = Harness(
-    HarnessConfig(root="."),
-    tools=[BashTool(root=".").spec()],
-)
-```
-
-The tool runs one `bash -c` command from a workspace-contained cwd and marks itself sequential because commands may mutate state. The cwd check is not a sandbox: commands can still access absolute paths, network tools, environment variables, and anything the host process can access. The tool has a configured `max_tool_chars` output cap; the model can pass `max_chars` on an individual call only to request a lower cap. The final limit is `min(max_chars, max_tool_chars)`, applied independently to stdout and stderr. Background descendants left by a command are cleaned up when the shell exits; this is not a persistent job runner. Use it to prototype workflow shape, then promote repeated shell logic into typed tools.
+Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child harnesses. Configure approval only at the top level, either on a direct `ToolSpec` or with `BashPlugin(requires_approval=True)`.
 
 ## Tool Execution Policy
 
