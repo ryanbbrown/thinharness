@@ -58,7 +58,7 @@ def model_request_delta_from_tool_outputs(
 ) -> ModelRequestDelta:
     """Build a request delta for a tool-output provider continuation."""
     entries: list[TranscriptEntry] = [
-        ToolResultEntry(call_id=output.call_id, result=output.result)
+        ToolResultEntry(call_id=output.call_id, result=output.result, wire_output=output.wire_output)
         for output in outputs
     ]
     if notice_text := render_model_notices(notices):
@@ -94,7 +94,7 @@ def trace_input_messages_from_entries(entries: list[TranscriptEntry]) -> list[Js
                 "parts": [{
                     "type": "tool_result",
                     "id": entry.call_id,
-                    "content": entry.result.redacted_json(),
+                    "content": entry.wire_output if entry.wire_output is not None else entry.result.redacted_json(),
                 }],
             })
         else:
@@ -132,7 +132,10 @@ def model_request_input_from_delta(delta: ModelRequestDelta) -> Json | None:
             return {"correction": projected}
 
     tool_outputs = [
-        {"call_id": entry.call_id, "output": entry.result.redacted_json()}
+        {
+            "call_id": entry.call_id,
+            "output": entry.wire_output if entry.wire_output is not None else entry.result.redacted_json(),
+        }
         for entry in delta.entries
         if isinstance(entry, ToolResultEntry)
     ]

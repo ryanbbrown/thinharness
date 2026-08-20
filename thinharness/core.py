@@ -58,6 +58,7 @@ from .providers import (
     StructuredOutputRequest,
     infer_model,
     model_capabilities,
+    session_image_blocks,
 )
 from .tools.base import ToolOrigin, ToolSpec
 from .tracing import (
@@ -79,12 +80,12 @@ def _local_tracing_enabled(configured: bool) -> bool:
 
 def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exception:
     """Record a run failure and return the exception to raise."""
-    message = redact_image_data(str(exc), getattr(run_ctx, "image_blocks", ()))
+    message = redact_image_data(str(exc), run_ctx.image_blocks)
     agent_span.record_exception(exc if message == str(exc) else HarnessError(message))
     agent_span.set_error(message, type(exc).__name__)
-    if isinstance(exc, ProviderError):
+    if isinstance(exc, ProviderError) or getattr(exc, "_thinharness_provider_error", False):
         run_ctx.stop_reason = "provider_error"
-        run_ctx.terminal_error = HarnessError(message)
+        run_ctx.terminal_error = exc if isinstance(exc, HarnessError) else HarnessError(message)
         return run_ctx.terminal_error
     if isinstance(exc, UnexpectedModelBehavior):
         run_ctx.stop_reason = "unexpected_model_behavior"
@@ -503,6 +504,8 @@ class Harness:
                         raise run_ctx.terminal_error
                     session = cast(ResumableModel, self.model).resume_session(resume_from)
                     first_turn_kind = "resume"
+                if session is not None:
+                    run_ctx.register_image_blocks(session_image_blocks(session))
                 conversation_id = str(run_metadata.get("conversation_id")) if run_metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     run_ctx.agent_span = agent_span
@@ -606,7 +609,7 @@ class Harness:
         agent_span.for_each(
             lambda span, option: annotate_agent_start(
                 span,
-                prompt=effective_prompt,
+                prompt=None if skip_user_prompt else effective_prompt,
                 instructions=instructions,
                 capture_messages=option.capture_messages,
                 top_level=not self._is_child_harness,

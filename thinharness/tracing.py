@@ -510,7 +510,7 @@ def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool
 def annotate_agent_start(
     span: _SpanAdapter,
     *,
-    prompt: NormalizedContent,
+    prompt: NormalizedContent | None,
     instructions: str,
     capture_messages: bool,
     top_level: bool,
@@ -518,13 +518,13 @@ def annotate_agent_start(
     """Write opt-in agent input attributes before provider work runs."""
     if not capture_messages:
         return
-    projected_prompt = text_only_value(prompt) or redacted_content_string(prompt)
+    projected_prompt = None if prompt is None else text_only_value(prompt) or redacted_content_string(prompt)
     if top_level:
         span.set_attributes({
             "gen_ai.prompt": projected_prompt,
             "gen_ai.system_instructions": serialize_attribute_value([{"type": "text", "content": instructions}]),
         })
-    else:
+    elif projected_prompt is not None:
         span.set_attribute("gen_ai.prompt", projected_prompt)
 
 

@@ -82,21 +82,20 @@ class ToolResult:
             raise TypeError("ToolResult.ok must be a bool")
         if not isinstance(self.metadata, dict):
             raise TypeError("ToolResult.metadata must be a dict")
-        if isinstance(self.content, str):
-            if not self.content:
-                raise ValueError("ToolResult.content must not be empty")
-        else:
+        if not isinstance(self.content, str):
             self.content = normalize_content(self.content, label="ToolResult.content")
 
     @property
     def blocks(self) -> tuple[ContentBlock, ...]:
-        """Return content in normalized block form."""
+        """Return content in block form, including an empty string block."""
+        if isinstance(self.content, str):
+            return (TextBlock(self.content),)
         return normalize_content(self.content, label="ToolResult.content")
 
     @property
     def has_image(self) -> bool:
         """Return whether this result contains image content."""
-        return any(isinstance(block, ImageBlock) for block in self.blocks)
+        return not isinstance(self.content, str) and any(isinstance(block, ImageBlock) for block in self.blocks)
 
     def to_value(self) -> Json:
         """Return the canonical JSON-compatible envelope value."""
@@ -116,8 +115,6 @@ class ToolResult:
             raise ValueError(f"{label} has wrong type")
         content = parsed["content"]
         if isinstance(content, str):
-            if not content:
-                raise ValueError(f"{label} content must not be empty")
             return cls(parsed["ok"], content, parsed["metadata"])
         return cls(parsed["ok"], content_from_json(content, label=f"{label} content"), parsed["metadata"])
 
@@ -265,14 +262,26 @@ def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope | Any:
 
 
 def _normalize_result(result: Any) -> ToolEnvelope:
-    """Normalize a tool handler result to a structured JSON envelope."""
+    """Normalize and validate a tool handler result."""
     if isinstance(result, ToolResult):
-        return result
-    if isinstance(result, str):
-        return ToolResult(True, result)
-    if isinstance(result, Sequence) and all(isinstance(block, (TextBlock, ImageBlock)) for block in result):
-        return ToolResult(True, result)
-    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True))
+        envelope = result
+    elif isinstance(result, str):
+        envelope = ToolResult(True, result)
+    elif isinstance(result, Sequence) and result and all(isinstance(block, (TextBlock, ImageBlock)) for block in result):
+        envelope = ToolResult(True, result)
+    else:
+        envelope = ToolResult(True, json.dumps(result, indent=2, sort_keys=True))
+    envelope.to_json()
+    return envelope
+
+
+def _invalid_result_envelope(exc: Exception) -> ToolEnvelope:
+    """Return a failed envelope for an unsupported handler result."""
+    return ToolResult(
+        False,
+        f"Invalid tool result: {type(exc).__name__}: {exc}",
+        {"error_type": "InvalidToolResult"},
+    )
 
 
 def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> ToolEnvelope:
@@ -333,7 +342,10 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
             "async handler requires harness execution",
             {"error_type": "AsyncHandlerInSyncContext"},
         ).to_json()
-    return _normalize_result(result).to_json()
+    try:
+        return _normalize_result(result).to_json()
+    except (TypeError, ValueError) as exc:
+        return _invalid_result_envelope(exc).to_json()
 
 
 async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope:
@@ -359,7 +371,10 @@ async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
         return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__})
-    return _normalize_result(result)
+    try:
+        return _normalize_result(result)
+    except (TypeError, ValueError) as exc:
+        return _invalid_result_envelope(exc)
 
 
 def _is_async_callable(handler: ToolHandler) -> bool:

@@ -185,7 +185,7 @@ async def advance_until_terminal(
             retry_message = decision.retry_message
             run_ctx.emit_retry_event("structured_output", retry_message, final_id)
             turn, decision = await send_tool_outputs(
-                [ToolOutput(final_id, ToolResult(True, retry_message))],
+                [ToolOutput(final_id, ToolResult(True, retry_message), wire_output=retry_message)],
                 kind="output_retry_tool",
                 output_retry=True,
             )

@@ -89,9 +89,11 @@ class ToolBatchExecutor:
             results = await self._run_calls_concurrently(calls, indices)
         records = []
         for call, execution in zip(calls, results, strict=True):
-            record = {"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "result": execution.envelope.to_value()}
-            if not execution.envelope.has_image:
-                record["output"] = execution.output
+            record = {
+                "call": {"id": call.id, "name": call.name, "arguments": call.arguments},
+                "result": execution.envelope.to_value(),
+                "output": execution.envelope.redacted_json(),
+            }
             if execution.cancelled:
                 record["cancelled"] = True
             records.append(record)

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -24,7 +26,26 @@ from thinharness import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE = (ROOT / "assets" / "logo-circle.png").read_bytes()
+
+
+def _known_image() -> bytes:
+    """Return a 64x32 PNG whose left half is red and right half is blue."""
+    width, height = 64, 32
+    row = b"\x00" + (b"\xff\x00\x00" * (width // 2)) + (b"\x00\x00\xff" * (width // 2))
+    raw = row * height
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+IMAGE = _known_image()
 
 
 class RecordingOpenAI(OpenAIProvider):
@@ -65,7 +86,7 @@ def image_tool() -> ToolSpec:
         lambda _args: ToolResult(
             True,
             (TextBlock("comparison fixture"), ImageBlock(IMAGE, "image/png")),
-            {"fixture": "logo-circle.png"},
+            {"fixture": "red-blue.png"},
         ),
     )
 
@@ -77,10 +98,11 @@ async def run_provider(label: str, model, payloads: list[dict]) -> None:
         tools=[image_tool()],
     )
     first = await harness.run((
-        TextBlock("Describe this image, then call inspect_fixture and compare the two images."),
+        TextBlock("Name the color on the left and the color on the right, then call inspect_fixture and compare the two images."),
         ImageBlock(IMAGE, "image/png"),
     ))
-    assert first.text
+    assert "red" in first.text.lower()
+    assert "blue" in first.text.lower()
     assert first.resume_state is not None
     resumed = await harness.run("In one sentence, restate the comparison.", resume_from=first.resume_state)
     assert resumed.text

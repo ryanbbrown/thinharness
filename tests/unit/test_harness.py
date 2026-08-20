@@ -103,7 +103,7 @@ def test_classify_run_failure_preserves_exception_ladder_semantics() -> None:
         (ValueError("plain failed"), "error", ValueError, True),
     ]
     for exc, stop_reason, raised_type, same_exception in cases:
-        run_ctx = SimpleNamespace(stop_reason="end_turn", terminal_error=None)
+        run_ctx = SimpleNamespace(stop_reason="end_turn", terminal_error=None, image_blocks=[])
         span = _FailureSpan()
 
         raised = _classify_run_failure(run_ctx, span, exc)
@@ -119,7 +119,7 @@ def test_classify_run_failure_preserves_exception_ladder_semantics() -> None:
 def test_classify_run_failure_preserves_existing_harness_stop_reason() -> None:
     existing = HarnessError("blocked by hook")
     exc = HarnessError("strict hook failure")
-    run_ctx = SimpleNamespace(stop_reason="cancelled_by_hook", terminal_error=existing)
+    run_ctx = SimpleNamespace(stop_reason="cancelled_by_hook", terminal_error=existing, image_blocks=[])
     span = _FailureSpan()
 
     raised = _classify_run_failure(run_ctx, span, exc)

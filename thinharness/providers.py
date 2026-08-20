@@ -113,6 +113,7 @@ class ToolResultEntry:
 
     call_id: str
     result: ToolResult
+    wire_output: str | None = None
 
 
 TranscriptEntry = AssistantEntry | UserEntry | ToolResultEntry
@@ -124,18 +125,17 @@ class ToolOutput:
 
     call_id: str
     result: ToolResult
+    wire_output: str | None = None
 
     def __post_init__(self) -> None:
-        """Normalize direct low-level text outputs into tool envelopes."""
-        if isinstance(self.result, str):
-            self.result = ToolResult(True, self.result)
-        elif not isinstance(self.result, ToolResult):
+        """Require the normalized tool-result contract."""
+        if not isinstance(self.result, ToolResult):
             raise TypeError("ToolOutput.result must be a ToolResult")
 
     @property
     def output(self) -> str:
-        """Return the canonical text envelope."""
-        return self.result.to_json()
+        """Return the exact provider-facing text when one is required."""
+        return self.wire_output if self.wire_output is not None else self.result.to_json()
 
 
 @dataclass(frozen=True)
@@ -447,9 +447,30 @@ def _model_tool_call_from_dict(value: Any) -> ModelToolCall:
 
 
 def _append_tool_results(transcript: list[TranscriptEntry], outputs: list[ToolOutput], notice_text: str) -> None:
-    transcript.extend(ToolResultEntry(call_id=output.call_id, result=copy.deepcopy(output.result)) for output in outputs)
+    transcript.extend(
+        ToolResultEntry(
+            call_id=output.call_id,
+            result=copy.deepcopy(output.result),
+            wire_output=output.wire_output,
+        )
+        for output in outputs
+    )
     if notice_text:
         transcript.append(UserEntry(content=(TextBlock(notice_text),), notice=True))
+
+
+def session_image_blocks(session: ModelSession) -> list[ImageBlock]:
+    """Return image blocks restored into a built-in model session."""
+    transcript = getattr(session, "transcript", None)
+    if not isinstance(transcript, list):
+        return []
+    images: list[ImageBlock] = []
+    for entry in transcript:
+        if isinstance(entry, UserEntry):
+            images.extend(block for block in entry.content if isinstance(block, ImageBlock))
+        elif isinstance(entry, ToolResultEntry):
+            images.extend(block for block in entry.result.blocks if isinstance(block, ImageBlock))
+    return images
 
 
 def _append_assistant_turn(transcript: list[TranscriptEntry], turn: ModelTurn) -> None:
@@ -807,7 +828,11 @@ class OpenAIResponsesSession:
     ) -> ModelTurn:
         """Continue a Responses API run with function_call_output items."""
         input_payload: list[Json] = [
-            {"type": "function_call_output", "call_id": output.call_id, "output": _openai_tool_output(output.result)}
+            {
+                "type": "function_call_output",
+                "call_id": output.call_id,
+                "output": output.wire_output if output.wire_output is not None else _openai_tool_output(output.result),
+            }
             for output in outputs
         ]
         notice_text = render_model_notices(notices)
@@ -955,7 +980,14 @@ class AnthropicMessagesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Continue an Anthropic Messages run with tool_result blocks."""
-        content = [{"type": "tool_result", "tool_use_id": output.call_id, "content": _anthropic_tool_output(output.result)} for output in outputs]
+        content = [
+            {
+                "type": "tool_result",
+                "tool_use_id": output.call_id,
+                "content": output.wire_output if output.wire_output is not None else _anthropic_tool_output(output.result),
+            }
+            for output in outputs
+        ]
         notice_text = render_model_notices(notices)
         if notice_text:
             content.append({"type": "text", "text": notice_text})
@@ -1126,7 +1158,11 @@ class OpenRouterSession:
         _append_tool_results(self.transcript, outputs, notice_text)
         self._apply_resume(constants.instructions)
         for output in outputs:
-            self.messages.append({"role": "tool", "tool_call_id": output.call_id, "content": _openrouter_tool_output_json(output.result)})
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": output.call_id,
+                "content": output.wire_output if output.wire_output is not None else _openrouter_tool_output_json(output.result),
+            })
         image_parts = _openrouter_tool_image_parts(outputs)
         if image_parts:
             if notice_text:
@@ -1302,12 +1338,6 @@ def render_model_notices(notices: list[ModelNotice] | None) -> str:
     )
 
 
-def append_notices_to_text(text: str, notices: list[ModelNotice] | None) -> str:
-    """Append rendered notices to provider text input."""
-    notice_text = render_model_notices(notices)
-    return text if not notice_text else f"{text}\n\n{notice_text}"
-
-
 def append_notices_to_content(content: NormalizedContent, notices: list[ModelNotice] | None) -> NormalizedContent:
     """Append notices as one final text block."""
     return append_text_block(content, render_model_notices(notices))
@@ -1447,7 +1477,8 @@ def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_ena
     while index < len(entries):
         entry = entries[index]
         if isinstance(entry, UserEntry):
-            messages.append({"role": "user", "content": _anthropic_user_content(entry.content)})
+            user_content = _anthropic_content_parts(entry.content) if entry.notice else _anthropic_user_content(entry.content)
+            messages.append({"role": "user", "content": user_content})
             index += 1
             continue
         if isinstance(entry, AssistantEntry):

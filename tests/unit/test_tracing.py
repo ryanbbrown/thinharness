@@ -483,7 +483,7 @@ def test_trace_request_kinds_for_resume_and_output_retries(tmp_path: Path) -> No
     assert "resume" in kinds
     retry_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "output_retry_tool")
     retry_content = json.loads(retry_chat.attributes["gen_ai.input.messages"])[0]["parts"][0]["content"]
-    assert json.loads(retry_content)["content"].startswith("The previous response failed")
+    assert retry_content.startswith("The previous response failed")
     assert "Final request" in retry_chat.attributes["gen_ai.input.messages"]
     assert "Final request" in retry_chat.attributes["thinharness.model.notices"]
     correction_chat = next(span for span in chats if span.attributes.get("thinharness.model.request.kind") == "correction")

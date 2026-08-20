@@ -26,6 +26,7 @@ from thinharness import (
     OpenRouterModel,
     OpenRouterProvider,
     RequestConstants,
+    ToolResult,
     parse_model_ref,
 )
 from thinharness.providers import (
@@ -36,11 +37,15 @@ from thinharness.providers import (
     ToolOutput,
     _retry_after_seconds,
     _retry_delay,
-    append_notices_to_text,
     extract_finish_reason,
     extract_token_usage,
     render_model_notices,
 )
+
+
+def _tool_output(call_id: str, content: str) -> ToolOutput:
+    """Return one normalized text tool output."""
+    return ToolOutput(call_id, ToolResult(True, content))
 
 
 def _notice() -> ModelNotice:
@@ -72,14 +77,12 @@ def test_model_notice_rendering_is_deterministic() -> None:
     second = ModelNotice(kind="limit_warning", content="One tool call remains.", limit_kind="tool_calls", remaining=1)
 
     assert render_model_notices(None) == ""
-    assert append_notices_to_text("hi", None) == "hi"
     assert render_model_notices([first]) == '<harness_notice kind="limit_warning">\nFinal request.\n</harness_notice>'
     assert render_model_notices([first, second]) == (
         '<harness_notice kind="limit_warning">\nFinal request.\n</harness_notice>'
         "\n\n"
         '<harness_notice kind="limit_warning">\nOne tool call remains.\n</harness_notice>'
     )
-    assert append_notices_to_text("hi", [first]) == 'hi\n\n<harness_notice kind="limit_warning">\nFinal request.\n</harness_notice>'
 
 async def test_model_sessions_advance_independently() -> None:
     provider = FakeAnthropicProvider()
@@ -90,8 +93,8 @@ async def test_model_sessions_advance_independently() -> None:
 
     first_turn = await first.start("first", constants)
     second_turn = await second.start("second", constants)
-    await first.continue_with_tools([ToolOutput(first_turn.tool_calls[0].id, "first result")], constants)
-    await second.continue_with_tools([ToolOutput(second_turn.tool_calls[0].id, "second result")], constants)
+    await first.continue_with_tools([_tool_output(first_turn.tool_calls[0].id, "first result")], constants)
+    await second.continue_with_tools([_tool_output(second_turn.tool_calls[0].id, "second result")], constants)
 
     assert provider.payloads[2]["messages"][0] == {"role": "user", "content": "first"}
     assert provider.payloads[2]["messages"][-1]["content"][0]["content"] == '{"ok": true, "content": "first result", "metadata": {}}'
@@ -106,7 +109,7 @@ async def test_openai_previous_response_id_is_session_scoped() -> None:
     second = model.new_session()
 
     await first.start("first", constants, previous_response_id="existing")
-    await first.continue_with_tools([ToolOutput("call_1", "ok")], constants)
+    await first.continue_with_tools([_tool_output("call_1", "ok")], constants)
     await second.start("second", constants)
 
     assert client.payloads[0]["previous_response_id"] == "existing"
@@ -123,7 +126,7 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
 
     first = await session.start("hi", constants, notices=[notice])
     await session.continue_with_tools(
-        [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("call_2", "second")],
+        [_tool_output(first.tool_calls[0].id, "ok"), _tool_output("call_2", "second")],
         constants,
         notices=[notice],
     )
@@ -168,7 +171,7 @@ async def test_openai_no_notice_payloads_are_unchanged() -> None:
     constants = _constants()
 
     await session.start("hi", constants)
-    await session.continue_with_tools([ToolOutput("call_1", "ok")], constants)
+    await session.continue_with_tools([_tool_output("call_1", "ok")], constants)
 
     assert client.payloads[0]["input"] == "hi"
     assert client.payloads[1]["input"] == [{
@@ -186,7 +189,7 @@ async def test_anthropic_appends_notices_to_messages() -> None:
 
     first = await session.start("hi\n\n<hook_context>\npolicy\n</hook_context>", constants, notices=[notice])
     await session.continue_with_tools(
-        [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("toolu_2", "second")],
+        [_tool_output(first.tool_calls[0].id, "ok"), _tool_output("toolu_2", "second")],
         constants,
         notices=[notice],
     )
@@ -211,7 +214,7 @@ async def test_openrouter_appends_notices_to_messages() -> None:
 
     first = await session.start("hi\n\n<hook_context>\npolicy\n</hook_context>", constants, notices=[notice])
     await session.continue_with_tools(
-        [ToolOutput(first.tool_calls[0].id, "ok"), ToolOutput("call_2", "second")],
+        [_tool_output(first.tool_calls[0].id, "ok"), _tool_output("call_2", "second")],
         constants,
         notices=[notice],
     )
@@ -232,7 +235,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     anthropic_provider = FakeAnthropicProvider()
     anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_provider).new_session()
     anthropic_first = await anthropic_session.start("hi", constants)
-    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], constants, notices=[notice])
+    await anthropic_session.continue_with_tools([_tool_output(anthropic_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     assert anthropic_state == json.loads(json.dumps(anthropic_state))
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_provider).resume_session(anthropic_state)
@@ -242,7 +245,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     openai_capture = FakeClient()
     openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
     openai_first = await openai_session.start("hi", constants)
-    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], constants, notices=[notice])
+    await openai_session.continue_with_tools([_tool_output(openai_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
@@ -256,7 +259,7 @@ async def test_resume_replays_preserved_tool_notices() -> None:
     openrouter_provider = FakeOpenRouterProvider()
     openrouter_session = OpenRouterModel("openai/test", provider=openrouter_provider).new_session()
     openrouter_first = await openrouter_session.start("hi", constants)
-    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], constants, notices=[notice])
+    await openrouter_session.continue_with_tools([_tool_output(openrouter_first.tool_calls[0].id, "ok")], constants, notices=[notice])
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_provider).resume_session(openrouter_state)
     await openrouter_resumed.continue_with_user_content("next", constants)
@@ -269,7 +272,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     anthropic_capture = FakeAnthropicProvider()
     anthropic_session = AnthropicMessagesModel("claude-test", provider=anthropic_capture).new_session()
     anthropic_first = await anthropic_session.start("hi", constants, notices=[notice])
-    await anthropic_session.continue_with_tools([ToolOutput(anthropic_first.tool_calls[0].id, "ok")], constants)
+    await anthropic_session.continue_with_tools([_tool_output(anthropic_first.tool_calls[0].id, "ok")], constants)
     anthropic_state = json.loads(json.dumps(anthropic_session.dump_state()))
     anthropic_replay = FakeAnthropicProvider()
     anthropic_resumed = AnthropicMessagesModel("claude-test", provider=anthropic_replay).resume_session(anthropic_state)
@@ -279,7 +282,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     openai_capture = FakeClient()
     openai_session = OpenAIResponsesModel("gpt-test", provider=openai_capture).new_session()
     openai_first = await openai_session.start("hi", constants, notices=[notice])
-    await openai_session.continue_with_tools([ToolOutput(openai_first.tool_calls[0].id, "ok")], constants)
+    await openai_session.continue_with_tools([_tool_output(openai_first.tool_calls[0].id, "ok")], constants)
     openai_state = json.loads(json.dumps(openai_session.dump_state()))
     openai_replay = FakeClient()
     openai_resumed = OpenAIResponsesModel("gpt-test", provider=openai_replay).resume_session(openai_state)
@@ -289,7 +292,7 @@ async def test_resume_replays_preserved_user_notices() -> None:
     openrouter_capture = FakeOpenRouterProvider()
     openrouter_session = OpenRouterModel("openai/test", provider=openrouter_capture).new_session()
     openrouter_first = await openrouter_session.start("hi", constants, notices=[notice])
-    await openrouter_session.continue_with_tools([ToolOutput(openrouter_first.tool_calls[0].id, "ok")], constants)
+    await openrouter_session.continue_with_tools([_tool_output(openrouter_first.tool_calls[0].id, "ok")], constants)
     openrouter_state = json.loads(json.dumps(openrouter_session.dump_state()))
     openrouter_replay = FakeOpenRouterProvider()
     openrouter_resumed = OpenRouterModel("openai/test", provider=openrouter_replay).resume_session(openrouter_state)
@@ -404,7 +407,7 @@ async def test_anthropic_provider_model_tool_loop() -> None:
 
         first = await session.start("hi", constants)
         assert first.tool_calls[0].name == "echo"
-        second = await session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], constants)
+        second = await session.continue_with_tools([_tool_output(first.tool_calls[0].id, "ok")], constants)
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["input_schema"]["type"] == "object"
 
@@ -428,7 +431,7 @@ async def test_anthropic_requests_opt_into_prompt_caching() -> None:
     constants = _constants(ECHO_TOOLS)
 
     first = await session.start("hi", constants)
-    await session.continue_with_tools([ToolOutput(first.tool_calls[0].id, "ok")], constants)
+    await session.continue_with_tools([_tool_output(first.tool_calls[0].id, "ok")], constants)
 
     assert [payload["cache_control"] for payload in provider.payloads] == [{"type": "ephemeral"}] * 2
 
@@ -502,7 +505,7 @@ async def test_openrouter_provider_model_tool_loop() -> None:
 
         first = await session.start("hi", constants)
         assert first.tool_calls[0].id == "call_1"
-        second = await session.continue_with_tools([ToolOutput("call_1", "ok")], constants)
+        second = await session.continue_with_tools([_tool_output("call_1", "ok")], constants)
         assert second.text == "done"
     assert calls[0][1]["tools"][0]["function"]["name"] == "echo"
 
@@ -577,7 +580,7 @@ async def test_anthropic_notice_payload_live() -> None:
     ]
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}]
     try:
-        turn = await session.continue_with_tools([ToolOutput("toolu_live", "ok")], _constants(tools), notices=[sentinel_notice])
+        turn = await session.continue_with_tools([_tool_output("toolu_live", "ok")], _constants(tools), notices=[sentinel_notice])
     finally:
         await provider.aclose()
 
@@ -602,7 +605,7 @@ async def test_openrouter_notice_payload_live() -> None:
     ]
     tools = [{"type": "function", "name": "echo", "description": "Echo", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}]
     try:
-        turn = await session.continue_with_tools([ToolOutput("call_live", "ok")], _constants(tools), notices=[_notice()])
+        turn = await session.continue_with_tools([_tool_output("call_live", "ok")], _constants(tools), notices=[_notice()])
     finally:
         await provider.aclose()
 

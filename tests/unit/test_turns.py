@@ -7,7 +7,7 @@ import pytest
 from fakes import ScriptedProvider, ScriptedSession
 from pydantic import BaseModel
 
-from thinharness import Harness, HarnessConfig, ModelMessageEvent, RequestConstants, ToolSpec, UnexpectedModelBehavior
+from thinharness import Harness, HarnessConfig, ModelMessageEvent, RequestConstants, ToolResult, ToolSpec, UnexpectedModelBehavior
 from thinharness.approvals import ApprovalPause, ApprovalToolCall
 from thinharness.providers import ModelToolCall, ModelTurn, ToolOutput
 from thinharness.tracing import RunTracer
@@ -89,7 +89,7 @@ class FakeToolExecutor:
     async def execute_batch(self, calls, tool_indices=None):
         self.batches.append([call.id for call in calls])
         records = [{"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": "ok"} for call in calls]
-        outputs = [ToolOutput(call.id, "ok") for call in calls]
+        outputs = [ToolOutput(call.id, ToolResult(True, "ok")) for call in calls]
         executions = [SimpleNamespace(cancelled=call.id in self.cancelled_ids, retry_kind=None) for call in calls]
         return records, outputs, executions
 

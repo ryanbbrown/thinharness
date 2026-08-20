@@ -5,6 +5,8 @@ from __future__ import annotations
 import heapq
 import itertools
 import json
+import os
+import stat
 import subprocess
 import time
 import uuid
@@ -248,16 +250,18 @@ class FileTools:
         try:
             if not path.exists():
                 return ToolResult(False, f"file not found: {display}", {"path": str(path)})
-            if path.is_dir():
-                return ToolResult(False, f"path is a directory: {display}", {"path": str(path)})
-            size = path.stat().st_size
-            if size > self.max_image_bytes:
+            if not path.is_file():
+                return ToolResult(False, f"path is not a regular file: {display}", {"path": str(path)})
+            with path.open("rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return ToolResult(False, f"path is not a regular file: {display}", {"path": str(path)})
+                data = handle.read(self.max_image_bytes + 1)
+            if len(data) > self.max_image_bytes:
                 return ToolResult(
                     False,
-                    f"image is {size} bytes, over max_image_bytes={self.max_image_bytes}",
-                    {"path": str(path), "size_bytes": size, "max_image_bytes": self.max_image_bytes},
+                    f"image is over max_image_bytes={self.max_image_bytes}",
+                    {"path": str(path), "size_bytes": len(data), "max_image_bytes": self.max_image_bytes},
                 )
-            data = path.read_bytes()
         except OSError as exc:
             return ToolResult(False, f"{type(exc).__name__}: {exc}", {"path": str(path), "error_type": type(exc).__name__})
         media_type = _detect_image_media_type(data)
@@ -631,19 +635,30 @@ def _detect_image_media_type(data: bytes) -> str | None:
     """Detect supported image containers from complete minimum signatures."""
     if len(data) >= 33 and data.startswith(b"\x89PNG\r\n\x1a\n") and data[8:12] == b"\x00\x00\x00\r" and data[12:16] == b"IHDR":
         return "image/png"
-    if len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+    if (
+        len(data) >= 6
+        and data.startswith(b"\xff\xd8\xff")
+        and data[3] not in {0x00, 0xFF}
+        and b"\xff\xd9" in data[4:]
+    ):
         return "image/jpeg"
     if len(data) >= 13 and data[:6] in {b"GIF87a", b"GIF89a"}:
         return "image/gif"
-    if (
-        len(data) >= 20
-        and data.startswith(b"RIFF")
-        and data[8:12] == b"WEBP"
-        and data[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}
-        and int.from_bytes(data[4:8], "little") == len(data) - 8
-    ):
+    if _valid_webp_header(data):
         return "image/webp"
     return None
+
+
+def _valid_webp_header(data: bytes) -> bool:
+    """Return whether the first WebP chunk fits its declared RIFF container."""
+    if len(data) < 20 or not data.startswith(b"RIFF") or data[8:12] != b"WEBP":
+        return False
+    if data[12:16] not in {b"VP8 ", b"VP8L", b"VP8X"}:
+        return False
+    riff_end = int.from_bytes(data[4:8], "little") + 8
+    chunk_size = int.from_bytes(data[16:20], "little")
+    chunk_end = 20 + chunk_size + (chunk_size % 2)
+    return chunk_end <= riff_end <= len(data)
 
 
 # =============================================================================

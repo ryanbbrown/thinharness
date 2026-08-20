@@ -26,7 +26,7 @@ from .projections import (
     model_request_delta_from_tool_outputs,
     stream_tool_calls_from_assistant,
 )
-from .providers import ModelNotice, ModelSession, ModelTurn, ToolOutput
+from .providers import ModelNotice, ModelSession, ModelTurn, ProviderError, ToolOutput
 from .tracing import (
     RunTracer,
     annotate_agent_result,
@@ -189,9 +189,13 @@ class RunContext:
         self.prompt = content
         self.image_blocks.extend(block for block in content if isinstance(block, ImageBlock))
 
+    def register_image_blocks(self, blocks: Sequence[ImageBlock]) -> None:
+        """Register known images for later error redaction."""
+        self.image_blocks.extend(blocks)
+
     def record_tool_result_images(self, result: Any) -> None:
         """Record tool-result images for later error redaction."""
-        self.image_blocks.extend(block for block in result.blocks if isinstance(block, ImageBlock))
+        self.register_image_blocks([block for block in result.blocks if isinstance(block, ImageBlock)])
 
     def stream_base(self) -> dict[str, Any]:
         """Return common event metadata for this run."""
@@ -347,9 +351,16 @@ class RunContext:
                     self.usage.cached_tokens += turn.usage.cached_tokens or 0
             except Exception as exc:
                 message = redact_image_data(str(exc), self.image_blocks)
-                model_span.record_exception(HarnessError(message))
-                model_span.set_error(message, type(exc).__name__)
-                raise
+                if message == str(exc):
+                    model_span.record_exception(exc)
+                    model_span.set_error(message, type(exc).__name__)
+                    raise
+                sanitized = HarnessError(message)
+                if isinstance(exc, ProviderError):
+                    sanitized.__dict__["_thinharness_provider_error"] = True
+                model_span.record_exception(sanitized)
+                model_span.set_error(message, type(sanitized).__name__)
+                raise sanitized from exc
             model_span.for_each(
                 lambda span, option: annotate_model_span(
                     span,

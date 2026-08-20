@@ -64,7 +64,7 @@ Stream events are high-level workflow events intended for app consumption:
 
 - `RunStartedEvent.prompt` includes the submitted text, or compact ordered JSON with redacted image descriptors for a multimodal prompt.
 - `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
-- `ToolCallCompletedEvent.output` includes model-visible tool output.
+- `ToolCallCompletedEvent.output` includes the exact text-only tool output or a compact canonical redacted projection for image-bearing output.
 - Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
 - `ModelMessageEvent.text` includes assistant text from the completed provider turn.
 - Child subagent events are flattened by default; set `include_subagents=False` to keep only the parent `subagent` tool lifecycle.
@@ -131,7 +131,7 @@ The core harness has no implicit filesystem tools. Add `FilesystemPlugin()` to g
 - `list`: list files or directories.
 - `glob`: find files by glob pattern.
 
-Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` and `read_image` are opt-in. `read_image` reads a bounded JPEG, PNG, GIF, or WebP file under the read path policy and returns metadata text followed by the image. It does not change the text-only `read` tool. Configure its independent positive byte limit with `max_image_bytes` (default 5,000,000).
+Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` and `read_image` are opt-in. `read_image` reads at most `max_image_bytes + 1` bytes from a regular JPEG, PNG, GIF, or WebP file under the read path policy and returns metadata text followed by the image. It does not change the text-only `read` tool. Configure its independent positive byte limit with `max_image_bytes` (default 5,000,000).
 
 For example:
 
@@ -586,7 +586,7 @@ Available wrappers:
 - `MCPServerSSE`
 - `MCPServerStreamableHTTP`
 
-ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. Successful supported MCP images remain ordered image blocks. When `structuredContent` exists, its canonical JSON is the authoritative first text block, MCP text blocks are discarded, and image blocks or placeholders keep their relative order. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
+ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. Successful supported MCP images remain ordered image blocks. When `structuredContent` exists, its canonical JSON is the authoritative first text block; text, audio, resource, and resource-link blocks are discarded; and only image blocks or image placeholders keep their relative order. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
 
 ## Resume
 
@@ -707,7 +707,7 @@ Each tracing sink owns its capture policy. External spans can exist without reco
 - `text`: final model text.
 - `output`: parsed structured output, if configured.
 - `responses`: raw provider responses.
-- `tool_call_records`: normalized tool call and output records.
+- `tool_call_records`: normalized tool call records with canonical structured `result` and string `output`; image-bearing `output` is redacted while `result` retains complete image data.
 - `usage`: model request counts, tool call counts, cancellations, retry counters, and run token totals (`input_tokens`/`output_tokens`).
 - `stop_reason`: terminal reason.
 - `resume_state`: opaque continuation state when the run is cleanly resumable.

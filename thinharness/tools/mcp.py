@@ -167,7 +167,7 @@ class MCPServer:
         structured_content = getattr(result, "structuredContent", None)
         if structured_content is not None:
             structured = TextBlock(json.dumps(structured_content, ensure_ascii=False))
-            content = (structured, *_content_to_blocks(result.content, include_text=False))
+            content = (structured, *_content_to_blocks(result.content, include_text=False, images_only=True))
         else:
             content = _content_to_blocks(result.content, include_text=True)
         if all(isinstance(block, TextBlock) for block in content):
@@ -385,8 +385,13 @@ def _content_to_text(blocks: list[Any]) -> str:
     return "\n".join(parts)
 
 
-def _content_to_blocks(blocks: list[Any], *, include_text: bool) -> tuple[TextBlock | ImageBlock, ...]:
-    """Preserve supported MCP images and ordered text placeholders."""
+def _content_to_blocks(
+    blocks: list[Any],
+    *,
+    include_text: bool,
+    images_only: bool = False,
+) -> tuple[TextBlock | ImageBlock, ...]:
+    """Preserve supported MCP images and selected ordered placeholders."""
     parts: list[TextBlock | ImageBlock] = []
     for block in blocks:
         block_type = getattr(block, "type", "")
@@ -408,11 +413,11 @@ def _content_to_blocks(blocks: list[Any], *, include_text: bool) -> tuple[TextBl
                     parts.append(ImageBlock(decoded, media_type))  # type: ignore[arg-type]
                     continue
             parts.append(TextBlock(f"[image: {media_type}]"))
-        elif block_type == "audio":
+        elif not images_only and block_type == "audio":
             parts.append(TextBlock(f"[audio: {getattr(block, 'mimeType', 'unknown')}]"))
-        elif block_type in {"resource", "resource_link"}:
+        elif not images_only and block_type in {"resource", "resource_link"}:
             parts.append(TextBlock(_resource_placeholder(block)))
-        else:
+        elif not images_only:
             parts.append(TextBlock(str(block)))
     return tuple(parts)
 

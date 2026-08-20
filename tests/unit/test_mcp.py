@@ -1673,3 +1673,64 @@ async def test_connection_failure_happens_before_run_hooks(tmp_path) -> None:
 
     assert events == []
     assert tracer.spans == []
+
+
+async def test_structured_content_keeps_only_ordered_images_and_image_placeholders(monkeypatch) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text="discard text"),
+            types.AudioContent(type="audio", data="aGk=", mimeType="audio/wav"),
+            types.ImageContent(type="image", data="aGk=", mimeType="image/png"),
+            types.EmbeddedResource(
+                type="resource",
+                resource=types.TextResourceContents(uri="file:///discard.txt", text="discard"),
+            ),
+            types.ImageContent(type="image", data="***", mimeType="image/jpeg"),
+            types.ResourceLink(type="resource_link", uri="https://example.com/discard", name="discard"),
+            types.ImageContent(type="image", data="aGk=", mimeType="image/svg+xml"),
+        ],
+        structuredContent={"answer": 42},
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"mixed": _schema()}, {"mixed": scripted})
+
+    result = await server.call_tool("mixed", {})
+
+    assert result.content == (
+        TextBlock('{"answer": 42}'),
+        ImageBlock(b"hi", "image/png"),
+        TextBlock("[image: image/jpeg]"),
+        TextBlock("[image: image/svg+xml]"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "media_type"),
+    [("***", "image/png"), ("aGk=", "image/svg+xml")],
+)
+async def test_mcp_malformed_or_unsupported_images_become_placeholders(monkeypatch, data: str, media_type: str) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[types.ImageContent(type="image", data=data, mimeType=media_type)],
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"image": _schema()}, {"image": scripted})
+
+    result = await server.call_tool("image", {})
+
+    assert result.content == f"[image: {media_type}]"
+
+
+async def test_empty_successful_mcp_content_remains_successful(monkeypatch) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(content=[], isError=False)
+    server = scripted_server(monkeypatch, {"empty": _schema()}, {"empty": scripted})
+
+    result = await server.call_tool("empty", {})
+
+    assert result.ok is True
+    assert result.content == ""
