@@ -355,12 +355,15 @@ class RunContext:
                     model_span.record_exception(exc)
                     model_span.set_error(message, type(exc).__name__)
                     raise
-                sanitized = HarnessError(message)
                 if isinstance(exc, ProviderError):
-                    sanitized.__dict__["_thinharness_provider_error"] = True
+                    sanitized: Exception = ProviderError(message, status_code=exc.status_code)
+                else:
+                    sanitized = HarnessError(message)
+                    sanitized.__dict__["_thinharness_error_type"] = type(exc).__name__
+                sanitized.__dict__["_thinharness_sanitized"] = True
                 model_span.record_exception(sanitized)
-                model_span.set_error(message, type(sanitized).__name__)
-                raise sanitized from exc
+                model_span.set_error(message, type(exc).__name__)
+                raise sanitized from None
             model_span.for_each(
                 lambda span, option: annotate_model_span(
                     span,

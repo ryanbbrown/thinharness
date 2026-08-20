@@ -399,7 +399,7 @@ Hook events:
 - `limit_reached`
 - `run_end`
 
-`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. Run-start and prompt-submit hooks receive normalized content-block tuples and can replace the prompt with a string or valid block sequence. `after_tool_call` can rewrite canonical `ctx.output` or structured `ctx.envelope`; either form is strictly validated and keeps the other synchronized. These after-tool fields can contain full base64 image data and can be sensitive and large. Tool filters apply only to tool events; agent filters apply only to subagent events.
+`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. Run-start and prompt-submit hooks receive normalized content-block tuples and can replace the prompt with a string or valid block sequence. Invalid prompt replacements fail as `HarnessError`. `after_tool_call` can rewrite canonical `ctx.output` or structured `ctx.envelope`; either form is validated and keeps the other synchronized. A malformed non-strict mutation is logged and rolled back, while a malformed strict mutation fails as `HarnessError`. Tool retry control flow and budgets use the result classification from before after-tool hooks; hooks can change model-visible output but cannot create or suppress the current retry. These after-tool fields can contain full base64 image data and can be sensitive and large. Tool filters apply only to tool events; agent filters apply only to subagent events.
 
 By default, hook exceptions are logged and the run continues. Set `strict_hooks=True` to make hook exceptions fail the run.
 
@@ -621,7 +621,7 @@ Budgets span the pause. The paused batch counts against `usage.tool_calls` exact
 Built-in provider resume details:
 
 - `resume_state["kind"] == "transcript"` and `version == 4`. Older transcript versions must be regenerated; approval envelopes with version 3 nested provider state also fail.
-- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead.
+- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead. Exact structured-output retry wire text is also stored and replayed byte-for-byte when it differs from the canonical tool result.
 - Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
 - Cross-provider resume is supported by the built-in renderers, but real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
 - `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` remains available as a low-level escape hatch, but later resume state captures only the new prompt onward, not the externally seeded prior turns.
@@ -661,7 +661,7 @@ Local tracing is on by default. It writes plaintext JSONL traces under:
 ~/.thinharness/traces/<encoded-project-root>/
 ```
 
-Those traces can include prompt text, model outputs, tool arguments, and tool-result text. Image bytes, base64, and data URLs are replaced with ordered descriptors that contain media type, byte size, and block index. Completed results and resume state still retain full images; treat them as sensitive local data.
+Those traces can include prompt text, model outputs, tool arguments, and tool-result text. The agent span shows the normalized raw caller prompt, while the first model span shows the effective prompt after hooks; approval resume adds no prompt. Image bytes, base64, and data URLs are replaced with ordered descriptors that contain media type, byte size, and block index. Provider failures keep their `ProviderError` classification and status code after message redaction. Completed results and resume state still retain full images; treat them as sensitive local data.
 
 Disable local trace files with:
 

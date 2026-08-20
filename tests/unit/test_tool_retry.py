@@ -376,7 +376,7 @@ def test_after_tool_hook_sees_retry_envelope_and_cannot_break_budget(tmp_path: P
         hooks=[Hook("after_tool_call", after)],
     )
 
-    with pytest.raises(ValueError, match="valid canonical ToolResult"):
+    with pytest.raises(HarnessError, match="exceeded max_retries=0"):
         harness.run_sync("go")
 
     assert seen == ["ModelRetry"]
@@ -402,7 +402,49 @@ def test_after_tool_hook_sees_validation_retry_envelope(tmp_path: Path) -> None:
     assert seen[0]["retry"] is True
 
 
-def test_tracing_uses_mutated_retry_kind(tmp_path: Path) -> None:
+def test_after_tool_hook_cannot_create_retry_control_flow(tmp_path: Path) -> None:
+    def add_retry(ctx: AfterToolCallContext) -> None:
+        ctx.envelope.metadata.update({"error_type": "HookRetry", "retry": True})
+        ctx.output = ctx.envelope.to_json()
+
+    client = MultiCallClient([("ok", "{}")])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:test-model", tool_retries=0),
+        model=_fake_openai(client),
+        tools=[ToolSpec("ok", "Ok", {"type": "object", "properties": {}}, lambda _args: "done")],
+        hooks=[Hook("after_tool_call", add_retry)],
+    )
+
+    result = harness.run_sync("go")
+
+    assert len(client.payloads) == 2
+    assert result.usage.tool_retries == {}
+    assert tool_output(client.payloads[1]["input"][0]["output"])["metadata"] == {
+        "error_type": "HookRetry",
+        "retry": True,
+    }
+
+
+def test_after_tool_hook_cannot_suppress_retry_budget(tmp_path: Path) -> None:
+    def remove_retry(ctx: AfterToolCallContext) -> None:
+        ctx.envelope.metadata = {}
+        ctx.output = ctx.envelope.to_json()
+
+    session = SequenceSession(ModelTurn(tool_calls=[_call("flaky", "{}")], raw={"id": "start"}))
+    harness = Harness(
+        HarnessConfig(root=tmp_path, tool_retries=0),
+        model=ScriptedModel([session]),
+        tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, lambda _args: (_ for _ in ()).throw(ModelRetry("again")))],
+        hooks=[Hook("after_tool_call", remove_retry)],
+    )
+
+    with pytest.raises(HarnessError, match="exceeded max_retries=0"):
+        harness.run_sync("go")
+
+    assert session.tool_outputs == []
+
+
+def test_tracing_and_control_flow_use_pre_hook_retry_kind(tmp_path: Path) -> None:
     tracer = FakeTracer()
 
     def rewrite(ctx):
@@ -421,7 +463,8 @@ def test_tracing_uses_mutated_retry_kind(tmp_path: Path) -> None:
     harness.run_sync("go")
 
     span = next(span for span in tracer.spans if span.name == "execute_tool flaky")
-    assert span.attributes["error.type"] == "Rewritten"
+    assert span.attributes["error.type"] == "ModelRetry"
+    assert tool_output(client.payloads[1]["input"][0]["output"])["metadata"]["error_type"] == "Rewritten"
 
 
 def test_subagent_tool_retry_budget_recipes(tmp_path: Path) -> None:

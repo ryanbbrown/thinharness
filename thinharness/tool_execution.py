@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .children import _ToolComposition
+from .content import redact_image_data
 from .events import (
     _CURRENT_STREAM_EMITTER,
     ToolCallCompletedEvent,
@@ -23,6 +25,7 @@ from .hooks import (
 from .providers import ModelToolCall, ToolOutput
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec, _invoke_tool
 from .tracing import RunTracer, serialize_attribute_value
+from .types import HarnessError
 
 if TYPE_CHECKING:
     from .core import Harness
@@ -177,6 +180,7 @@ class ToolCallExecutor:
             envelope: ToolEnvelope | None = None
             output: str | None = None
             retry_kind: str | None = None
+            after: AfterToolCallContext | None = None
             try:
                 spec = self.tool_map.get(str(call.name))
                 before = BeforeToolCallContext(
@@ -206,6 +210,7 @@ class ToolCallExecutor:
                     envelope = await self._call_output(call.name, call.arguments)
                 output = envelope.to_json()
                 retry_kind = None if cancelled else envelope.retry_kind()
+                self.run_context.record_tool_result_images(envelope)
                 after = AfterToolCallContext(
                     harness=self.harness,
                     metadata=dict(self.run_context.metadata),
@@ -214,13 +219,12 @@ class ToolCallExecutor:
                     arguments=call.arguments,
                     original_output=output,
                     output=output,
-                    envelope=envelope,
+                    envelope=copy.deepcopy(envelope),
                     duration_ms=(time.perf_counter() - start) * 1000,
                 )
                 self.harness.hooks.fire_after_tool_call(after)
                 output = after.output
                 envelope = after.envelope
-                retry_kind = None if cancelled else envelope.retry_kind()
                 self.run_context.record_tool_result_images(envelope)
                 projected_output = envelope.redacted_json()
                 self._annotate_special_tool(span, call.name, envelope, composition)
@@ -244,6 +248,19 @@ class ToolCallExecutor:
                 completed_emitted = True
                 return ToolCallExecution(envelope=envelope, output=output, cancelled=cancelled, retry_kind=retry_kind)
             except Exception as exc:
+                if after is not None:
+                    self._register_valid_hook_images(after)
+                message = redact_image_data(str(exc), self.run_context.image_blocks)
+                failure: Exception = exc
+                if message != str(exc):
+                    failure = HarnessError(message)
+                    failure.__dict__["_thinharness_error_type"] = type(exc).__name__
+                    failure.__dict__["_thinharness_sanitized"] = True
+                    if getattr(exc, "_thinharness_strict_hook", False):
+                        failure.__dict__["_thinharness_strict_hook"] = True
+                error_type = getattr(failure, "_thinharness_error_type", type(failure).__name__)
+                span.record_exception(failure)
+                span.set_error(message, error_type)
                 if not completed_emitted:
                     self.run_context.emit(
                         ToolCallCompletedEvent(
@@ -253,18 +270,37 @@ class ToolCallExecutor:
                             ok=False,
                             cancelled=cancelled,
                             retry_kind=retry_kind,
-                            error_type=type(exc).__name__,
-                            message=str(exc),
+                            error_type=error_type,
+                            message=message,
                             duration_ms=(time.perf_counter() - start) * 1000,
                             output=(envelope.redacted_json() if envelope is not None else output),
                         )
                     )
-                raise
+                if failure is exc:
+                    raise
+                raise failure from None
             finally:
                 lease.active = False
                 _CURRENT_STREAM_EMITTER.reset(emitter_token)
                 _CURRENT_TOOL_RUNTIME.reset(runtime_token)
                 _CURRENT_TOOL_CALL.reset(call_token)
+
+    def _register_valid_hook_images(self, ctx: AfterToolCallContext) -> None:
+        """Register valid hook replacement images before failure observability."""
+        if isinstance(ctx.envelope, ToolResult):
+            try:
+                ctx.envelope.to_json()
+            except (TypeError, ValueError):
+                pass
+            else:
+                self.run_context.record_tool_result_images(ctx.envelope)
+        if not isinstance(ctx.output, str):
+            return
+        try:
+            parsed = ToolResult.from_json(ctx.output, strict=True)
+        except (TypeError, ValueError):
+            return
+        self.run_context.record_tool_result_images(parsed)
 
     def _emit_completed(
         self,

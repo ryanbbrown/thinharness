@@ -357,6 +357,40 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
     with pytest.raises(RuntimeError, match="after failed"):
         harness.run_sync("go")
 
+@pytest.mark.parametrize("field", ["output", "envelope"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_after_tool_hook_invalid_mutation_uses_hook_error_policy(field: str, strict: bool) -> None:
+    original = ToolResult(True, "original", {"stable": True})
+
+    def mutate(ctx: AfterToolCallContext) -> None:
+        if field == "output":
+            ctx.output = "not canonical json"
+        else:
+            ctx.envelope.metadata = {"bad": Path("not-json")}
+
+    registry = HookRegistry([Hook("after_tool_call", mutate)], strict_hooks=strict)
+    ctx = AfterToolCallContext(
+        harness=None,  # type: ignore[arg-type]
+        call_id="call_1",
+        tool_name="raw",
+        arguments="{}",
+        original_output=original.to_json(),
+        output=original.to_json(),
+        envelope=original,
+        duration_ms=0,
+    )
+
+    if strict:
+        with pytest.raises(HarnessError, match="canonical output validation failed"):
+            registry.fire_after_tool_call(ctx)
+    else:
+        registry.fire_after_tool_call(ctx)
+
+    if not strict:
+        assert ctx.output == ToolResult(True, "original", {"stable": True}).to_json()
+        assert ctx.envelope == ToolResult(True, "original", {"stable": True})
+
+
 def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
     seen = []
     registry = HookRegistry([

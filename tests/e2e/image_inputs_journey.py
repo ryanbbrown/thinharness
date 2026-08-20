@@ -28,10 +28,10 @@ from thinharness import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _known_image() -> bytes:
-    """Return a 64x32 PNG whose left half is red and right half is blue."""
+def _known_image(left: bytes, right: bytes) -> bytes:
+    """Return a 64x32 PNG with two known solid-color halves."""
     width, height = 64, 32
-    row = b"\x00" + (b"\xff\x00\x00" * (width // 2)) + (b"\x00\x00\xff" * (width // 2))
+    row = b"\x00" + (left * (width // 2)) + (right * (width // 2))
     raw = row * height
 
     def chunk(kind: bytes, data: bytes) -> bytes:
@@ -45,7 +45,8 @@ def _known_image() -> bytes:
     )
 
 
-IMAGE = _known_image()
+IMAGE = _known_image(b"\xff\x00\x00", b"\x00\x00\xff")
+TOOL_IMAGE = _known_image(b"\x00\xff\x00", b"\xff\xff\x00")
 
 
 class RecordingOpenAI(OpenAIProvider):
@@ -85,8 +86,8 @@ def image_tool() -> ToolSpec:
         {"type": "object", "properties": {}, "additionalProperties": False},
         lambda _args: ToolResult(
             True,
-            (TextBlock("comparison fixture"), ImageBlock(IMAGE, "image/png")),
-            {"fixture": "red-blue.png"},
+            (TextBlock("comparison fixture"), ImageBlock(TOOL_IMAGE, "image/png")),
+            {"fixture": "green-yellow.png"},
         ),
     )
 
@@ -98,11 +99,17 @@ async def run_provider(label: str, model, payloads: list[dict]) -> None:
         tools=[image_tool()],
     )
     first = await harness.run((
-        TextBlock("Name the color on the left and the color on the right, then call inspect_fixture and compare the two images."),
+        TextBlock(
+            "For the supplied image, name the left and right colors. Then call inspect_fixture and name its left and right colors. "
+            "Report all four facts."
+        ),
         ImageBlock(IMAGE, "image/png"),
     ))
     assert "red" in first.text.lower()
     assert "blue" in first.text.lower()
+    assert "green" in first.text.lower()
+    assert "yellow" in first.text.lower()
+    assert any(record["call"]["name"] == "inspect_fixture" for record in first.tool_call_records)
     assert first.resume_state is not None
     resumed = await harness.run("In one sentence, restate the comparison.", resume_from=first.resume_state)
     assert resumed.text
@@ -113,6 +120,16 @@ async def run_provider(label: str, model, payloads: list[dict]) -> None:
             for payload in payloads
             for item in payload.get("input", [])
             if isinstance(item, dict) and item.get("type") == "function_call_output"
+        )
+    if label == "anthropic":
+        assert any(
+            block.get("type") == "image"
+            for payload in payloads
+            for message in payload.get("messages", [])
+            for item in message.get("content", []) if isinstance(message.get("content"), list)
+            if isinstance(item, dict) and item.get("type") == "tool_result" and isinstance(item.get("content"), list)
+            for block in item["content"]
+            if isinstance(block, dict)
         )
     if label == "openrouter":
         assert any(

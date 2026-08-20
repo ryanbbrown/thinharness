@@ -83,6 +83,63 @@ def test_content_validation_rejects_invalid_public_values(bad: Any) -> None:
         normalize_content(bad)
 
 
+@pytest.mark.parametrize("bad", ["", [], [TextBlock("")], [TextBlock("ok"), object()]])
+async def test_public_async_prompt_validation_raises_harness_error_and_emits_failure(tmp_path: Path, bad: Any) -> None:
+    provider = _Provider("OpenAI", [])
+    harness = Harness(_config(tmp_path), model=OpenAIResponsesModel("target", provider=provider))  # type: ignore[arg-type]
+    events = []
+
+    with pytest.raises(HarnessError):
+        async for event in harness.stream(bad):
+            events.append(event)
+
+    failed = next(event for event in events if isinstance(event, RunFailedEvent))
+    assert failed.error_type == "HarnessError"
+    assert failed.stop_reason == "error"
+    assert "prompt" in failed.message
+    assert provider.payloads == []
+
+    direct_provider = _Provider("OpenAI", [])
+    direct = Harness(_config(tmp_path), model=OpenAIResponsesModel("target", provider=direct_provider))  # type: ignore[arg-type]
+    with pytest.raises(HarnessError, match="prompt"):
+        await direct.run(bad)
+    assert direct_provider.payloads == []
+
+
+@pytest.mark.parametrize("bad", ["", [], [TextBlock("")], [TextBlock("ok"), object()]])
+def test_public_run_sync_prompt_validation_raises_harness_error(tmp_path: Path, bad: Any) -> None:
+    provider = _Provider("OpenAI", [])
+    harness = Harness(_config(tmp_path), model=OpenAIResponsesModel("target", provider=provider))  # type: ignore[arg-type]
+
+    with pytest.raises(HarnessError, match="prompt"):
+        harness.run_sync(bad)
+
+    assert provider.payloads == []
+
+
+@pytest.mark.parametrize("event", ["run_start", "user_prompt_submit"])
+@pytest.mark.parametrize("strict", [False, True])
+async def test_invalid_prompt_hook_replacement_is_harness_error(
+    tmp_path: Path,
+    event: str,
+    strict: bool,
+) -> None:
+    def invalidate(ctx) -> None:
+        ctx.prompt = []
+
+    provider = _Provider("OpenAI", [])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, system_prompt="sys", local_tracing=False, strict_hooks=strict),
+        model=OpenAIResponsesModel("target", provider=provider),  # type: ignore[arg-type]
+        hooks=[Hook(event, invalidate)],  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(HarnessError, match=f"{event} prompt must not be empty"):
+        await harness.run("caller")
+
+    assert provider.payloads == []
+
+
 def test_content_contract_detaches_round_trips_and_redacts() -> None:
     caller = [TextBlock("before"), ImageBlock(PNG, "image/png"), TextBlock("after")]
     normalized = normalize_content(caller)
@@ -182,6 +239,7 @@ async def test_openai_image_tool_result_payload_is_literal(tmp_path: Path) -> No
             {"type": "image", "media_type": "image/png", "data": PNG_B64},
         ],
         "metadata": {"source": "fixture"},
+        "wire_output": None,
     }
 
 
@@ -307,6 +365,7 @@ def _resume_state(
                     {"type": "image", "media_type": "image/png", "data": PNG_B64},
                 ],
                 "metadata": {"source": "resume"},
+                "wire_output": None,
             },
         ])
     entries.append({"role": "assistant", "text": "prior done", "tool_calls": [], "reasoning": []})
@@ -349,6 +408,46 @@ async def test_every_provider_pair_replays_user_and_tool_images(tmp_path: Path, 
     assert PNG_B64 in rendered
     if target == "openrouter":
         assert "[tool image call_id=call_foreign block=1]" in rendered
+
+
+async def test_same_provider_openai_resume_combines_native_reasoning_and_image(tmp_path: Path) -> None:
+    state = {
+        "kind": "transcript",
+        "version": 4,
+        "origin_provider": "openai",
+        "origin_model": "o3-source",
+        "entries": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect"},
+                    {"type": "image", "media_type": "image/png", "data": PNG_B64},
+                ],
+                "notice": False,
+            },
+            {
+                "role": "assistant",
+                "text": "prior",
+                "tool_calls": [],
+                "reasoning": [{
+                    "text": "",
+                    "signature": "encrypted-reasoning",
+                    "id": "rs_1",
+                    "provider_name": "openai",
+                }],
+            },
+        ],
+    }
+    provider = _Provider("OpenAI", [{"id": "done", "output_text": "done"}])
+
+    await Harness(_config(tmp_path), model=OpenAIResponsesModel("o3-target", provider=provider)).run(  # type: ignore[arg-type]
+        "follow-up",
+        resume_from=state,
+    )
+
+    payload = provider.payloads[0]
+    assert any(item.get("type") == "reasoning" and item.get("encrypted_content") == "encrypted-reasoning" for item in payload["input"])
+    assert PNG_URL in json.dumps(payload, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(
@@ -465,6 +564,30 @@ async def test_prompt_hooks_replace_content_and_append_context_after_images(tmp_
     ]
 
 
+async def test_agent_trace_keeps_raw_image_prompt_and_model_trace_uses_hook_context(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+
+    def add_context(ctx) -> None:
+        ctx.additional_context.append("effective-only policy")
+
+    provider = _Provider("OpenAI", [{"id": "done", "output_text": "done"}])
+    prompt = (TextBlock("caller"), ImageBlock(PNG, "image/png"))
+    await Harness(
+        _config(tmp_path),
+        model=OpenAIResponsesModel("target", provider=provider),  # type: ignore[arg-type]
+        hooks=[Hook("user_prompt_submit", add_context)],
+        tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
+    ).run(prompt)
+
+    agent = next(span for span in tracer.spans if span.name.startswith("invoke_agent "))
+    model = next(span for span in tracer.spans if span.name.startswith("chat "))
+    assert "effective-only policy" not in agent.attributes["gen_ai.prompt"]
+    assert "effective-only policy" in model.attributes["gen_ai.input.messages"]
+    combined = json.dumps([agent.attributes, model.attributes], ensure_ascii=False)
+    assert PNG_B64 not in combined
+    assert PNG_URL not in combined
+
+
 async def test_image_events_and_tool_trace_are_redacted(tmp_path: Path) -> None:
     tracer = FakeTracer()
     provider = _Provider("OpenAI", [
@@ -490,6 +613,97 @@ async def test_image_events_and_tool_trace_are_redacted(tmp_path: Path) -> None:
     assert PNG_URL not in trace_text
 
 
+@pytest.mark.parametrize("event", ["run_start", "user_prompt_submit"])
+async def test_strict_prompt_hook_failure_redacts_known_image_data(tmp_path: Path, event: str) -> None:
+    tracer = FakeTracer()
+
+    def fail(_ctx) -> None:
+        raise RuntimeError(f"hook echoed {PNG_B64} and {PNG_URL}")
+
+    provider = _Provider("OpenAI", [])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, system_prompt="sys", local_tracing=False, strict_hooks=True),
+        model=OpenAIResponsesModel("target", provider=provider),  # type: ignore[arg-type]
+        hooks=[Hook(event, fail)],  # type: ignore[arg-type]
+        tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
+    )
+    events = []
+
+    with pytest.raises(HarnessError):
+        async for stream_event in harness.stream((TextBlock("go"), ImageBlock(PNG, "image/png"))):
+            events.append(stream_event)
+
+    failed = next(item for item in events if isinstance(item, RunFailedEvent))
+    observed = failed.message + json.dumps([span.attributes for span in tracer.spans], ensure_ascii=False)
+    observed += " ".join(str(exc) for span in tracer.spans for exc in span.exceptions)
+    assert failed.error_type == "RuntimeError"
+    assert PNG_B64 not in observed
+    assert PNG_URL not in observed
+
+
+async def test_strict_after_tool_hook_failure_registers_and_redacts_original_and_replacement_images(tmp_path: Path) -> None:
+    replacement_data = PNG + b"replacement"
+    replacement_b64 = base64.b64encode(replacement_data).decode("ascii")
+    replacement_url = f"data:image/png;base64,{replacement_b64}"
+    tracer = FakeTracer()
+
+    def fail(ctx) -> None:
+        ctx.output = ToolResult(True, (ImageBlock(replacement_data, "image/png"),), {}).to_json()
+        raise RuntimeError(f"hook echoed {PNG_B64} {PNG_URL} {replacement_b64} {replacement_url}")
+
+    provider = _Provider("OpenAI", [{
+        "id": "tool",
+        "output": [{"type": "function_call", "call_id": "image", "name": "image", "arguments": "{}"}],
+    }])
+    harness = Harness(
+        HarnessConfig(root=tmp_path, system_prompt="sys", local_tracing=False, strict_hooks=True),
+        model=OpenAIResponsesModel("target", provider=provider),  # type: ignore[arg-type]
+        tools=[ToolSpec("image", "Image.", {"type": "object", "properties": {}}, lambda _args: (ImageBlock(PNG, "image/png"),))],
+        hooks=[Hook("after_tool_call", fail)],
+        tracing=[TracingOptions(tracer=tracer, capture_tool_results=True)],
+    )
+    events = []
+
+    with pytest.raises(HarnessError):
+        async for event in harness.stream("go"):
+            events.append(event)
+
+    completed = next(item for item in events if isinstance(item, ToolCallCompletedEvent))
+    failed = next(item for item in events if isinstance(item, RunFailedEvent))
+    observed = json.dumps([completed.output, completed.message, failed.message, [span.attributes for span in tracer.spans]], ensure_ascii=False)
+    observed += " ".join(str(exc) for span in tracer.spans for exc in span.exceptions)
+    for secret in (PNG_B64, PNG_URL, replacement_b64, replacement_url):
+        assert secret not in observed
+
+
+async def test_redacted_tool_projection_removes_repeated_image_data_from_text_and_metadata(tmp_path: Path) -> None:
+    tracer = FakeTracer()
+    repeated = f"repeated {PNG_B64} and {PNG_URL}"
+    provider = _Provider("OpenAI", [
+        {"id": "tool", "output": [{"type": "function_call", "call_id": "image", "name": "image", "arguments": "{}"}]},
+        {"id": "done", "output_text": "done"},
+    ])
+    harness = Harness(
+        _config(tmp_path),
+        model=OpenAIResponsesModel("target", provider=provider),  # type: ignore[arg-type]
+        tools=[ToolSpec(
+            "image",
+            "Image.",
+            {"type": "object", "properties": {}},
+            lambda _args: ToolResult(True, (TextBlock(repeated), ImageBlock(PNG, "image/png")), {"echo": repeated}),
+        )],
+        tracing=[TracingOptions(tracer=tracer, capture_tool_results=True)],
+    )
+    events = [event async for event in harness.stream("go")]
+
+    completed = next(event for event in events if isinstance(event, ToolCallCompletedEvent))
+    tool_span = next(span for span in tracer.spans if span.name == "execute_tool image")
+    observed = completed.output + str(tool_span.attributes.get("gen_ai.tool.call.result", ""))
+    assert PNG_B64 not in observed
+    assert PNG_URL not in observed
+    assert observed.count("[image data redacted]") >= 2
+
+
 class _FailingProvider(_Provider):
     def __init__(self, name: str = "OpenAI", *, leak: bool = True) -> None:
         super().__init__(name, [])
@@ -498,7 +712,7 @@ class _FailingProvider(_Provider):
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.payloads.append(copy.deepcopy(payload))
         message = f"provider echoed {PNG_B64} and {PNG_URL}" if self.leak else "plain provider failure"
-        raise ProviderError(message)
+        raise ProviderError(message, status_code=422)
 
 
 @pytest.mark.parametrize(
@@ -528,6 +742,52 @@ async def test_resumed_provider_failures_redact_user_and_tool_images(tmp_path: P
     attributes = json.dumps([span.attributes for span in tracer.spans], ensure_ascii=False)
     assert PNG_B64 not in recorded + attributes
     assert PNG_URL not in recorded + attributes
+
+
+@pytest.mark.parametrize("leak", [False, True])
+async def test_provider_failure_redaction_keeps_public_classification_and_status(tmp_path: Path, leak: bool) -> None:
+    tracer = FakeTracer()
+    provider = _FailingProvider(leak=leak)
+    harness = Harness(
+        _config(tmp_path),
+        model=OpenAIResponsesModel("target", provider=provider),
+        tracing=[TracingOptions(tracer=tracer, capture_messages=True)],
+    )
+    events = []
+
+    with pytest.raises(HarnessError) as exc_info:
+        async for event in harness.stream((TextBlock("go"), ImageBlock(PNG, "image/png"))):
+            events.append(event)
+
+    failed = next(event for event in events if isinstance(event, RunFailedEvent))
+    model_span = next(span for span in tracer.spans if span.name.startswith("chat "))
+    assert failed.error_type == "ProviderError"
+    assert model_span.attributes["error.type"] == "ProviderError"
+    assert exc_info.value.__dict__["status_code"] == 422
+    if leak:
+        assert failed.message == "provider echoed [image data redacted] and [image data redacted]"
+    else:
+        assert failed.message == "plain provider failure"
+
+
+async def test_non_vision_provider_error_keeps_provider_classification(tmp_path: Path) -> None:
+    class NonVisionProvider(_Provider):
+        async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.payloads.append(copy.deepcopy(payload))
+            raise ProviderError("selected model does not support image inputs", status_code=400)
+
+    provider = NonVisionProvider("OpenAI", [])
+    harness = Harness(_config(tmp_path), model=OpenAIResponsesModel("text-only", provider=provider))  # type: ignore[arg-type]
+    events = []
+
+    with pytest.raises(HarnessError) as exc_info:
+        async for event in harness.stream((TextBlock("look"), ImageBlock(PNG, "image/png"))):
+            events.append(event)
+
+    failed = next(event for event in events if isinstance(event, RunFailedEvent))
+    assert failed.error_type == "ProviderError"
+    assert failed.message == "selected model does not support image inputs"
+    assert exc_info.value.__dict__["status_code"] == 400
 
 
 async def test_text_only_provider_failure_preserves_recorded_exception_type(tmp_path: Path) -> None:
@@ -798,6 +1058,64 @@ async def test_structured_output_retry_keeps_plain_wire_text(tmp_path: Path, pro
     assert isinstance(wire, str)
     assert wire.startswith("The previous response failed structured output validation.")
     assert not wire.startswith("{")
+
+
+@pytest.mark.parametrize("provider_name", ["openai", "anthropic", "openrouter"])
+async def test_structured_output_retry_wire_text_persists_and_replays_exactly(tmp_path: Path, provider_name: str) -> None:
+    live_provider = _Provider(provider_name, _structured_responses(provider_name))
+    model = _model_for(provider_name, live_provider)
+    session = model.new_session()
+    model.new_session = lambda: session  # type: ignore[method-assign]
+    config = HarnessConfig(
+        root=tmp_path,
+        system_prompt="sys",
+        local_tracing=False,
+        output_type=_Answer,
+        output_mode="tool",
+    )
+    result = await Harness(config, model=model).run("answer")
+    assert result.output == _Answer(value="ok")
+    state = session.dump_state()
+    assert state is not None
+    retry_entry = next(entry for entry in state["entries"] if entry["role"] == "tool" and entry["call_id"] == "final_bad")
+    live_wire = retry_entry["wire_output"]
+    assert isinstance(live_wire, str)
+    assert live_wire.startswith("The previous response failed structured output validation.")
+
+    replay_provider = _Provider(provider_name, [_final_response(provider_name)])
+    await Harness(_config(tmp_path), model=_model_for(provider_name, replay_provider)).run("follow-up", resume_from=state)
+    payload = replay_provider.payloads[0]
+    if provider_name == "openai":
+        replay_wire = next(item["output"] for item in payload["input"] if item.get("type") == "function_call_output" and item.get("call_id") == "final_bad")
+    elif provider_name == "anthropic":
+        replay_wire = next(
+            block["content"]
+            for message in payload["messages"]
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result" and block.get("tool_use_id") == "final_bad"
+        )
+    else:
+        replay_wire = next(
+            message["content"]
+            for message in payload["messages"]
+            if message.get("role") == "tool" and message.get("tool_call_id") == "final_bad"
+        )
+    assert replay_wire == live_wire
+
+
+@pytest.mark.parametrize("mutation, message", [("wrong_type", "wrong type"), ("missing", "wrong keys")])
+def test_resume_tool_wire_output_decodes_strictly(tmp_path: Path, mutation: str, message: str) -> None:
+    state = _resume_state("openai")
+    tool_entry = next(entry for entry in state["entries"] if entry["role"] == "tool")
+    if mutation == "wrong_type":
+        tool_entry["wire_output"] = 3
+    else:
+        del tool_entry["wire_output"]
+    harness = Harness(_config(tmp_path), model=OpenAIResponsesModel("target", provider=_Provider("OpenAI", [])))  # type: ignore[arg-type]
+
+    with pytest.raises(HarnessError, match=message):
+        harness.run_sync("follow-up", resume_from=state)
 
 
 async def test_initial_image_provider_failure_is_redacted_everywhere(tmp_path: Path) -> None:

@@ -1724,6 +1724,29 @@ async def test_mcp_malformed_or_unsupported_images_become_placeholders(monkeypat
     assert result.content == f"[image: {media_type}]"
 
 
+@pytest.mark.parametrize(
+    "texts, expected",
+    [
+        (["", "a"], "\na"),
+        (["a", "", "b"], "a\n\nb"),
+        (["a", ""], "a\n"),
+    ],
+)
+async def test_successful_mcp_text_preserves_empty_block_positions(monkeypatch, texts: list[str], expected: str) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[types.TextContent(type="text", text=text) for text in texts],
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"text": _schema()}, {"text": scripted})
+
+    result = await server.call_tool("text", {})
+
+    assert result.ok is True
+    assert result.content == expected
+
+
 async def test_empty_successful_mcp_content_remains_successful(monkeypatch) -> None:
     from mcp import types
 

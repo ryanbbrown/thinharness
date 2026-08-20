@@ -397,9 +397,7 @@ def _content_to_blocks(
         block_type = getattr(block, "type", "")
         if block_type == "text":
             if include_text:
-                text = str(getattr(block, "text", ""))
-                if text:
-                    parts.append(TextBlock(text))
+                parts.append(TextBlock(str(getattr(block, "text", ""))))
             continue
         if block_type == "image":
             media_type = str(getattr(block, "mimeType", "unknown"))

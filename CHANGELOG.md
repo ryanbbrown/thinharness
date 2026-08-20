@@ -4,6 +4,7 @@
 
 - Added ordered text and image prompts and tool results for OpenAI, Anthropic, and OpenRouter, with provider-neutral immutable content blocks, redacted observability projections, self-contained version 4 resume state, opt-in filesystem `read_image`, and preserved successful MCP images.
 - **Breaking:** Renamed custom `ModelSession.continue_with_user_text(...)` to `continue_with_user_content(...)`; prompt hooks now receive normalized content-block tuples, and built-in transcript resume version 3 state must be regenerated.
+- **Breaking:** `ToolOutput` now requires `ToolOutput(call_id, ToolResult(...))`; direct string output construction is no longer accepted.
 - Added explicit plugin composition with static and connected contributions, atomic connection rollback, unique plugin names, generic tool origin, and plugin-provided hooks and instructions.
 - Added `FilesystemPlugin` for the ordered workspace tool surface; `jsonl_search` remains opt-in through this plugin.
 - Added `BashPlugin` for explicit one-shot local Bash commands with strict arguments, contained cwd, minimal environment inheritance, bounded separate head-and-tail output, host-capped timeouts, process-group cleanup, and cancellation propagation.

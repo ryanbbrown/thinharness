@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import copy
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from .content import ContentBlock, Prompt, TextBlock, normalize_content
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec
-from .types import HarnessResult, RunUsage, StopReason
+from .types import HarnessError, HarnessResult, RunUsage, StopReason
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
 _CURRENT_TOOL_RUNTIME: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
@@ -231,20 +232,28 @@ class HookRegistry:
             if not self._matches(hook, ctx):
                 continue
             before_output = ctx.output
-            before_envelope = ctx.envelope.to_json()
+            before_envelope = copy.deepcopy(ctx.envelope)
+            handler_completed = False
             try:
                 hook.handler(ctx)
+                handler_completed = True
+                if ctx.output != before_output:
+                    ctx.envelope = ToolResult.from_json(ctx.output, strict=True)
+                elif ctx.envelope.to_json() != before_envelope.to_json():
+                    ctx.output = ctx.envelope.to_json()
             except Exception as exc:
                 name = _handler_name(hook.handler)
                 logger.warning("hook handler failed for event %s: %s", ctx.event, name)
                 logger.debug("hook handler traceback for event %s: %s", ctx.event, name, exc_info=True)
                 if self.strict_hooks:
+                    if handler_completed:
+                        failure = HarnessError(f"after_tool_call hook canonical output validation failed: {exc}")
+                        _mark_strict_hook_exception(failure)
+                        raise failure from None
                     _mark_strict_hook_exception(exc)
                     raise
-            if ctx.output != before_output:
-                ctx.envelope = ToolResult.from_json(ctx.output, strict=True)
-            elif ctx.envelope.to_json() != before_envelope:
-                ctx.output = ctx.envelope.to_json()
+                ctx.output = before_output
+                ctx.envelope = before_envelope
 
     def validate_filters(self, *, agent_names: set[str]) -> None:
         """Raise for agent filters that do not match registered names."""

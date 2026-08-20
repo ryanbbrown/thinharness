@@ -326,7 +326,7 @@
             <li>A handler can raise <code>ModelRetry</code> to ask the model to retry with a hint.</li>
             <li>Ordinary handler exceptions become failed tool results but are not retryable unless metadata says so.</li>
             <li>Tool retry budgets are per tool name per run, not per individual call id.</li>
-            <li><code>after_tool_call</code> hooks can rewrite canonical output or the structured envelope; retry control flow uses the final validated envelope.</li>
+            <li><code>after_tool_call</code> hooks can rewrite canonical output or the structured envelope; retry control flow uses the pre-hook classification, while invalid non-strict mutations are rolled back.</li>
           </ul>
         </div>
       </div>

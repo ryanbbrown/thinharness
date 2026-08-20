@@ -15,7 +15,16 @@ from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..content import ContentBlock, ImageBlock, TextBlock, content_from_json, content_to_json, normalize_content, redacted_content_json
+from ..content import (
+    ContentBlock,
+    ImageBlock,
+    TextBlock,
+    content_from_json,
+    content_to_json,
+    normalize_content,
+    redact_image_data,
+    redacted_content_json,
+)
 from ..types import Json
 
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
@@ -147,11 +156,12 @@ class ToolResult:
         """Return the canonical envelope without image bytes."""
         if not self.has_image:
             return self.to_json()
-        return json.dumps(
+        projection = json.dumps(
             {"ok": self.ok, "content": redacted_content_json(self.blocks), "metadata": self.metadata},
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        return redact_image_data(projection, self.blocks)
 
     def retry_kind(self) -> str | None:
         """Return the retry error type if this envelope asks the model to retry."""

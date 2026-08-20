@@ -20,7 +20,7 @@ from .approvals import (
     validate_approval_pause_state,
 )
 from .children import ChildHarnessHost, _ParentChildHarnessHost, _ToolComposition
-from .content import NormalizedContent, Prompt, normalize_content, redact_image_data, redacted_content_string, text_only_value
+from .content import ImageBlock, NormalizedContent, Prompt, normalize_content, redact_image_data, redacted_content_string, text_only_value
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import (
     ApprovalResumedEvent,
@@ -78,32 +78,70 @@ def _local_tracing_enabled(configured: bool) -> bool:
     return configured and not disabled
 
 
+def _error_type(exc: BaseException) -> str:
+    """Return the stable public error classification for an exception."""
+    value = getattr(exc, "_thinharness_error_type", None)
+    return value if isinstance(value, str) else type(exc).__name__
+
+
+def _sanitized_failure(exc: Exception, message: str) -> Exception:
+    """Return an exception with a safe message and stable classification."""
+    if message == str(exc):
+        return exc
+    if isinstance(exc, ProviderError):
+        sanitized_provider = ProviderError(message, status_code=exc.status_code)
+        sanitized_provider.__dict__["_thinharness_sanitized"] = True
+        return sanitized_provider
+    sanitized = HarnessError(message)
+    sanitized.__dict__["_thinharness_error_type"] = _error_type(exc)
+    sanitized.__dict__["_thinharness_sanitized"] = True
+    if getattr(exc, "_thinharness_strict_hook", False):
+        sanitized.__dict__["_thinharness_strict_hook"] = True
+    return sanitized
+
+
 def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exception:
     """Record a run failure and return the exception to raise."""
     message = redact_image_data(str(exc), run_ctx.image_blocks)
-    agent_span.record_exception(exc if message == str(exc) else HarnessError(message))
-    agent_span.set_error(message, type(exc).__name__)
-    if isinstance(exc, ProviderError) or getattr(exc, "_thinharness_provider_error", False):
+    safe_exc = _sanitized_failure(exc, message)
+    error_type = _error_type(safe_exc)
+    agent_span.record_exception(safe_exc)
+    agent_span.set_error(message, error_type)
+    if isinstance(safe_exc, ProviderError) or getattr(safe_exc, "_thinharness_provider_error", False):
         run_ctx.stop_reason = "provider_error"
-        run_ctx.terminal_error = exc if isinstance(exc, HarnessError) else HarnessError(message)
-        return run_ctx.terminal_error
-    if isinstance(exc, UnexpectedModelBehavior):
+        terminal = HarnessError(message)
+        terminal.__dict__["_thinharness_error_type"] = error_type
+        status_code = getattr(safe_exc, "status_code", None)
+        if status_code is not None:
+            terminal.__dict__["status_code"] = status_code
+        if getattr(safe_exc, "_thinharness_sanitized", False):
+            terminal.__dict__["_thinharness_sanitized"] = True
+        run_ctx.terminal_error = terminal
+        return terminal
+    if isinstance(safe_exc, UnexpectedModelBehavior):
         run_ctx.stop_reason = "unexpected_model_behavior"
-        run_ctx.terminal_error = run_ctx.terminal_error or exc
-        return exc
-    if isinstance(exc, HarnessError):
-        run_ctx.terminal_error = run_ctx.terminal_error or exc
+        run_ctx.terminal_error = run_ctx.terminal_error or safe_exc
+        return safe_exc
+    if isinstance(safe_exc, HarnessError):
+        run_ctx.terminal_error = run_ctx.terminal_error or safe_exc
         if run_ctx.stop_reason == "end_turn":
             run_ctx.stop_reason = "error"
-        return exc
+        return safe_exc
     run_ctx.stop_reason = "error"
-    run_ctx.terminal_error = exc
-    return exc
+    run_ctx.terminal_error = safe_exc
+    return safe_exc
 
 
-def _event_prompt(prompt: Prompt) -> str:
+def _normalize_public_prompt(prompt: Prompt, *, label: str) -> NormalizedContent:
+    """Normalize a public or hook prompt as a harness validation error."""
+    try:
+        return normalize_content(prompt, label=label)
+    except (TypeError, ValueError) as exc:
+        raise HarnessError(str(exc)) from exc
+
+
+def _event_prompt(content: NormalizedContent) -> str:
     """Keep text-only stream values and redact multimodal values."""
-    content = normalize_content(prompt, label="prompt")
     text = text_only_value(content)
     return text if text is not None else redacted_content_string(content)
 
@@ -439,15 +477,17 @@ class Harness:
             else:
                 run_metadata = dict(metadata or {})
                 usage = RunUsage()
+            raw_prompt: NormalizedContent = () if approval_pause is not None else _normalize_public_prompt(prompt, label="prompt")
             run_ctx = RunContext(
                 harness=self,
-                prompt=prompt,
+                prompt=raw_prompt,
                 metadata=run_metadata,
                 usage=usage,
                 tracer=run_tracer,
                 stream=stream_context,
                 emitter=emitter,
             )
+            run_ctx.register_image_blocks(tuple(block for block in raw_prompt if isinstance(block, ImageBlock)))
             if approval_pause is not None:
                 run_ctx.responses = restored_responses
                 run_ctx.tool_call_records = restored_records
@@ -455,7 +495,7 @@ class Harness:
             run_ctx.emit(
                 RunStartedEvent(
                     **run_ctx.stream_base(),
-                    prompt=None if approval_pause is not None else _event_prompt(prompt),
+                    prompt=None if approval_pause is not None else _event_prompt(raw_prompt),
                     root=str(self.root),
                     max_model_requests=self.config.max_model_requests,
                     max_tool_calls=self.config.max_tool_calls,
@@ -511,7 +551,7 @@ class Harness:
                     run_ctx.agent_span = agent_span
                     try:
                         effective_prompt, instructions = await self._prepare_run_start(
-                            prompt,
+                            raw_prompt,
                             run_metadata,
                             run_ctx,
                             agent_span,
@@ -552,6 +592,8 @@ class Harness:
                         failure = _classify_run_failure(run_ctx, agent_span, exc)
                         if failure is exc:
                             raise
+                        if getattr(failure, "_thinharness_sanitized", False):
+                            raise failure from None
                         raise failure from exc
             finally:
                 run_ctx.fire_run_end_once()
@@ -564,7 +606,7 @@ class Harness:
                 RunFailedEvent(
                     **run_ctx.stream_base(),
                     stop_reason=run_ctx.stop_reason,
-                    error_type=type(exc).__name__,
+                    error_type=_error_type(exc),
                     message=redact_image_data(str(exc), run_ctx.image_blocks),
                 )
             )
@@ -575,7 +617,7 @@ class Harness:
 
     async def _prepare_run_start(
         self,
-        prompt: Prompt,
+        prompt: NormalizedContent,
         run_metadata: Json,
         run_ctx: Any,
         agent_span: Any,
@@ -583,7 +625,7 @@ class Harness:
         skip_user_prompt: bool = False,
     ) -> tuple[NormalizedContent, str]:
         """Fire start hooks and return effective normalized content plus instructions."""
-        initial: NormalizedContent = () if skip_user_prompt else normalize_content(prompt, label="prompt")
+        initial: NormalizedContent = () if skip_user_prompt else prompt
         start_ctx = RunStartContext(
             harness=self,
             metadata=dict(run_metadata),
@@ -593,7 +635,7 @@ class Harness:
             max_tool_calls=self.config.max_tool_calls,
         )
         self.hooks.fire(start_ctx)
-        effective_prompt = initial if skip_user_prompt else normalize_content(start_ctx.prompt, label="run_start prompt")
+        effective_prompt = initial if skip_user_prompt else _normalize_public_prompt(start_ctx.prompt, label="run_start prompt")
         if not skip_user_prompt:
             prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=effective_prompt)
             self.hooks.fire(prompt_ctx)
@@ -602,14 +644,14 @@ class Harness:
                 run_ctx.stop_reason = "cancelled_by_hook"
                 run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
                 raise run_ctx.terminal_error
-            submitted = normalize_content(prompt_ctx.prompt, label="user_prompt_submit prompt")
+            submitted = _normalize_public_prompt(prompt_ctx.prompt, label="user_prompt_submit prompt")
             effective_prompt = apply_prompt_context(submitted, prompt_ctx.additional_context)
             run_ctx.set_prompt_content(effective_prompt)
         instructions = structured_instructions(self.system_instructions(), self.output_schema)
         agent_span.for_each(
             lambda span, option: annotate_agent_start(
                 span,
-                prompt=None if skip_user_prompt else effective_prompt,
+                prompt=None if skip_user_prompt else initial,
                 instructions=instructions,
                 capture_messages=option.capture_messages,
                 top_level=not self._is_child_harness,

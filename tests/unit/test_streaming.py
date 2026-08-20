@@ -242,7 +242,7 @@ async def test_stream_failure_yields_failed_event_then_raises(tmp_path: Path) ->
     failed = [event for event in events if isinstance(event, RunFailedEvent)]
     assert len(failed) == 1
     assert failed[0].stop_reason == "provider_error"
-    assert failed[0].error_type == "HarnessError"
+    assert failed[0].error_type == "ProviderError"
 
 
 async def test_stream_subagent_events_include_parent_ids(tmp_path: Path) -> None:

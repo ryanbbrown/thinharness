@@ -316,7 +316,7 @@ _TRANSCRIPT_RESUME_KEYS = frozenset({"kind", "version", "origin_provider", "orig
 _TRANSCRIPT_ENTRY_KEYS = {
     "assistant": frozenset({"role", "text", "tool_calls", "reasoning"}),
     "user": frozenset({"role", "content", "notice"}),
-    "tool": frozenset({"role", "call_id", "ok", "content", "metadata"}),
+    "tool": frozenset({"role", "call_id", "ok", "content", "metadata", "wire_output"}),
 }
 _REASONING_PART_KEYS = frozenset({"text", "signature", "id", "provider_name", "provider_details"})
 _TRANSCRIPT_VERSION = 4
@@ -360,7 +360,10 @@ def _transcript_entry_to_dict(entry: TranscriptEntry) -> Json:
     if isinstance(entry, UserEntry):
         return {"role": "user", "content": content_to_json(entry.content), "notice": entry.notice}
     if isinstance(entry, ToolResultEntry):
-        return {"role": "tool", "call_id": entry.call_id, **entry.result.to_value()}
+        wire_output = entry.wire_output
+        if wire_output == entry.result.to_json():
+            wire_output = None
+        return {"role": "tool", "call_id": entry.call_id, **entry.result.to_value(), "wire_output": wire_output}
     return {
         "role": "assistant",
         "text": entry.text,
@@ -402,13 +405,13 @@ def _transcript_entry_from_dict(value: Any) -> TranscriptEntry:
             raise HarnessError(str(exc)) from exc
         return UserEntry(content=content, notice=value["notice"])
     if role == "tool":
-        if not isinstance(value["call_id"], str):
+        if not isinstance(value["call_id"], str) or (value["wire_output"] is not None and not isinstance(value["wire_output"], str)):
             raise HarnessError("resume_from tool entry has wrong type")
         try:
             result = ToolResult.from_value({key: value[key] for key in ("ok", "content", "metadata")}, label="resume_from tool entry")
         except (TypeError, ValueError) as exc:
             raise HarnessError(str(exc)) from exc
-        return ToolResultEntry(call_id=value["call_id"], result=result)
+        return ToolResultEntry(call_id=value["call_id"], result=result, wire_output=value["wire_output"])
     if not isinstance(value["text"], str) or not isinstance(value["tool_calls"], list) or not isinstance(value["reasoning"], list):
         raise HarnessError("resume_from assistant entry has wrong type")
     return AssistantEntry(
@@ -1348,12 +1351,12 @@ def _data_url(block: ImageBlock) -> str:
     return f"data:{block.media_type};base64,{base64.b64encode(block.data).decode('ascii')}"
 
 
-def _openai_content_parts(content: NormalizedContent, *, text_type: str = "input_text", image_type: str = "input_image") -> list[Json]:
+def _openai_content_parts(content: NormalizedContent) -> list[Json]:
     """Map neutral content to OpenAI Responses content parts."""
     return [
-        {"type": text_type, "text": block.text}
+        {"type": "input_text", "text": block.text}
         if isinstance(block, TextBlock)
-        else {"type": image_type, "image_url": _data_url(block)}
+        else {"type": "input_image", "image_url": _data_url(block)}
         for block in content
     ]
 
@@ -1506,7 +1509,11 @@ def _render_anthropic_transcript(entries: list[TranscriptEntry], *, thinking_ena
         while index < len(entries) and isinstance(entries[index], ToolResultEntry):
             tool_entry = entries[index]
             assert isinstance(tool_entry, ToolResultEntry)
-            content.append({"type": "tool_result", "tool_use_id": tool_entry.call_id, "content": _anthropic_tool_output(tool_entry.result)})
+            content.append({
+                "type": "tool_result",
+                "tool_use_id": tool_entry.call_id,
+                "content": tool_entry.wire_output if tool_entry.wire_output is not None else _anthropic_tool_output(tool_entry.result),
+            })
             index += 1
         if index < len(entries):
             notice_entry = entries[index]
@@ -1532,9 +1539,13 @@ def _render_openrouter_transcript(entries: list[TranscriptEntry]) -> list[Json]:
             while index < len(entries) and isinstance(entries[index], ToolResultEntry):
                 tool_entry = entries[index]
                 assert isinstance(tool_entry, ToolResultEntry)
-                output = ToolOutput(tool_entry.call_id, tool_entry.result)
+                output = ToolOutput(tool_entry.call_id, tool_entry.result, wire_output=tool_entry.wire_output)
                 outputs.append(output)
-                messages.append({"role": "tool", "tool_call_id": output.call_id, "content": _openrouter_tool_output_json(output.result)})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": output.call_id,
+                    "content": output.wire_output if output.wire_output is not None else _openrouter_tool_output_json(output.result),
+                })
                 index += 1
             notice: UserEntry | None = None
             if index < len(entries):
@@ -1592,7 +1603,11 @@ def _render_openai_transcript(entries: list[TranscriptEntry], *, encrypted_reaso
         if isinstance(entry, UserEntry):
             items.append(_openai_user_item(entry.content))
         elif isinstance(entry, ToolResultEntry):
-            items.append({"type": "function_call_output", "call_id": entry.call_id, "output": _openai_tool_output(entry.result)})
+            items.append({
+                "type": "function_call_output",
+                "call_id": entry.call_id,
+                "output": entry.wire_output if entry.wire_output is not None else _openai_tool_output(entry.result),
+            })
         else:
             for part in entry.reasoning:
                 if encrypted_reasoning_ok and part.provider_name == "openai" and part.signature and part.id:
