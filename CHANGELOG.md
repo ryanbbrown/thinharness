@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-08-20
 
 - Added ordered text and image prompts and tool results for OpenAI, Anthropic, and OpenRouter, with provider-neutral immutable content blocks, redacted observability projections, self-contained version 4 resume state, opt-in filesystem `read_image`, and preserved successful MCP images.
 - **Breaking:** Renamed custom `ModelSession.continue_with_user_text(...)` to `continue_with_user_content(...)`; prompt hooks now receive normalized content-block tuples, and built-in transcript resume version 3 state must be regenerated.

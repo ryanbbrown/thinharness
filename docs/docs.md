@@ -2,8 +2,6 @@
 
 ThinHarness is a small SDK for purpose-built agent loops. The host application chooses the model, tools, limits, context, output contract, and lifecycle hooks. The model gets enough room to plan and use tools, but the run stays bounded by configuration.
 
-For code ownership and the run-loop mental model, see `docs/site/explainer.html`. This file is the user-facing API guide.
-
 ## Install
 
 ```bash
