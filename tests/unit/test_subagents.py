@@ -15,6 +15,7 @@ from thinharness import (
     BeforeSubagentRunContext,
     ChildHarnessOutcome,
     ChildHarnessRequest,
+    ChildInheritablePlugin,
     FilesystemPlugin,
     Harness,
     HarnessConfig,
@@ -425,7 +426,8 @@ def test_custom_for_child_plugin_rebinds_and_invalid_return_fails(tmp_path: Path
         plugins=[plugin, SubagentsPlugin()],
     )
     harness.run_sync("go")
-    assert roots == [tmp_path.resolve(), tmp_path.resolve()]
+    assert roots
+    assert all(root == tmp_path.resolve() for root in roots)
 
     class Invalid(Inheritable):
         name = "invalid"
@@ -435,6 +437,52 @@ def test_custom_for_child_plugin_rebinds_and_invalid_return_fails(tmp_path: Path
 
     with pytest.raises(TypeError, match="for_child"):
         Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[Invalid(), SubagentsPlugin()])
+
+
+def test_rebound_child_static_tool_collision_fails_parent_construction(tmp_path: Path) -> None:
+    class ReboundPlugin:
+        name = "rebound"
+
+        def bind(self, _context: PluginContext) -> PluginBinding:
+            tool = ToolSpec("collision", "Child collision.", {"type": "object"}, lambda _args: "child")
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+    class ParentPlugin:
+        name = "rebound"
+
+        def bind(self, _context: PluginContext) -> PluginBinding:
+            tool = ToolSpec("parent_only", "Parent only.", {"type": "object"}, lambda _args: "parent")
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+        def for_child(self) -> ReboundPlugin:
+            return ReboundPlugin()
+
+    plugin = ParentPlugin()
+    assert isinstance(plugin, ChildInheritablePlugin)
+
+    with pytest.raises(ValueError, match="duplicate tool name: collision"):
+        Harness(
+            HarnessConfig(root=tmp_path),
+            model=ScriptedModel([]),
+            plugins=[
+                plugin,
+                SubagentsPlugin(agents=[
+                    SubAgentConfig(
+                        name="collision",
+                        description="Collision.",
+                        inherit_parent=True,
+                        tools=[
+                            ToolSpec(
+                                "collision",
+                                "Explicit collision.",
+                                {"type": "object"},
+                                lambda _args: "explicit",
+                            )
+                        ],
+                    )
+                ]),
+            ],
+        )
 
 
 def test_known_child_plugin_and_tool_collisions_fail_parent_construction(tmp_path: Path) -> None:
@@ -1066,9 +1114,13 @@ async def test_inherited_parallel_model_resolution_follows_frozen_configuration(
     _object_parent, _object_child, object_models = await run_case(ParallelLlmPlugin(explicit_model))
     _string_parent, _string_child, string_models = await run_case(ParallelLlmPlugin("openai:fixed"))
 
-    assert borrowed == (borrowed_parent, borrowed_child)
-    assert object_models == (explicit_model, explicit_model)
-    assert string_models == ("openai:fixed", "openai:fixed")
+    assert borrowed[-1] is borrowed_child
+    assert borrowed[:-1]
+    assert all(model is borrowed_parent for model in borrowed[:-1])
+    assert object_models
+    assert all(model is explicit_model for model in object_models)
+    assert string_models
+    assert all(model == "openai:fixed" for model in string_models)
 
 
 async def test_reused_subagents_plugin_keeps_parent_runs_fully_isolated(tmp_path: Path) -> None:

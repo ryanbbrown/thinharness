@@ -145,29 +145,19 @@ class _ParentChildHarnessHost:
         from .plugins.base import ChildInheritablePlugin, PluginBinding, PluginContext
 
         child_plugins: list[Plugin] = []
-        inherited_indices: list[int] = []
         if recipe.inherited:
-            for index, plugin in enumerate(self._parent.plugins):
+            for plugin in self._parent.plugins:
                 if not isinstance(plugin, ChildInheritablePlugin):
                     continue
                 rebound = plugin.for_child()
                 _validate_rebound_plugin(plugin, rebound)
                 child_plugins.append(rebound)
-                inherited_indices.append(index)
         child_plugins.extend(recipe.plugins)
         _validate_plugin_names(child_plugins)
 
         child_tool_names: list[str] = []
-        inherited_index_set = set(inherited_indices)
-        for tool, composition in zip(tools, compositions, strict=True):
-            if composition.source == "plugin" and composition.plugin_index in inherited_index_set:
-                if tool.requires_approval:
-                    raise ValueError("approval-required tools are not supported inside child harnesses")
-                child_tool_names.append(tool.name)
-
-        inherited_count = len(inherited_indices)
         context = PluginContext(root=self._parent.root, model=self._parent.model, child_harnesses=_DISABLED_CHILD_HOST)
-        for plugin in child_plugins[inherited_count:]:
+        for plugin in child_plugins:
             binding = plugin.bind(context)
             if not isinstance(binding, PluginBinding):
                 raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
