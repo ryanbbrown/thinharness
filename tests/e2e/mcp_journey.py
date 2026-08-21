@@ -10,14 +10,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig, Hook, MCPPlugin, MCPServerStdio, ModelToolCall, ModelTurn
+from thinharness import Harness, HarnessConfig, Hook, MCPPlugin, MCPServerStdio, ModelToolCall, ModelTurn, TextBlock
 
 
 class DeterministicSession:
     """Drive one MCP call without provider credentials."""
 
-    async def start(self, prompt: str, constants: Any, **_kwargs: Any) -> ModelTurn:
-        assert prompt == "multiply"
+    async def start(self, prompt: Any, constants: Any, **_kwargs: Any) -> ModelTurn:
+        assert prompt == (TextBlock("multiply"),)
         assert [tool["name"] for tool in constants.tools] == ["multiply"]
         return ModelTurn(
             tool_calls=[ModelToolCall(id="multiply-1", name="multiply", arguments='{"left":6,"right":7}')],

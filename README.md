@@ -94,11 +94,12 @@ These are source lines of code in the smallest first-party opinionated configura
 
 | Harness | Source LOC | What is counted |
 | --- | --- | --- |
-| **ThinHarness** | **10,230** | 6,073 core + 4,157 bundled plugins and tools |
+| **ThinHarness** | **10,359** | 6,297 core + 4,062 bundled plugins and tools |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 72,737 | The base and headless profiles + their first-party package dependency closure |
 | [Pydantic AI Coder](https://github.com/pydantic/pydantic-ai-harness) | 85,633 | Pydantic AI runtime + the Coder capability and everything it composes |
 | [Pi](https://github.com/earendil-works/pi) | 95,276 | `pi-coding-agent` + its first-party workspace dependency closure |
 | [Deep Agents](https://github.com/langchain-ai/deepagents) | 118,977 | Deep Agents + its required LangChain and LangGraph runtime |
+| [fx](https://github.com/vercel-labs/fx) | 379,826 | The native coding-agent runtime and its first-party source closure |
 
 LOC is not a quality or performance score. It measures how much framework code comes with the comparable agent configuration. Moving code from a core package into required plugins does not make that configuration smaller, so the table counts both.
 

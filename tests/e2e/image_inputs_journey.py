@@ -136,7 +136,8 @@ async def run_provider(label: str, model, payloads: list[dict]) -> None:
             part.get("text", "").startswith("[tool image call_id=")
             for payload in payloads
             for message in payload.get("messages", [])
-            for part in message.get("content", []) if isinstance(message.get("content"), list)
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
             if isinstance(part, dict) and part.get("type") == "text"
         )
     await harness.aclose()

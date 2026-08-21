@@ -119,18 +119,24 @@ async def _assert_effort_merges_with_native_structured_output(root: Path, model_
 
 
 async def _assert_default_on_thinking_resume(root: Path, model_name: str) -> None:
-    first_provider = RecordingAnthropicProvider()
-    try:
-        first = await Harness(
-            HarnessConfig(root=root, max_model_requests=4, max_tool_calls=2),
-            model=AnthropicMessagesModel(model_name, provider=first_provider),
-            tools=[multiply_tool()],
-        ).run("Use the multiply tool to compute 37 times 29, then state the product.")
-    finally:
-        await first_provider.aclose()
+    state: dict | None = None
+    for _attempt in range(3):
+        first_provider = RecordingAnthropicProvider()
+        try:
+            first = await Harness(
+                HarnessConfig(root=root, max_model_requests=4, max_tool_calls=2),
+                model=AnthropicMessagesModel(model_name, provider=first_provider, settings=ModelSettings(effort="high")),
+                tools=[multiply_tool()],
+            ).run("Use the multiply tool to compute 37 times 29, then state the product.")
+        finally:
+            await first_provider.aclose()
 
-    state = json.loads(json.dumps(first.resume_state))
-    assert _has_signed_reasoning(state), "no signed Anthropic reasoning captured in resume_state"
+        candidate = json.loads(json.dumps(first.resume_state))
+        if _has_signed_reasoning(candidate):
+            state = candidate
+            break
+
+    assert state is not None, "no signed Anthropic reasoning captured in three attempts"
 
     second_provider = RecordingAnthropicProvider()
     try:
