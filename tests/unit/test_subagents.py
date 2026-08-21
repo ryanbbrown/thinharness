@@ -124,14 +124,20 @@ def test_parent_host_catalog_is_ordered_unique_with_alias_tools(tmp_path: Path) 
         HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
         plugins=[
-            DelegationPlugin("first", [("first_alias", ["shared", "first", "shared"])]),
+            DelegationPlugin(
+                "first",
+                [
+                    ("first_alias", ["shared", "first", "shared"]),
+                    ("first_second_alias", ["third", "shared"]),
+                ],
+            ),
             DelegationPlugin("second", [("second_alias", ["second", "shared"])]),
         ],
-        hooks=[Hook("before_subagent_run", lambda _ctx: None, agents=["shared", "first", "second"])],
+        hooks=[Hook("before_subagent_run", lambda _ctx: None, agents=["shared", "first", "third", "second"])],
     )
 
     host: Any = harness._child_harnesses
-    assert host.agent_names() == ("shared", "first", "second")
+    assert host._agent_catalog() == ("shared", "first", "third", "second")
 
 
 def test_delegation_registration_validation_is_atomic(tmp_path: Path) -> None:
@@ -150,10 +156,14 @@ def test_delegation_registration_validation_is_atomic(tmp_path: Path) -> None:
                 host.register_delegation_tool(object(), [valid_recipe])  # type: ignore[arg-type]
             with pytest.raises(TypeError, match="ChildHarnessRequest"):
                 host.register_delegation_tool(invalid_tool, [valid_recipe, object()])  # type: ignore[list-item]
+            with pytest.raises(TypeError, match="ordered sequence"):
+                host.register_delegation_tool(invalid_tool, {valid_recipe})
+            with pytest.raises(TypeError, match="ordered sequence"):
+                host.register_delegation_tool(invalid_tool, (recipe for recipe in [valid_recipe]))
             with pytest.raises(ValueError, match="non-empty"):
                 host.register_delegation_tool(invalid_tool, [replace(valid_recipe, agent_name=" ")])
 
-            assert host.agent_names() == ()
+            assert host._agent_catalog() == ()
             assert not host.is_delegation_tool(invalid_tool)
             assert host._recipes == []
             valid_tool = ToolSpec("valid", "valid", {"type": "object"}, lambda _args: "ok")
@@ -163,7 +173,7 @@ def test_delegation_registration_validation_is_atomic(tmp_path: Path) -> None:
 
     Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[AtomicPlugin()])
     host = captured["host"]
-    assert host.agent_names() == ("valid",)
+    assert host._agent_catalog() == ("valid",)
     assert len(host._recipes) == 1
     assert host.is_delegation_tool(captured["valid_tool"])
 
@@ -920,12 +930,12 @@ async def test_sealed_host_rejects_connector_registration_without_mutation(tmp_p
 
     harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[LateConnectorPlugin()])
     host = captured["host"]
-    before = (host.agent_names(), list(host._recipes), set(host._delegation_tools))
+    before = (host._agent_catalog(), list(host._recipes), set(host._delegation_tools))
 
     with pytest.raises(Exception, match="registration is sealed"):
         await harness.connect()
 
-    assert (host.agent_names(), host._recipes, host._delegation_tools) == before
+    assert (host._agent_catalog(), host._recipes, host._delegation_tools) == before
     assert not host.is_delegation_tool(captured["late"])
 
 
@@ -955,12 +965,12 @@ async def test_live_registration_is_rejected_without_host_mutation(tmp_path: Pat
     )
     harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([parent]), plugins=[LiveRegistrationPlugin()])
     host = captured["host"]
-    before = (host.agent_names(), list(host._recipes), set(host._delegation_tools))
+    before = (host._agent_catalog(), list(host._recipes), set(host._delegation_tools))
 
     assert (await harness.run("go")).text == "done"
     output = tool_output(parent.continue_calls[0][0][0].output)
     assert "registration is sealed" in output["content"]
-    assert (host.agent_names(), host._recipes, host._delegation_tools) == before
+    assert (host._agent_catalog(), host._recipes, host._delegation_tools) == before
 
 
 async def test_runtime_rejects_unregistered_request_before_hooks_or_child_creation(tmp_path: Path) -> None:
@@ -986,7 +996,7 @@ async def test_runtime_rejects_unregistered_request_before_hooks_or_child_creati
         HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent]),
         plugins=[UnknownRequestPlugin()],
-        hooks=[Hook("before_subagent_run", lambda ctx: hook_calls.append(ctx.agent), agents=["known"])],
+        hooks=[Hook("before_subagent_run", lambda ctx: hook_calls.append(ctx.agent))],
     )
 
     assert (await harness.run("go")).text == "done"

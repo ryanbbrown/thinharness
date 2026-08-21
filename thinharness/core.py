@@ -237,7 +237,7 @@ class Harness:
             if not isinstance(binding, PluginBinding):
                 raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
         if isinstance(child_harnesses, _ParentChildHarnessHost):
-            child_harnesses.seal()
+            child_harnesses._seal_registration()
         static_tools: list[ToolSpec] = []
         static_compositions: list[_ToolComposition] = []
         static_instructions: list[str] = []
@@ -273,7 +273,7 @@ class Harness:
         caller_hooks = list(hooks.hooks) if isinstance(hooks, HookRegistry) else list(hooks or [])
         strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
         hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
-        registered_agent_names = set(child_harnesses.agent_names()) if isinstance(child_harnesses, _ParentChildHarnessHost) else set()
+        registered_agent_names = set(child_harnesses._agent_catalog()) if isinstance(child_harnesses, _ParentChildHarnessHost) else set()
         self._validate_hook_registry(hook_registry, registered_agent_names)
 
         self.plugins = configured_plugins
@@ -855,7 +855,7 @@ class Harness:
     def _registered_agent_names(self) -> set[str]:
         """Return the sealed parent-host catalog for hook validation."""
         if isinstance(self._child_harnesses, _ParentChildHarnessHost):
-            return set(self._child_harnesses.agent_names())
+            return set(self._child_harnesses._agent_catalog())
         return set()
 
     @staticmethod

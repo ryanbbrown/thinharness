@@ -53,7 +53,7 @@ class _BuiltinPluginMeta(type):
 class _BuiltinPlugin(metaclass=_BuiltinPluginMeta):
     """Protect a built-in plugin's fixed name on instances."""
 
-    name: ClassVar[str]
+    name: str
     _builtin_fixed_name: ClassVar[str]
     _builtin_owner_name: ClassVar[str]
 

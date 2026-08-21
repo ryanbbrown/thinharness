@@ -91,8 +91,10 @@ async def test_tool_runtime_scope_copies_metadata_and_preserves_map_identity(
     assert scope.run_metadata is not captured["run_metadata"]
     assert scope.tool_map is captured["tool_map"]
     assert scope.tool_composition is captured["tool_composition"]
-    assert copied_leases == [scope.lease]
+    assert len(copied_leases) == 1
+    assert copied_leases[0] is scope.lease
     assert scope.lease.active is False
+
 
 def test_hook_registry_rejects_invalid_filters() -> None:
     with pytest.raises(ValueError, match="tools filter"):
@@ -103,6 +105,7 @@ def test_hook_registry_rejects_invalid_filters() -> None:
         Hook("before_tool_call", lambda ctx: None, tools=[])
     with pytest.raises(ValueError, match="unknown hook event"):
         Hook("unknown", lambda ctx: None)  # type: ignore[arg-type]
+
 
 def test_hook_filter_warnings_wait_for_constructor_tools(tmp_path: Path, caplog) -> None:
     hook = Hook("before_tool_call", lambda ctx: None, tools=["second"])
@@ -118,6 +121,7 @@ def test_hook_filter_warnings_wait_for_constructor_tools(tmp_path: Path, caplog)
     )
 
     assert "unknown tool name" not in caplog.text
+
 
 def test_run_end_fires_when_new_session_fails(tmp_path: Path) -> None:
     events = []
@@ -186,6 +190,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
 
     assert events == [("provider_error", "HarnessError"), ("error", "ValueError")]
 
+
 async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
     calls = 0
 
@@ -197,10 +202,12 @@ async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
 
     harness = Harness(
         HarnessConfig(root=tmp_path, strict_hooks=True),
-        model=ScriptedModel([
-            ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
-            ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
-        ]),
+        model=ScriptedModel(
+            [
+                ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
+                ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
+            ]
+        ),
         hooks=[Hook("run_end", fail_once)],
     )
 
@@ -208,6 +215,7 @@ async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
         await harness.run("first")
 
     assert (await harness.run("second")).text == "second"
+
 
 def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> None:
     captured = {}
@@ -235,6 +243,7 @@ def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> Non
     assert result.usage.tool_calls == 0
     assert result.stop_reason == "end_turn"
     assert events == [("run_start", True), ("run_end", True, 1)]
+
 
 def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> None:
     events = []
@@ -264,6 +273,7 @@ def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> Non
 
     assert events == ["user_prompt_submit", ("run_end", "cancelled_by_hook", "HarnessError")]
 
+
 def test_same_harness_reentrant_run_is_rejected(tmp_path: Path) -> None:
     captured = []
     harness = Harness(
@@ -280,6 +290,7 @@ def test_same_harness_reentrant_run_is_rejected(tmp_path: Path) -> None:
 
     assert harness.run_sync("outer").text == "done"
     assert captured == ["Harness.run is not re-entrant"]
+
 
 def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path) -> None:
     client = MultiCallClient([("block", "{}"), ("ok", "{}")])
@@ -321,6 +332,7 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
     assert result.usage.cancelled_tool_calls == 1
     assert len(result.tool_call_records) == 2
 
+
 def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
     seen = []
@@ -348,6 +360,7 @@ def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: P
         ("before", {"conversation_id": "conv-1", "extra": "hook-only"}),
         ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
     ]
+
 
 def test_after_tool_hooks_see_refreshed_envelope(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
@@ -412,6 +425,7 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
     with pytest.raises(RuntimeError, match="after failed"):
         harness.run_sync("go")
 
+
 @pytest.mark.parametrize("field", ["output", "envelope"])
 @pytest.mark.parametrize("strict", [False, True])
 def test_after_tool_hook_invalid_mutation_uses_hook_error_policy(field: str, strict: bool) -> None:
@@ -448,9 +462,11 @@ def test_after_tool_hook_invalid_mutation_uses_hook_error_policy(field: str, str
 
 def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
     seen = []
-    registry = HookRegistry([
-        Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope)),
-    ])
+    registry = HookRegistry(
+        [
+            Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope)),
+        ]
+    )
     ctx = AfterToolCallContext(
         harness=None,  # type: ignore[arg-type]
         call_id="call_1",
@@ -465,6 +481,7 @@ def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
     registry.fire_after_tool_call(ctx)
 
     assert seen == [ToolResult(False, "not json", {"error_type": "InvalidToolOutput"})]
+
 
 def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}")])
@@ -482,6 +499,7 @@ def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="strict hook failed"):
         harness.run_sync("go")
+
 
 def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}")])
@@ -507,6 +525,7 @@ def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_
         harness.run_sync("go")
 
     assert run_end_usage == [("error", 2, 0)]
+
 
 async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path: Path) -> None:
     client = MultiCallClient([("fail", "{}"), ("wait", "{}")])
@@ -539,6 +558,7 @@ async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path
 
     assert cancelled.is_set()
 
+
 def test_explicit_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None:
     registry = HookRegistry([Hook("user_prompt_submit", lambda ctx: (_ for _ in ()).throw(RuntimeError("strict registry")))], strict_hooks=True)
     harness = Harness(
@@ -549,6 +569,7 @@ def test_explicit_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None
 
     with pytest.raises(RuntimeError, match="strict registry"):
         harness.run_sync("go")
+
 
 def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     events = []
@@ -575,6 +596,7 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
 
     assert events == [("error", "HarnessError")]
 
+
 def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}"), ("c", "{}")])
     events = []
@@ -600,6 +622,7 @@ def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
     assert events == [("limit_reached", "tool_calls", 2, 3), ("run_end", "limit_reached", 0)]
     assert client.invocations == 1
 
+
 def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> None:
     immediate = Harness(
         HarnessConfig(root=tmp_path, max_model_requests=1),
@@ -623,6 +646,7 @@ def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> Non
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
     )
     assert allowed.run_sync("go").usage.model_requests == 2
+
 
 def test_strict_subagent_hook_exception_surfaces_to_parent_run(tmp_path: Path) -> None:
     parent_call = ModelTurn(

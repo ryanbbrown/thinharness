@@ -134,11 +134,11 @@ class _ParentChildHarnessHost:
                 self._agent_names.append(name)
         return tool
 
-    def seal(self) -> None:
+    def _seal_registration(self) -> None:
         """Prevent all later delegation registration."""
         self._sealed = True
 
-    def agent_names(self) -> tuple[str, ...]:
+    def _agent_catalog(self) -> tuple[str, ...]:
         """Return the ordered unique catalog from static registration."""
         return tuple(self._agent_names)
 
