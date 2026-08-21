@@ -46,6 +46,7 @@ from .transport import Provider, ProviderError
 DEFAULT_ANTHROPIC_MAX_TOKENS = 16384
 _ANTHROPIC_THINKING_DEFAULT_OFF_PREFIXES = ("claude-opus-4", "claude-sonnet-4", "claude-haiku-4", "claude-3")
 
+
 class AnthropicProvider(Provider):
     """Provider for Anthropic Messages endpoints."""
 

@@ -15,11 +15,8 @@ from thinharness import (
     OpenAIProvider,
     OpenAIResponsesModel,
 )
-from thinharness.providers import (
-    ProviderError,
-    _retry_after_seconds,
-    _retry_delay,
-)
+from thinharness.providers import ProviderError
+from thinharness.providers.transport import _retry_after_seconds, _retry_delay
 
 
 async def test_provider_wraps_transport_errors() -> None:
@@ -375,6 +372,7 @@ async def test_provider_retries_identical_requests_and_safe_logs(
     assert "retry 1/1" in caplog.text
     assert "sensitive-payload" not in caplog.text
     assert "sensitive-response" not in caplog.text
+    assert {record.name for record in caplog.records} == {"thinharness.providers"}
 
 
 async def test_provider_recovered_retries_reuse_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:

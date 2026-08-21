@@ -100,7 +100,7 @@ class ParallelLlmTool:
         output_retries: int = 1,
         _root_is_resolved: bool = False,
     ) -> None:
-        from ..providers import _validate_retry_settings
+        from ..providers.transport import _validate_retry_settings
 
         _validate_retry_settings(request_retries, request_retry_backoff)
         self.name = name

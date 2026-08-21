@@ -189,6 +189,15 @@ def test_provider_implementations_have_focused_package_ownership() -> None:
 def test_provider_public_imports_resolve_from_package_and_top_level() -> None:
     """The package exports its API explicitly and keeps all top-level provider imports."""
     assert all(getattr(providers, name) is not None for name in providers.__all__)
+    private_owner_helpers = {
+        "_anthropic_thinking_on_by_default",
+        "_is_retryable_status",
+        "_openai_supports_encrypted_reasoning",
+        "_retry_after_seconds",
+        "_retry_delay",
+        "_validate_retry_settings",
+    }
+    assert private_owner_helpers.isdisjoint(vars(providers))
     top_level_provider_names = {
         "AnthropicMessagesModel",
         "AnthropicProvider",

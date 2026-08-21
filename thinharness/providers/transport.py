@@ -14,9 +14,11 @@ import httpx
 
 from ..tools.base import Json
 
+# All provider transport logs use the stable thinharness.providers logger name.
 logger = logging.getLogger("thinharness.providers")
 _RETRYABLE_HTTP_STATUSES = frozenset({408, 409, 425, 429})
 _MAX_RETRY_DELAY = 60.0
+
 
 class ProviderError(RuntimeError):
     """Raised when a provider request fails."""

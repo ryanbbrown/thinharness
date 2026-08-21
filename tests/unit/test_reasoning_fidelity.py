@@ -23,15 +23,9 @@ from thinharness import (
     ToolSpec,
 )
 from thinharness.projections import trace_input_messages_from_entries, trace_output_messages_from_assistant
-from thinharness.providers import (
-    AssistantEntry,
-    ModelSettings,
-    ModelToolCall,
-    ReasoningPart,
-    UserEntry,
-    _anthropic_thinking_on_by_default,
-    _openai_supports_encrypted_reasoning,
-)
+from thinharness.providers import AssistantEntry, ModelSettings, ModelToolCall, ReasoningPart, UserEntry
+from thinharness.providers.anthropic import _anthropic_thinking_on_by_default
+from thinharness.providers.openai import _openai_supports_encrypted_reasoning
 
 REASONING_OPENAI_MODEL = "gpt-5-mini"
 THINKING_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "enabled", "budget_tokens": 1024}})

@@ -46,7 +46,7 @@ class ReasoningPart:
     #                                      OpenAI encrypted_content, OpenRouter signature|data
     id: str | None = None                # provider reasoning-item id (OpenAI rs_…; "redacted_thinking" marker)
     provider_name: str | None = None     # origin provider prefix; native re-emit only when this matches
-    provider_details: Json | None = None
+    provider_details: Json | None = None  # spillover: OpenAI summary raw_content; OpenRouter raw reasoning_details entry
 
 
 @dataclass
