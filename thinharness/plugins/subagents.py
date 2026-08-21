@@ -184,7 +184,6 @@ class SubagentsPlugin(_FrozenBuiltinPlugin, fixed_name="subagents"):
             agent_description="Framework default subagent",
             trace_agent_name=f"subagent.{DEFAULT_SUBAGENT_NAME}",
             task="",
-            inherited=True,
             tool_mode="inherited",
             system_prompt=DEFAULT_SYSTEM_PROMPT,
             hooks=self._default_hooks,
@@ -208,7 +207,6 @@ class SubagentsPlugin(_FrozenBuiltinPlugin, fixed_name="subagents"):
             agent_description=config.description,
             trace_agent_name=f"subagent.{config.name}",
             task="",
-            inherited=config.inherit_parent,
             tool_mode=tool_mode,
             system_prompt=config.system_prompt,
             model=config.model,
@@ -228,7 +226,7 @@ def _tool_result(recipe: ChildHarnessRequest, outcome: ChildHarnessOutcome) -> T
     """Shape a child-host outcome as the delegation tool contract."""
     metadata = {
         "agent": recipe.agent_name,
-        "inherited": recipe.inherited,
+        "inherited": recipe.tool_mode != "explicit",
         "tool_mode": recipe.tool_mode,
         "tools": list(outcome.tools),
     }

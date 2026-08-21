@@ -51,7 +51,6 @@ class NestedAttemptPlugin:
                 agent_description="Forbidden nested child.",
                 trace_agent_name="subagent.forbidden",
                 task="This must not run.",
-                inherited=False,
                 tool_mode="explicit",
                 system_prompt="This must not run.",
             )

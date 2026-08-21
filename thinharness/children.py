@@ -35,7 +35,6 @@ class ChildHarnessRequest:
     agent_description: str
     trace_agent_name: str
     task: str
-    inherited: bool
     tool_mode: Literal["inherited", "inherited+explicit", "explicit"]
     system_prompt: str
     model: str | None = None
@@ -163,8 +162,9 @@ class _ParentChildHarnessHost:
     ) -> None:
         from .plugins.base import ChildInheritablePlugin, PluginBinding, PluginContext
 
+        inherited = _inherits_parent(recipe.tool_mode)
         child_plugins: list[Plugin] = []
-        if recipe.inherited:
+        if inherited:
             for plugin in self._parent.plugins:
                 if not isinstance(plugin, ChildInheritablePlugin):
                     continue
@@ -175,17 +175,18 @@ class _ParentChildHarnessHost:
         _validate_plugin_names(child_plugins)
 
         child_tool_names: list[str] = []
-        context = PluginContext(root=self._parent.root, model=self._parent.model, child_harnesses=_DISABLED_CHILD_HOST)
-        for plugin in child_plugins:
-            binding = plugin.bind(context)
-            if not isinstance(binding, PluginBinding):
-                raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
-            for tool in binding.static.tools:
-                if tool.requires_approval:
-                    raise ValueError("approval-required tools are not supported inside child harnesses")
-                child_tool_names.append(tool.name)
+        if recipe.model is None:
+            context = PluginContext(root=self._parent.root, model=self._parent.model, child_harnesses=_DISABLED_CHILD_HOST)
+            for plugin in child_plugins:
+                binding = plugin.bind(context)
+                if not isinstance(binding, PluginBinding):
+                    raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
+                for tool in binding.static.tools:
+                    if tool.requires_approval:
+                        raise ValueError("approval-required tools are not supported inside child harnesses")
+                    child_tool_names.append(tool.name)
 
-        if recipe.inherited:
+        if inherited:
             for tool, composition in zip(tools, compositions, strict=True):
                 if composition.source == "direct" and not tool.requires_approval:
                     child_tool_names.append(tool.name)
@@ -219,9 +220,8 @@ class _ParentChildHarnessHost:
             metadata=dict(parent_metadata),
             agent=request.agent_name,
             task=request.task,
-            inherited=request.inherited,
+            inherited=_inherits_parent(request.tool_mode),
             tool_mode=request.tool_mode,
-            parent_harness=self._parent,
             parent_call_id=parent_call_id,
         )
         self._parent.hooks.fire(before)
@@ -343,8 +343,9 @@ class _ParentChildHarnessHost:
         from .plugins.base import ChildInheritablePlugin
 
         parent_config = self._parent.config
+        inherited = _inherits_parent(request.tool_mode)
         child_plugins: list[Plugin] = []
-        if request.inherited:
+        if inherited:
             for plugin in self._parent.plugins:
                 if isinstance(plugin, ChildInheritablePlugin):
                     rebound = plugin.for_child()
@@ -354,7 +355,7 @@ class _ParentChildHarnessHost:
         _validate_plugin_names(child_plugins)
 
         child_tools: list[ToolSpec] = []
-        if request.inherited:
+        if inherited:
             for name, tool in frozen_tool_map.items():
                 composition = frozen_composition.get(name)
                 if composition is not None and composition.source == "direct" and not tool.requires_approval:
@@ -431,6 +432,11 @@ async def _close_model_after_failure(model: Model, original_error: BaseException
         raise
     except BaseException as close_error:
         original_error.add_note(f"cleanup also failed: {type(close_error).__name__}: {close_error}")
+
+
+def _inherits_parent(tool_mode: Literal["inherited", "inherited+explicit", "explicit"]) -> bool:
+    """Derive parent inheritance from the authoritative child tool mode."""
+    return tool_mode != "explicit"
 
 
 def _validate_rebound_plugin(parent_plugin: Plugin, rebound: object) -> None:

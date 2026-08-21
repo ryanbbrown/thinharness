@@ -177,7 +177,6 @@ class BeforeSubagentRunContext(HookContext):
     task: str
     inherited: bool
     tool_mode: str
-    parent_harness: Harness
     parent_call_id: str | None = None
     cancelled: bool = False
     cancel_reason: str = ""

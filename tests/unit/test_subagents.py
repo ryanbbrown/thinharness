@@ -74,7 +74,6 @@ def _request(name: str) -> ChildHarnessRequest:
         agent_description=f"{name} child",
         trace_agent_name=f"subagent.{name}",
         task="",
-        inherited=False,
         tool_mode="explicit",
         system_prompt=name,
     )
@@ -105,6 +104,7 @@ def test_plugin_contributes_static_tool_and_default_agent(tmp_path: Path) -> Non
     assert set(tool.response_tool()["parameters"]["properties"]) == {"task", "agent"}
     assert "Omit `agent`" in tool.description
     assert host.recipes[0].tool_mode == "inherited"
+    assert "inherited" not in ChildHarnessRequest.__dataclass_fields__
 
 
 def test_parent_host_catalog_is_ordered_unique_with_alias_tools(tmp_path: Path) -> None:
@@ -363,16 +363,80 @@ def test_named_model_only_child_has_no_tools(tmp_path: Path) -> None:
     assert child_model.provider.closed == 1
 
 
-def test_override_model_closes_when_child_construction_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_override_model_child_plugins_bind_only_with_real_child_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parent_model = ScriptedModel([])
-    child_model = ScriptedModel([])
-    child_provider = ClosingProvider()
-    child_model.provider = child_provider
+    child_seen: list[str] = []
+    child_model = ScriptedModel([
+        ScriptedSession(
+            start_turn=ModelTurn(text="child", raw={}),
+            on_start=lambda _prompt, _instructions, tools, _metadata, _previous: child_seen.extend(
+                tool["name"] for tool in tools
+            ),
+        )
+    ])
+    child_model.provider = ClosingProvider()
+    bound_models: list[Any] = []
+    inferred: list[str] = []
 
     class ModelSensitivePlugin:
         name = "model-sensitive"
 
-        def bind(self, context):
+        def bind(self, context: PluginContext) -> PluginBinding:
+            bound_models.append(context.model)
+            tool_name = "collision" if context.model is parent_model else "child_plugin"
+            tool = ToolSpec(tool_name, "Model-sensitive", {"type": "object"}, lambda _args: "plugin")
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+    def infer(model_ref: str, **_kwargs: Any) -> ScriptedModel:
+        inferred.append(model_ref)
+        return child_model
+
+    monkeypatch.setattr("thinharness.children.infer_model", infer)
+    parent = ScriptedSession(
+        start_turn=_parent_call(agent="valid"),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=parent_model,
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(
+                name="valid",
+                description="Valid only with the child model.",
+                model="openai:child",
+                plugins=[ModelSensitivePlugin()],
+                tools=[ToolSpec("collision", "Direct", {"type": "object"}, lambda _args: "direct")],
+            )
+        ])],
+    )
+
+    assert bound_models == []
+    assert inferred == []
+    parent_model.sessions.append(parent)
+    assert harness.run_sync("delegate").text == "done"
+    assert bound_models == [child_model]
+    assert inferred == ["openai:child"]
+    assert child_seen == ["child_plugin", "collision"]
+
+
+def test_override_model_plugin_collision_is_validated_with_real_child_model_and_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_model = ScriptedModel([])
+    child_model = ScriptedModel([])
+    child_provider = ClosingProvider()
+    child_model.provider = child_provider
+    bound_models: list[Any] = []
+
+    class ModelSensitivePlugin:
+        name = "model-sensitive"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            bound_models.append(context.model)
             tools = () if context.model is parent_model else (
                 ToolSpec("duplicate", "Duplicate", {"type": "object"}, lambda _args: "plugin"),
             )
@@ -396,11 +460,13 @@ def test_override_model_closes_when_child_construction_fails(tmp_path: Path, mon
             )
         ])],
     )
-    parent_model.sessions.append(parent)
 
+    assert bound_models == []
+    parent_model.sessions.append(parent)
     assert harness.run_sync("delegate").text == "done"
     envelope = tool_output(parent.continue_calls[0][0][0].output)
     assert envelope["metadata"]["error_type"] == "ValueError"
+    assert bound_models == [child_model]
     assert child_provider.closed == 1
 
 
@@ -436,6 +502,71 @@ def test_additive_inheritance_rebinds_plugins_and_appends_direct_tools(tmp_path:
     assert child_seen["tools"] == ["read", "echo", "explicit"]
     assert child_seen["instructions"].count(f"Workspace root: {tmp_path.resolve()}") == 1
     assert envelope["metadata"]["tool_mode"] == "inherited+explicit"
+
+
+@pytest.mark.parametrize(
+    ("inherit_parent", "explicit_tools", "expected_mode", "expected_inherited", "expected_tools"),
+    [
+        (True, (), "inherited", True, ["read", "echo"]),
+        (True, ("explicit",), "inherited+explicit", True, ["read", "echo", "explicit"]),
+        (False, ("explicit",), "explicit", False, ["explicit"]),
+    ],
+)
+def test_tool_mode_drives_composition_hook_boolean_and_result_metadata(
+    tmp_path: Path,
+    inherit_parent: bool,
+    explicit_tools: tuple[str, ...],
+    expected_mode: str,
+    expected_inherited: bool,
+    expected_tools: list[str],
+) -> None:
+    child_tools: list[str] = []
+    hook_values: list[tuple[str, bool]] = []
+    configured_tools = tuple(
+        ToolSpec(name, name, {"type": "object"}, lambda _args: "ok") for name in explicit_tools
+    )
+    parent = ScriptedSession(
+        start_turn=_parent_call(agent="mode"),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    child = ScriptedSession(
+        start_turn=ModelTurn(text="child", raw={}),
+        on_start=lambda _prompt, _instructions, tools, _metadata, _previous: child_tools.extend(
+            tool["name"] for tool in tools
+        ),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[
+            FilesystemPlugin(tools=["read"]),
+            SubagentsPlugin(agents=[
+                SubAgentConfig(
+                    name="mode",
+                    description="Mode child.",
+                    inherit_parent=inherit_parent,
+                    tools=configured_tools,
+                )
+            ]),
+        ],
+        tools=[echo_tool()],
+        hooks=[
+            Hook(
+                "before_subagent_run",
+                lambda ctx: hook_values.append((ctx.tool_mode, ctx.inherited)),
+                agents=["mode"],
+            )
+        ],
+    )
+
+    harness.run_sync("delegate")
+    envelope = tool_output(parent.continue_calls[0][0][0].output)
+
+    assert child_tools == expected_tools
+    assert hook_values == [(expected_mode, expected_inherited)]
+    assert envelope["metadata"]["tool_mode"] == expected_mode
+    assert envelope["metadata"]["inherited"] is expected_inherited
+    assert envelope["metadata"]["tools"] == expected_tools
 
 
 def test_skills_plugin_reuses_registry_and_summary_in_child(tmp_path: Path) -> None:
@@ -646,8 +777,12 @@ def test_direct_tool_added_during_run_is_visible_only_next_run(tmp_path: Path) -
 def test_parent_hooks_child_hooks_metadata_and_cancellation(tmp_path: Path) -> None:
     events = []
 
+    parent_harnesses: list[Harness] = []
+
     def before(ctx):
         assert isinstance(ctx, BeforeSubagentRunContext)
+        assert not hasattr(ctx, "parent_harness")
+        parent_harnesses.append(ctx.harness)
         events.append((ctx.event, ctx.agent, dict(ctx.metadata)))
         ctx.metadata["changed"] = True
 
@@ -656,6 +791,7 @@ def test_parent_hooks_child_hooks_metadata_and_cancellation(tmp_path: Path) -> N
 
     def after(ctx):
         assert isinstance(ctx, AfterSubagentRunContext)
+        parent_harnesses.append(ctx.harness)
         events.append((ctx.event, ctx.agent, dict(ctx.metadata)))
 
     harness = Harness(
@@ -672,6 +808,7 @@ def test_parent_hooks_child_hooks_metadata_and_cancellation(tmp_path: Path) -> N
     )
     harness.run_sync("go", metadata={"conversation_id": "c"})
 
+    assert parent_harnesses == [harness, harness]
     assert events == [
         ("before_subagent_run", "default", {"conversation_id": "c"}),
         ("run_start", "child", {"conversation_id": "c", "parent_call_id": "call_1"}),
@@ -801,7 +938,6 @@ def test_child_disabled_host_blocks_custom_plugin_grandchild(tmp_path: Path) -> 
                     agent_description="Nested",
                     trace_agent_name="nested",
                     task="x",
-                    inherited=False,
                     tool_mode="explicit",
                     system_prompt="nested",
                 )
@@ -834,7 +970,6 @@ async def test_top_level_host_rejects_outside_active_tool_runtime(tmp_path: Path
         agent_description="X",
         trace_agent_name="x",
         task="x",
-        inherited=False,
         tool_mode="explicit",
         system_prompt="x",
     )
@@ -864,7 +999,6 @@ async def test_detached_delegation_task_loses_active_call_lease(
         agent_description="Late child",
         trace_agent_name="subagent.late",
         task="late",
-        inherited=False,
         tool_mode="explicit",
         system_prompt="late",
         model="openai:late",
@@ -1110,7 +1244,6 @@ async def test_connected_registered_delegation_keeps_provenance_and_host_access(
                 agent_description="Connected child",
                 trace_agent_name="subagent.connected",
                 task="",
-                inherited=False,
                 tool_mode="explicit",
                 system_prompt="connected",
             )
