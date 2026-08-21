@@ -2,8 +2,6 @@
 
 ThinHarness is a small SDK for purpose-built agent loops. The host application chooses the model, tools, limits, context, output contract, and lifecycle hooks. The model gets enough room to plan and use tools, but the run stays bounded by configuration.
 
-For code ownership and the run-loop mental model, see `docs/site/explainer.html`. This file is the user-facing API guide.
-
 ## Install
 
 ```bash
@@ -24,11 +22,14 @@ ThinHarness requires Python 3.11+.
 ```python
 import asyncio
 
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 
 async def main() -> None:
-    async with Harness(HarnessConfig(root=".", model="openai:gpt-5.5")) as harness:
+    async with Harness(
+        HarnessConfig(root=".", model="openai:gpt-5.5"),
+        plugins=[FilesystemPlugin(tools=["read"])],
+    ) as harness:
         result = await harness.run("Read README.md and summarize it.")
         print(result.text)
 
@@ -59,9 +60,9 @@ Streaming is coarse turn/tool/run streaming, not token-delta streaming. Provider
 
 Stream events are high-level workflow events intended for app consumption:
 
-- `RunStartedEvent.prompt` includes the submitted prompt.
+- `RunStartedEvent.prompt` includes the submitted text, or compact ordered JSON with redacted image descriptors for a multimodal prompt.
 - `ToolCallStartedEvent.arguments` includes the model-requested tool arguments.
-- `ToolCallCompletedEvent.output` includes model-visible tool output.
+- `ToolCallCompletedEvent.output` includes the exact text-only tool output or a compact canonical redacted projection for image-bearing output.
 - Raw provider response JSON is not part of stream events; use `HarnessResult.responses` for raw provider responses after completion.
 - `ModelMessageEvent.text` includes assistant text from the completed provider turn.
 - Child subagent events are flattened by default; set `include_subagents=False` to keep only the parent `subagent` tool lifecycle.
@@ -88,23 +89,38 @@ config = HarnessConfig(
     system_prompt="You are a focused research agent.",
     max_model_requests=32,
     max_tool_calls=80,
-    read_paths=["inputs", "docs"],
-    write_paths=["outputs"],
 )
 ```
 
 Important groups:
 
-- `root`, `read_paths`, `write_paths`, and `output_dir` define filesystem scope.
+- `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
 - `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
-- `builtin_tools`, `tools`, `subagents`, `mcp_servers`, and `skills_dir` define the model-callable surface.
+- The `Harness` constructor's ordered `plugins=` and direct `tools=` inputs define the complete model-callable surface. ThinHarness has no implicit or selected built-in tool path. Filesystem, Bash, MCP, skills, parallel LLM, and subagent delegation use explicit plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
 - `tracing`, `local_tracing`, and `local_trace_dir` define observability.
 
-## Built-In Filesystem Tools
+## Plugins
 
-When `builtin_tools` is omitted, the model gets these filesystem tools:
+A plugin is a configured bundle of tools, system instructions, and hooks. Pass plugins explicitly in caller order:
+
+```python
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin()],
+    tools=[custom_tool],
+    hooks=[custom_hook],
+)
+```
+
+Independent custom tools and hooks stay direct constructor inputs. Plugin names must be unique within one harness. `PluginContext` exposes only the canonical root, configured model, and a narrow child-harness host. ThinHarness binds static contributions during construction, then opens connected plugins on `Harness.connect()` or before the first run. Connection is atomic: a failure installs no dynamic contribution, closes opened plugins in reverse order, and allows retry. Closing the harness also closes plugins in reverse order. A plugin opts into automatic child rebinding only by implementing `for_child()`.
+
+Plugins are trusted in-process code. ThinHarness does not discover them from entry points or directories, isolate them, resolve dependencies between them, or hot reload them.
+
+## Filesystem Plugin
+
+The core harness has no implicit filesystem tools. Add `FilesystemPlugin()` to get these default tools:
 
 - `read`: read bounded UTF-8 file ranges with line numbers.
 - `write`: create, overwrite, or append UTF-8 files. This tool is sequential.
@@ -113,15 +129,24 @@ When `builtin_tools` is omitted, the model gets these filesystem tools:
 - `list`: list files or directories.
 - `glob`: find files by glob pattern.
 
-When `builtin_tools` is provided, it is an explicit replacement list. Include every built-in tool the model should see.
+Use the plugin's ordered `tools` list to select a different surface. `jsonl_search` and `read_image` are opt-in. `read_image` reads at most `max_image_bytes + 1` bytes from a regular JPEG, PNG, GIF, or WebP file under the read path policy and returns metadata text followed by the image. It does not change the text-only `read` tool. Configure its independent positive byte limit with `max_image_bytes` (default 5,000,000).
 
-`jsonl_search` is available as an opt-in built-in:
+For example:
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["read", "search", "jsonl_search"],
-))
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin(tools=["read", "read_image"])],
+)
+```
+
+`jsonl_search` is also opt-in:
+
+```python
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[FilesystemPlugin(tools=["read", "search", "jsonl_search"])],
+)
 ```
 
 Use `query` as a ripgrep row prefilter, `fields` to project only the values the model needs, and `where` for structured filters over jq-style field paths:
@@ -182,18 +207,42 @@ For large multiline string fields, `field_searches` returns matching internal li
 Filesystem tools enforce the configured read and write policies. Paths must resolve under `root`; escape attempts through absolute paths outside `root`, `..`, or symlinks are rejected.
 
 ```python
-harness = Harness(HarnessConfig(
-    root="/repo",
-    read_paths=["src", "tests"],
-    write_paths=["outputs"],
-))
+harness = Harness(
+    HarnessConfig(root="/repo"),
+    plugins=[FilesystemPlugin(
+        read_paths=["src", "tests"],
+        write_paths=["outputs"],
+    )],
+)
 ```
 
 With this configuration, `read` can access `src/app.py` and `tests/test_app.py`, but not `docs/notes.md`. `write` can create or update `outputs/report.md`, but not `src/generated.py`. Omit `read_paths` or `write_paths` to allow that operation anywhere under `root`.
 
+## Bash Plugin
+
+`BashPlugin` explicitly adds one sequential, non-interactive `bash` tool. A plain harness has no Bash tool. The plugin uses `HarnessConfig.root`; the model can select only an existing cwd contained by that canonical root.
+
+```python
+from thinharness import BashPlugin, Harness, HarnessConfig
+
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[BashPlugin()],
+)
+```
+
+Each call starts a fresh `bash -c` process with no stdin, PTY, shared shell state, or persistent background-job interface. The host configures default and maximum timeouts and a byte limit for each output stream. The model can request only a timeout, which is capped by the host. Stdout and stderr are drained concurrently into separate bounded head-and-tail buffers; omitted middle bytes get a visible marker and are not written to spill files.
+
+By default, commands inherit only `PATH`, `HOME`, temporary-directory, locale, and timezone values, plus fixed non-interactive defaults. Set `inherit_env=True` to copy the full host environment. In either mode, inherited `BASH_ENV` and `ENV` are removed before explicit host `env` values are applied.
+
+Timeout and run cancellation signal the command process group, allow one second for termination, and escalate to `SIGKILL`. Cleanup and final pipe drain are bounded, and cancellation then propagates. Normal shell exit also performs best-effort same-group descendant cleanup. A descendant that starts a new session can escape termination, and signalling after direct shell exit has an unavoidable process-group-ID reuse race. Bash is POSIX-only, runs `bash` from `PATH`, does not fall back to another shell, and does not inherit automatically into child harnesses. Configure `requires_approval=True` only for a top-level harness.
+
+Cwd containment and environment filtering reduce mistakes; they are not a sandbox. Commands can use absolute paths, network access, host files, and other authority available to the local process. Use Bash to explore workflow shape, then promote repeated actions into typed tools.
+
 ## Custom Tools
 
-Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, or JSON-serializable data. The model always receives a JSON envelope with `ok`, `content`, and `metadata`.
+Custom tools are registered as `ToolSpec` objects. A handler may return a `ToolResult`, a string, JSON-serializable data, or an ordered sequence of `TextBlock` and `ImageBlock` values. Text-only results keep the JSON envelope with `ok`, `content`, and `metadata`; image-bearing results use provider-native blocks while keeping `ok` and metadata visible to the model.
 
 ```python
 from pydantic import BaseModel
@@ -249,23 +298,7 @@ The paused result includes:
 
 Resume with `resume_approvals(...)`, `stream_approvals(...)`, or `resume_approvals_sync(...)` and one `ApprovalDecision` per pending approval. Approved calls execute through the normal tool machinery, including hooks, tracing, retry accounting, and stream events. Rejected calls do not execute or fire tool hooks; the model receives a failed tool result with `error_type="ApprovalRejected"` and can explain, recover, or request another tool.
 
-Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child subagent harnesses. Built-in tools remain non-approval tools in this version; wrap built-in behavior in a custom `ToolSpec` when host review is required.
-
-### Bash Prototype Tool
-
-`BashTool` is an opt-in custom tool for exploratory agent runs. It is not part of the default built-ins, and `builtin_tools=["bash"]` is intentionally rejected.
-
-```python
-from thinharness import BashTool, Harness, HarnessConfig
-
-
-harness = Harness(
-    HarnessConfig(root="."),
-    tools=[BashTool(root=".").spec()],
-)
-```
-
-The tool runs one `bash -c` command from a workspace-contained cwd and marks itself sequential because commands may mutate state. The cwd check is not a sandbox: commands can still access absolute paths, network tools, environment variables, and anything the host process can access. The tool has a configured `max_tool_chars` output cap; the model can pass `max_chars` on an individual call only to request a lower cap. The final limit is `min(max_chars, max_tool_chars)`, applied independently to stdout and stderr. Background descendants left by a command are cleaned up when the shell exits; this is not a persistent job runner. Use it to prototype workflow shape, then promote repeated shell logic into typed tools.
+Approval-required tools need a resumable model because the harness must continue after the paused assistant tool-call turn. They are not supported inside child harnesses. Configure approval only at the top level, either on a direct `ToolSpec` or with `BashPlugin(requires_approval=True)`.
 
 ## Tool Execution Policy
 
@@ -296,7 +329,7 @@ Set `output_type` to validate the final result with Pydantic. `result.text` rema
 ```python
 from pydantic import BaseModel
 
-from thinharness import Harness, HarnessConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig
 
 
 class Summary(BaseModel):
@@ -304,11 +337,14 @@ class Summary(BaseModel):
     bullets: list[str]
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    output_type=Summary,
-    output_mode="auto",
-))
+harness = Harness(
+    HarnessConfig(
+        root=".",
+        output_type=Summary,
+        output_mode="auto",
+    ),
+    plugins=[FilesystemPlugin(tools=["read"])],
+)
 
 result = await harness.run("Summarize README.md.")
 summary: Summary = result.output
@@ -325,6 +361,12 @@ summary: Summary = result.output
 ThinHarness resolves structured output when the harness is constructed and eagerly checks the requested mode against the model provider's declared capabilities. For example, `output_mode="native"` raises immediately for a provider that does not support native JSON-schema output. `output_mode="auto"` chooses a supported default for the provider.
 
 Tool-mode structured output uses a harness-created `final_result` tool. It is not a normal registered tool, does not fire tool hooks, and clean exits through it are not resumable because the provider transcript would contain an unanswered synthetic tool call.
+
+## Image Content
+
+`Harness.run()`, `stream()`, and `run_sync()` accept a non-empty string or an ordered sequence of `TextBlock` and `ImageBlock` values. Images use immutable bytes with an explicit `image/jpeg`, `image/png`, `image/gif`, or `image/webp` media type. Empty content, unsupported media types, URLs, paths, and mutable byte containers are rejected before provider work. Provider or model errors report unsupported vision models.
+
+OpenAI, Anthropic, and OpenRouter receive provider-native image parts. OpenRouter projects tool-result images into a labelled follow-up user message because multimodal tool-role support is inconsistent. Bash, subagent tasks, and `parallel_llm` prompts remain text-only. Completed results and resume state can contain full base64 image data, so treat them as sensitive and potentially large.
 
 ## Hooks
 
@@ -355,62 +397,67 @@ Hook events:
 - `limit_reached`
 - `run_end`
 
-`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. `after_tool_call` can rewrite `ctx.output`, but retry control flow is captured before that rewrite. Tool filters apply only to tool events; agent filters apply only to subagent events.
+`user_prompt_submit`, `before_tool_call`, and `before_subagent_run` are cancellable. Run-start and prompt-submit hooks receive normalized content-block tuples and can replace the prompt with a string or valid block sequence. Invalid prompt replacements fail as `HarnessError`. `after_tool_call` can rewrite canonical `ctx.output` or structured `ctx.envelope`; either form is validated and keeps the other synchronized. A malformed non-strict mutation is logged and rolled back, while a malformed strict mutation fails as `HarnessError`. Tool retry control flow and budgets use the result classification from before after-tool hooks; hooks can change model-visible output but cannot create or suppress the current retry. These after-tool fields can contain full base64 image data and can be sensitive and large. Tool filters apply only to tool events; agent filters apply only to subagent events.
 
 By default, hook exceptions are logged and the run continues. Set `strict_hooks=True` to make hook exceptions fail the run.
 
 ## Subagents
 
-The `subagent` tool is opt-in. It lets the parent delegate a bounded task to a child harness. Child runs start fresh; they do not inherit the parent provider transcript.
+Add `SubagentsPlugin` to expose one `subagent` tool. Each call delegates one bounded task to a fresh child harness with no parent provider transcript.
 
 ```python
-from thinharness import Harness, HarnessConfig, SubAgentConfig
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SubAgentConfig, SubagentsPlugin
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["read", "search", "subagent"],
-    subagents=[
-        SubAgentConfig(
-            name="reviewer",
-            description="Review a draft for factual and citation issues.",
-            system_prompt="You are a careful review agent.",
-            inherit_parent_tools=True,
-            max_model_requests=12,
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        FilesystemPlugin(tools=["read", "search"]),
+        SubagentsPlugin(agents=[
+            SubAgentConfig(
+                name="reviewer",
+                description="Review a draft for factual and citation issues.",
+                system_prompt="You are a careful review agent.",
+                inherit_parent=True,
+                max_model_requests=12,
+            )
+        ]),
     ],
-))
+)
 ```
 
-Calling `subagent` without an `agent` argument uses the framework default subagent, which inherits parent tools except for recursive `subagent` access and MCP-discovered tools. Named subagents use their own `SubAgentConfig`.
+Omitting `agent` selects the framework default child. It borrows the parent model and inherits safe parent plugins plus direct tools from the active run's frozen tool snapshot. Named children can set their own model, limits, output settings, hooks, plugins, and tools. `inherit_parent=True` is additive: inherited plugins and direct tools come first, then explicit child plugins and tools. Duplicate names fail; explicit values do not replace inherited values.
 
-Named subagents can:
+`FilesystemPlugin`, `SkillsPlugin`, and `ParallelLlmPlugin` opt into child rebinding. A borrowed `ParallelLlmPlugin(model=None)` uses the child model. `MCPPlugin` never inherits automatically; put an explicit `MCPPlugin(...)` in the child's `plugins` list. Approval-required tools are excluded or rejected.
 
-- inherit parent tools with `inherit_parent_tools=True`
-- choose explicit `builtin_tools`
-- receive explicit custom `tools`
-- opt into MCP with `inherit_mcp_servers=True` or `mcp_servers=[...]`
-- use their own model, limits, and structured output
+Default-child hooks use `SubagentsPlugin(default_hooks=...)`. Named child hooks use `SubAgentConfig(hooks=...)`. Parent `before_subagent_run` and `after_subagent_run` hooks stay on the parent and can use `agents=[...]` filters.
 
-`default` is reserved for the framework default subagent name.
+Children receive a disabled child host and cannot delegate again. `SubagentsPlugin` is also invalid in explicit child plugins. A custom ordinary tool can still use the name `subagent` when the delegation plugin is absent. `default` is reserved only as the framework default child configuration name.
 
 ## Parallel LLM Batches
 
-`parallel_llm` is an opt-in built-in tool for batches of independent one-shot prompts:
+Add `ParallelLlmPlugin` for batches of independent one-shot text prompts:
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    builtin_tools=["parallel_llm"],
-    builtin_parallel_llm_model="openai:gpt-5.5-mini",
-    builtin_parallel_llm_temperature=0,
-    parallel_llm_max_prompts=100,
-    request_retries=3,
-    request_retry_backoff=1.0,
-))
+from thinharness import Harness, HarnessConfig, ParallelLlmPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[ParallelLlmPlugin(
+        model="openai:gpt-5.5-mini",
+        temperature=0,
+        max_prompts=100,
+        request_retries=3,
+        request_retry_backoff=1.0,
+        read_paths=["inputs"],
+        write_paths=["outputs"],
+    )],
+)
 ```
 
-Each batch call is stateless. Per-prompt calls receive no tools, no memory, no continuation, and no inherited parent harness system prompt. Pass `system` when the batch needs shared instructions.
+Omit `model` to borrow the configured harness model, or pass a model object to borrow a caller-owned model. The plugin never closes a borrowed model. Provider and request settings are accepted only with a model string; that form creates and closes a configured provider for each batch invocation. Alternate string models do not inherit hidden harness provider settings.
+
+Each batch call is stateless and text-only. Per-prompt calls receive no tools, no memory, no continuation, and no inherited parent harness system prompt. Pass `system` when the batch needs shared instructions.
 
 The model-facing prompt source is structurally discriminated:
 
@@ -419,7 +466,7 @@ The model-facing prompt source is structurally discriminated:
 
 Use `output_file` when combined results may be large. Inline output returns compact JSON in `ToolResult.content`; file output writes pretty JSON under the write path policy and returns a summary.
 
-`max_concurrency` is model-controlled per tool call and limits in-flight requests. `parallel_llm_max_prompts` is a host-controlled `HarnessConfig` field. Built-in provider retries use the same `request_retries` and `request_retry_backoff` policy as normal agent requests. Transport attempts do not increase the tool's `model_requests` count or consume `max_model_requests`; the `parallel_llm` invocation still counts as one tool call.
+`max_concurrency` is model-controlled per tool call and limits in-flight requests. `max_prompts` is host-controlled on `ParallelLlmPlugin`. Read and write paths resolve under `HarnessConfig.root`. A plugin that borrows the harness model uses that model's transport retry settings; a string-model plugin uses its own. Transport attempts do not increase the tool's batch-local `model_requests` count. Batch requests and tokens do not enter parent `RunUsage` or consume parent `max_model_requests`; the `parallel_llm` invocation counts as one parent tool call. Cancellation propagates and still closes a string-model provider.
 
 For a custom, renameable version, construct `ParallelLlmTool` directly:
 
@@ -456,20 +503,29 @@ When `output_type` is set on a custom `ParallelLlmTool`, successful entries cont
 
 ## Skills
 
-Skills are explicit tools, not auto-discovery. Configure `skills_dir`, then expose `skill_read` and/or `skill_run` through `builtin_tools`.
+Skills are explicit plugins, not auto-discovery. `SkillsPlugin` requires an ordered, non-empty tool selection, so discovery never silently enables script execution.
 
 ```python
-harness = Harness(HarnessConfig(
-    root=".",
-    skills_dir="skills",
-    selected_skills=["invoice-review"],
-    builtin_tools=["read", "search", "skill_read", "skill_run"],
-))
+from thinharness import FilesystemPlugin, Harness, HarnessConfig, SkillsPlugin
+
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        FilesystemPlugin(tools=["read", "search"]),
+        SkillsPlugin(
+            "skills",
+            selected_skills=["invoice-review"],
+            tools=["skill_read", "skill_run"],
+        ),
+    ],
+)
 ```
 
-If skills are configured and skill tools are exposed, the system prompt includes a compact skill summary. The model still has to call `skill_read` to inspect details.
+Relative skill directories resolve from the process working directory, not from `HarnessConfig.root`. The plugin discovers one catalog when it is constructed. Names, paths, selected skills, and summary text stay fixed; added or removed skills require a new plugin. Existing `SKILL.md` content, file trees, and scripts stay live when tools run. Reusing one plugin object across harnesses reuses the same catalog and registry.
 
-`skill_run` runs scripts from trusted skill directories. Python scripts run through `uv run`; shell scripts run through `bash`; JavaScript and Go files use `node` and `go run`.
+A non-empty catalog contributes the selected tools in caller order and one compact summary. The summary tells the model to call `skill_read` only when that tool is selected. `skill_read` is parallel-safe. `skill_run` is sequential and runs scripts from trusted skill directories: Python through `uv run`, shell through `bash`, JavaScript through `node`, and Go through `go run`.
+
+`SkillsPlugin` has frozen constructor configuration and opts into generic child rebinding. Default children and named children with `inherit_parent=True` reuse the exact registry and catalog, so they share one catalog and one summary. A non-inheriting child lists its own plugin explicitly.
 
 ## MCP
 
@@ -479,19 +535,21 @@ MCP support is optional. Importing ThinHarness does not require the MCP packages
 
 ```python
 from fastmcp.client.transports import FastMCPTransport
-from thinharness import Harness, HarnessConfig, MCPServer
+from thinharness import Harness, HarnessConfig, MCPPlugin, MCPServer
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    mcp_servers=[
-        MCPServer(
-            FastMCPTransport(my_server),
-            id="inprocess",
-            include_tools=["step", "reset_session"],
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        MCPPlugin(servers=[
+            MCPServer(
+                FastMCPTransport(my_server),
+                id="inprocess",
+                include_tools=["step", "reset_session"],
+            )
+        ])
     ],
-))
+)
 ```
 
 `MCPServer` accepts only a transport object — not a URL, script path, server object, or configuration dictionary. Once a transport is passed to an `MCPServer`, that wrapper owns the client built on it and closes its transport on the final exit; to share one session, reuse the wrapper rather than passing one stateful transport to several wrappers.
@@ -499,23 +557,25 @@ harness = Harness(HarnessConfig(
 The stdio, SSE, and Streamable HTTP wrappers take command- or URL-based constructors and build the matching FastMCP transport when the connection opens:
 
 ```python
-from thinharness import Harness, HarnessConfig, MCPServerStdio
+from thinharness import Harness, HarnessConfig, MCPPlugin, MCPServerStdio
 
 
-harness = Harness(HarnessConfig(
-    root=".",
-    mcp_servers=[
-        MCPServerStdio(
-            "uvx",
-            ["my-mcp-server"],
-            tool_prefix="external",
-            include_tools=["lookup"],
-        )
+harness = Harness(
+    HarnessConfig(root="."),
+    plugins=[
+        MCPPlugin(servers=[
+            MCPServerStdio(
+                "uvx",
+                ["my-mcp-server"],
+                tool_prefix="external",
+                include_tools=["lookup"],
+            )
+        ])
     ],
-))
+)
 ```
 
-MCP servers connect lazily during harness startup. Discovered MCP tools become normal `ToolSpec` objects in the live harness tool map. Name collisions are rejected; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
+Use one `MCPPlugin` per harness and put all servers in caller order. Servers connect lazily on `Harness.connect()` or the first run. The binding discovers one tool snapshot and reuses it until the harness closes. Discovered MCP tools become normal `ToolSpec` objects with generic origin data in the live harness tool map. Name collisions reject the whole discovered contribution; use `tool_prefix`, `include_tools`, or `exclude_tools` to keep the model-facing tool surface explicit.
 
 Available wrappers:
 
@@ -524,7 +584,7 @@ Available wrappers:
 - `MCPServerSSE`
 - `MCPServerStreamableHTTP`
 
-ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
+ThinHarness only turns MCP tools into harness tools; transport execution and session lifecycle come from the FastMCP client. Successful supported MCP images remain ordered image blocks. When `structuredContent` exists, its canonical JSON is the authoritative first text block; text, audio, resource, and resource-link blocks are discarded; and only image blocks or image placeholders keep their relative order. MCP never inherits automatically into a child. A child that needs MCP lists an explicit `MCPPlugin` in `SubAgentConfig.plugins`, and that child binding owns its connection lifecycle. MCP prompts, resources, sampling, OAuth flows, provider-native MCP, and `.mcp.json` discovery are outside the current scope.
 
 ## Resume
 
@@ -558,8 +618,8 @@ Budgets span the pause. The paused batch counts against `usage.tool_calls` exact
 
 Built-in provider resume details:
 
-- `resume_state["kind"] == "transcript"` and `version == 3`.
-- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention.
+- `resume_state["kind"] == "transcript"` and `version == 4`. Older transcript versions must be regenerated; approval envelopes with version 3 nested provider state also fail.
+- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead. Exact structured-output retry wire text is also stored and replayed byte-for-byte when it differs from the canonical tool result.
 - Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
 - Cross-provider resume is supported by the built-in renderers, but real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
 - `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` remains available as a low-level escape hatch, but later resume state captures only the new prompt onward, not the externally seeded prior turns.
@@ -599,7 +659,7 @@ Local tracing is on by default. It writes plaintext JSONL traces under:
 ~/.thinharness/traces/<encoded-project-root>/
 ```
 
-Those traces can include prompts, model outputs, tool arguments, and tool results. Treat them as sensitive local data.
+Those traces can include prompt text, model outputs, tool arguments, and tool-result text. The agent span shows the normalized raw caller prompt, while the first model span shows the effective prompt after hooks; approval resume adds no prompt. Image bytes, base64, and data URLs are replaced with ordered descriptors that contain media type, byte size, and block index. Provider failures keep their `ProviderError` classification and status code after message redaction. Completed results and resume state still retain full images; treat them as sensitive local data.
 
 Disable local trace files with:
 
@@ -636,7 +696,7 @@ harness = Harness(
 )
 ```
 
-Each tracing sink owns its capture policy. External spans can exist without recording raw prompts or tool payloads unless capture flags are enabled.
+Each tracing sink owns its capture policy. External spans can exist without recording raw prompts or tool payloads unless capture flags are enabled. Real delegation tool spans have `subagent.delegation=true` from span start and child `invoke_agent subagent.<name>` spans remain nested below them. Classification uses core-owned composition provenance, so a same-named direct tool or forged `ToolOrigin` remains an ordinary tool span.
 
 ## Result Object
 
@@ -645,7 +705,7 @@ Each tracing sink owns its capture policy. External spans can exist without reco
 - `text`: final model text.
 - `output`: parsed structured output, if configured.
 - `responses`: raw provider responses.
-- `tool_call_records`: normalized tool call and output records.
+- `tool_call_records`: normalized tool call records with canonical structured `result` and string `output`; image-bearing `output` is redacted while `result` retains complete image data.
 - `usage`: model request counts, tool call counts, cancellations, retry counters, and run token totals (`input_tokens`/`output_tokens`).
 - `stop_reason`: terminal reason.
 - `resume_state`: opaque continuation state when the run is cleanly resumable.

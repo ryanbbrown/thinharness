@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import json
+import os
+import stat
 import subprocess
 import time
 import uuid
@@ -13,6 +16,7 @@ from typing import Any
 
 from pydantic import Field
 
+from ..content import ImageBlock, TextBlock
 from ..defaults import (
     DEFAULT_EDIT_DESCRIPTION,
     DEFAULT_EDIT_INSTRUCTIONS,
@@ -40,6 +44,7 @@ from .base import (
     _timeout_error_message,
     coerce_args,
     contained_path,
+    lexical_contained_path,
 )
 from .search_support import (
     SearchFile,
@@ -57,6 +62,12 @@ class ReadArgs(StrictArgs):
     offset: int = Field(default=1, ge=1)
     limit: int | None = Field(default=None, ge=1)
     max_chars: int | None = Field(default=None, ge=1)
+
+
+class ReadImageArgs(StrictArgs):
+    """Arguments for read_image."""
+
+    path: str
 
 
 class WriteArgs(StrictArgs):
@@ -123,23 +134,28 @@ class FileTools:
         output_dir: str | Path | None = None,
         max_read_chars: int = 40_000,
         max_read_bytes: int = 1_000_000,
+        max_image_bytes: int = 5_000_000,
         max_tool_chars: int = 40_000,
         max_search_line_chars: int = 180,
         rg_timeout: int = 30,
         search_exclude_globs: list[str] | None = None,
         read_paths: Sequence[str | Path] | None = None,
         write_paths: Sequence[str | Path] | None = None,
+        _root_is_resolved: bool = False,
     ) -> None:
         from .jsonl import JsonlSearch
 
-        self.root = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.output_dir = contained_path(self.root, output_dir or ".thinharness/outputs")
+        root_path = Path(root).expanduser()
+        self.root = root_path if _root_is_resolved else root_path.resolve()
+        self.output_dir = lexical_contained_path(self.root, output_dir or ".thinharness/outputs")
         self._spill_artifacts: set[Path] = set()
         self.read_policy = PathPolicy(self.root, read_paths, "read")
         self.write_policy = PathPolicy(self.root, write_paths, "write")
         self.max_read_chars = max_read_chars
+        if not isinstance(max_image_bytes, int) or isinstance(max_image_bytes, bool) or max_image_bytes <= 0:
+            raise ValueError("max_image_bytes must be a positive integer")
         self.max_read_bytes = max_read_bytes
+        self.max_image_bytes = max_image_bytes
         self.max_tool_chars = max_tool_chars
         self.max_search_line_chars = max_search_line_chars
         self.rg_timeout = rg_timeout
@@ -162,6 +178,12 @@ class FileTools:
         """Return built-in filesystem tool specs."""
         return [
             ToolSpec("read", DEFAULT_READ_DESCRIPTION, ReadArgs, self.read, instructions=DEFAULT_READ_INSTRUCTIONS),
+            ToolSpec(
+                "read_image",
+                "Read one local PNG, JPEG, GIF, or WebP image for visual inspection.",
+                ReadImageArgs,
+                self.read_image,
+            ),
             ToolSpec("write", DEFAULT_WRITE_DESCRIPTION, WriteArgs, self.write, sequential=True, instructions=DEFAULT_WRITE_INSTRUCTIONS),
             ToolSpec("edit", DEFAULT_EDIT_DESCRIPTION, EditArgs, self.edit, sequential=True, instructions=DEFAULT_EDIT_INSTRUCTIONS),
             ToolSpec("search", DEFAULT_SEARCH_DESCRIPTION, SearchArgs, self.search, instructions=DEFAULT_SEARCH_INSTRUCTIONS),
@@ -216,6 +238,38 @@ class FileTools:
         result = self._truncate(f"{note}\n{body}" if body else note, prefix="read", max_chars=limit_chars)
         result.metadata.update({"path": str(path), "total_lines": total_lines, "returned_lines": len(selected), "size_bytes": size})
         return result
+
+    def read_image(self, args: ReadImageArgs | Json) -> ToolResult:
+        """Read one bounded contained image without format conversion."""
+        args = coerce_args(args, ReadImageArgs)
+        try:
+            path = self._resolve_read_path(args.path)
+        except PathValidationError as exc:
+            return _path_error(exc)
+        display = self._display(path)
+        try:
+            if not path.exists():
+                return ToolResult(False, f"file not found: {display}", {"path": str(path)})
+            if not path.is_file():
+                return ToolResult(False, f"path is not a regular file: {display}", {"path": str(path)})
+            with path.open("rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return ToolResult(False, f"path is not a regular file: {display}", {"path": str(path)})
+                data = handle.read(self.max_image_bytes + 1)
+            if len(data) > self.max_image_bytes:
+                return ToolResult(
+                    False,
+                    f"image is over max_image_bytes={self.max_image_bytes}",
+                    {"path": str(path), "size_bytes": len(data), "max_image_bytes": self.max_image_bytes},
+                )
+        except OSError as exc:
+            return ToolResult(False, f"{type(exc).__name__}: {exc}", {"path": str(path), "error_type": type(exc).__name__})
+        media_type = _detect_image_media_type(data)
+        if media_type is None:
+            return ToolResult(False, f"unsupported or invalid image format: {display}", {"path": str(path), "size_bytes": len(data)})
+        metadata: Json = {"path": str(path), "media_type": media_type, "size_bytes": len(data)}
+        summary = json.dumps({"path": display, "media_type": media_type, "size_bytes": len(data)}, ensure_ascii=False, separators=(",", ":"))
+        return ToolResult(True, (TextBlock(summary), ImageBlock(data, media_type)), metadata)  # type: ignore[arg-type]
 
     def write(self, args: WriteArgs | Json) -> ToolResult:
         """Write a contained UTF-8 file."""
@@ -498,7 +552,7 @@ class FileTools:
     def _is_readable_spill_artifact(self, path: Path) -> bool:
         """Return whether path is an exact generated spill artifact."""
         resolved = path.resolve()
-        output_dir = self.output_dir.resolve()
+        output_dir = contained_path(self.root, self.output_dir)
         return resolved in self._spill_artifacts and (resolved == output_dir or output_dir in resolved.parents)
 
     @staticmethod
@@ -556,8 +610,9 @@ class FileTools:
         limit = max_chars or self.max_tool_chars
         if len(text) <= limit:
             return ToolResult(True, text)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        artifact = self.output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
+        output_dir = contained_path(self.root, self.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact = output_dir / f"{prefix}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.txt"
         artifact.write_text(text, encoding="utf-8")
         resolved_artifact = artifact.resolve()
         self._spill_artifacts.add(resolved_artifact)
@@ -576,14 +631,40 @@ class FileTools:
         )
 
 
+def _detect_image_media_type(data: bytes) -> str | None:
+    """Detect supported image containers from complete minimum signatures."""
+    if len(data) >= 33 and data.startswith(b"\x89PNG\r\n\x1a\n") and data[8:12] == b"\x00\x00\x00\r" and data[12:16] == b"IHDR":
+        return "image/png"
+    if (
+        len(data) >= 6
+        and data.startswith(b"\xff\xd8\xff")
+        and data[3] not in {0x00, 0xFF}
+        and b"\xff\xd9" in data[4:]
+    ):
+        return "image/jpeg"
+    if len(data) >= 13 and data[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if _valid_webp_header(data):
+        return "image/webp"
+    return None
+
+
+def _valid_webp_header(data: bytes) -> bool:
+    """Return whether the first WebP chunk fits its declared RIFF container."""
+    if len(data) < 20 or not data.startswith(b"RIFF") or data[8:12] != b"WEBP":
+        return False
+    if data[12:16] not in {b"VP8 ", b"VP8L", b"VP8X"}:
+        return False
+    riff_end = int.from_bytes(data[4:8], "little") + 8
+    chunk_size = int.from_bytes(data[16:20], "little")
+    chunk_end = 20 + chunk_size + (chunk_size % 2)
+    return chunk_end <= riff_end <= len(data)
+
+
 # =============================================================================
 # Tool plumbing
 # =============================================================================
 
-
-def builtin_tools(root: str | Path = ".", **kwargs: Any) -> list[ToolSpec]:
-    """Create the default filesystem tool set."""
-    return FileTools(root, **kwargs).specs()
 
 def _exclude_glob(pattern: str) -> str:
     """Return a ripgrep exclusion glob."""

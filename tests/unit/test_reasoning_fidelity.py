@@ -23,15 +23,9 @@ from thinharness import (
     ToolSpec,
 )
 from thinharness.projections import trace_input_messages_from_entries, trace_output_messages_from_assistant
-from thinharness.providers import (
-    AssistantEntry,
-    ModelSettings,
-    ModelToolCall,
-    ReasoningPart,
-    UserEntry,
-    _anthropic_thinking_on_by_default,
-    _openai_supports_encrypted_reasoning,
-)
+from thinharness.providers import AssistantEntry, ModelSettings, ModelToolCall, ReasoningPart, UserEntry
+from thinharness.providers.anthropic import _anthropic_thinking_on_by_default
+from thinharness.providers.openai import _openai_supports_encrypted_reasoning
 
 REASONING_OPENAI_MODEL = "gpt-5-mini"
 THINKING_SETTINGS = ModelSettings(extra_body={"thinking": {"type": "enabled", "budget_tokens": 1024}})
@@ -145,7 +139,7 @@ class ReasoningOpenRouterProvider(OpenRouterProvider):
 
 
 def _harness(tmp_path: Path, model, **config) -> Harness:
-    return Harness(HarnessConfig(root=tmp_path, builtin_tools=[], **config), model=model, tools=[echo_tool()])
+    return Harness(HarnessConfig(root=tmp_path, **config), model=model, tools=[echo_tool()])
 
 
 async def _capture_state(tmp_path: Path, model) -> dict:
@@ -427,7 +421,7 @@ async def test_multi_part_reasoning_renders_in_order(tmp_path: Path) -> None:
 async def test_reasoning_state_round_trips(tmp_path: Path) -> None:
     state = (await _harness(tmp_path, OpenAIResponsesModel(REASONING_OPENAI_MODEL, provider=ReasoningOpenAIProvider())).run("first")).resume_state
 
-    assert state["version"] == 3
+    assert state["version"] == 4
     assert json.loads(json.dumps(state)) == state
     assert _assistant_reasoning(state)[0]["signature"] == "enc-blob-1"
 
@@ -552,13 +546,13 @@ def _has_signed_reasoning(state: dict) -> bool:
 
 async def _run_reasoning_resume_live(tmp_path: Path, make_model) -> None:
     """Capture native reasoning, then resume on the same provider/model and assert acceptance."""
-    first = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=make_model(), tools=[_multiply_tool()]).run(
+    first = await Harness(HarnessConfig(root=tmp_path), model=make_model(), tools=[_multiply_tool()]).run(
         "Use the multiply tool to compute 21 times 19, then state the product."
     )
     state = json.loads(json.dumps(first.resume_state))
     assert _has_signed_reasoning(state), "no signed native reasoning captured in resume_state"
 
-    second = await Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=make_model(), tools=[_multiply_tool()]).run(
+    second = await Harness(HarnessConfig(root=tmp_path), model=make_model(), tools=[_multiply_tool()]).run(
         "Add 100 to that product.", resume_from=state
     )
     assert second.text

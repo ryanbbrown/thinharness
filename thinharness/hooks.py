@@ -3,17 +3,46 @@
 from __future__ import annotations
 
 import contextvars
+import copy
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
+from .content import ContentBlock, Prompt, TextBlock, normalize_content
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec
-from .types import HarnessResult, RunUsage, StopReason
+from .types import HarnessError, HarnessResult, RunUsage, StopReason
+
+if TYPE_CHECKING:
+    from .children import _ToolComposition
+    from .core import Harness
+
 
 _CURRENT_TOOL_CALL: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_call", default=None)
-_CURRENT_TOOL_RUNTIME: contextvars.ContextVar[Json | None] = contextvars.ContextVar("thinharness_current_tool_runtime", default=None)
+
+
+@dataclass
+class _ToolRuntimeLease:
+    """Shared mutable validity for one tool call's copied runtime context."""
+
+    active: bool = True
+
+
+@dataclass(frozen=True)
+class _ToolRuntimeScope:
+    """Active tool-call state needed by private framework tool handlers."""
+
+    lease: _ToolRuntimeLease
+    run_metadata: Json
+    tool_map: dict[str, ToolSpec]
+    tool_composition: dict[str, _ToolComposition]
+
+
+_CURRENT_TOOL_RUNTIME: contextvars.ContextVar[_ToolRuntimeScope | None] = contextvars.ContextVar(
+    "thinharness_current_tool_runtime",
+    default=None,
+)
 
 
 def current_tool_call_context() -> Json | None:
@@ -21,12 +50,9 @@ def current_tool_call_context() -> Json | None:
     return _CURRENT_TOOL_CALL.get()
 
 
-def current_tool_runtime_context() -> Json | None:
+def current_tool_runtime_context() -> _ToolRuntimeScope | None:
     """Return internal runtime context for nested framework tool handlers."""
     return _CURRENT_TOOL_RUNTIME.get()
-
-if TYPE_CHECKING:
-    from .core import Harness
 
 
 logger = logging.getLogger(__name__)
@@ -97,7 +123,7 @@ class RunStartContext(HookContext):
     """Context for a run before the first model request."""
 
     event: ClassVar[HookEvent] = "run_start"
-    prompt: str
+    prompt: Prompt
     root: Path
     max_model_requests: int
     max_tool_calls: int | None = None
@@ -108,7 +134,7 @@ class UserPromptSubmitContext(HookContext):
     """Context for the submitted user prompt before querying the model."""
 
     event: ClassVar[HookEvent] = "user_prompt_submit"
-    prompt: str
+    prompt: Prompt
     additional_context: list[str] = field(default_factory=list)
     cancelled: bool = False
     cancel_reason: str = ""
@@ -151,7 +177,6 @@ class BeforeSubagentRunContext(HookContext):
     task: str
     inherited: bool
     tool_mode: str
-    parent_harness: Harness
     parent_call_id: str | None = None
     cancelled: bool = False
     cancel_reason: str = ""
@@ -222,20 +247,28 @@ class HookRegistry:
             if not self._matches(hook, ctx):
                 continue
             before_output = ctx.output
-            before_envelope = ctx.envelope.to_json()
+            before_envelope = copy.deepcopy(ctx.envelope)
+            handler_completed = False
             try:
                 hook.handler(ctx)
+                handler_completed = True
+                if ctx.output != before_output:
+                    ctx.envelope = ToolResult.from_json(ctx.output, strict=True)
+                elif ctx.envelope.to_json() != before_envelope.to_json():
+                    ctx.output = ctx.envelope.to_json()
             except Exception as exc:
                 name = _handler_name(hook.handler)
                 logger.warning("hook handler failed for event %s: %s", ctx.event, name)
                 logger.debug("hook handler traceback for event %s: %s", ctx.event, name, exc_info=True)
                 if self.strict_hooks:
+                    if handler_completed:
+                        failure = HarnessError(f"after_tool_call hook canonical output validation failed: {exc}")
+                        _mark_strict_hook_exception(failure)
+                        raise failure from None
                     _mark_strict_hook_exception(exc)
                     raise
-            if ctx.output != before_output:
-                ctx.envelope = ToolResult.from_json(ctx.output)
-            elif ctx.envelope.to_json() != before_envelope:
-                ctx.output = ctx.envelope.to_json()
+                ctx.output = before_output
+                ctx.envelope = before_envelope
 
     def validate_filters(self, *, agent_names: set[str]) -> None:
         """Raise for agent filters that do not match registered names."""
@@ -256,12 +289,13 @@ class HookRegistry:
         return True
 
 
-def apply_prompt_context(prompt: str, additional_context: list[str]) -> str:
-    """Append hook-provided context to the submitted prompt."""
+def apply_prompt_context(prompt: Prompt, additional_context: list[str]) -> tuple[ContentBlock, ...]:
+    """Append hook-provided context to normalized submitted content."""
+    content = normalize_content(prompt, label="hook prompt")
     if not additional_context:
-        return prompt
+        return content
     context = "\n\n".join(additional_context)
-    return f"{prompt}\n\n<hook_context>\n{context}\n</hook_context>"
+    return (*content, TextBlock(f"<hook_context>\n{context}\n</hook_context>"))
 
 
 def _handler_name(handler: HookHandler) -> str:

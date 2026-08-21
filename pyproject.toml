@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thinharness"
-version = "0.6.0"
-description = "Minimal filesystem agent harness with provider-backed Responses-like models."
+version = "0.7.0"
+description = "Minimal plugin-based agent harness with provider-backed Responses-like models."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -91,7 +91,4 @@ dev = [
     "pytest-asyncio>=0.25",
     "pytest-cov>=7",
     "ruff>=0.14",
-]
-docs = [
-    "markdown>=3.6",
 ]

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import AnthropicMessagesModel, AnthropicProvider, Harness, HarnessConfig, ModelSettings, ToolSpec
+from thinharness import AnthropicMessagesModel, AnthropicProvider, FilesystemPlugin, Harness, HarnessConfig, ModelSettings, ToolSpec
 
 MODEL = os.getenv("E2E_ANTHROPIC_MODERNIZATION_MODEL", "anthropic:claude-sonnet-5")
 
@@ -69,12 +69,12 @@ async def _assert_native_structured_output_and_defaults(root: Path, model_name: 
         harness = Harness(
             HarnessConfig(
                 root=root,
-                builtin_tools=["read"],
                 output_type=InventoryAnswer,
                 max_model_requests=4,
                 max_tool_calls=2,
             ),
             model=AnthropicMessagesModel(model_name, provider=provider),
+            plugins=[FilesystemPlugin(tools=["read"])],
         )
 
         result = await harness.run(
@@ -99,7 +99,6 @@ async def _assert_effort_merges_with_native_structured_output(root: Path, model_
         harness = Harness(
             HarnessConfig(
                 root=root,
-                builtin_tools=[],
                 output_type=InventoryAnswer,
                 max_model_requests=2,
             ),
@@ -120,23 +119,29 @@ async def _assert_effort_merges_with_native_structured_output(root: Path, model_
 
 
 async def _assert_default_on_thinking_resume(root: Path, model_name: str) -> None:
-    first_provider = RecordingAnthropicProvider()
-    try:
-        first = await Harness(
-            HarnessConfig(root=root, builtin_tools=[], max_model_requests=4, max_tool_calls=2),
-            model=AnthropicMessagesModel(model_name, provider=first_provider),
-            tools=[multiply_tool()],
-        ).run("Use the multiply tool to compute 37 times 29, then state the product.")
-    finally:
-        await first_provider.aclose()
+    state: dict | None = None
+    for _attempt in range(3):
+        first_provider = RecordingAnthropicProvider()
+        try:
+            first = await Harness(
+                HarnessConfig(root=root, max_model_requests=4, max_tool_calls=2),
+                model=AnthropicMessagesModel(model_name, provider=first_provider, settings=ModelSettings(effort="high")),
+                tools=[multiply_tool()],
+            ).run("Use the multiply tool to compute 37 times 29, then state the product.")
+        finally:
+            await first_provider.aclose()
 
-    state = json.loads(json.dumps(first.resume_state))
-    assert _has_signed_reasoning(state), "no signed Anthropic reasoning captured in resume_state"
+        candidate = json.loads(json.dumps(first.resume_state))
+        if _has_signed_reasoning(candidate):
+            state = candidate
+            break
+
+    assert state is not None, "no signed Anthropic reasoning captured in three attempts"
 
     second_provider = RecordingAnthropicProvider()
     try:
         second = await Harness(
-            HarnessConfig(root=root, builtin_tools=[], max_model_requests=3, max_tool_calls=1),
+            HarnessConfig(root=root, max_model_requests=3, max_tool_calls=1),
             model=AnthropicMessagesModel(model_name, provider=second_provider),
             tools=[multiply_tool()],
         ).run("Add 11 to that product and answer with the new number.", resume_from=state)

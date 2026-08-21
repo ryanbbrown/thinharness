@@ -1,8 +1,9 @@
-"""Public API for the filesystem harness."""
+"""Public interface for ThinHarness."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
+from .content import ContentBlock, ImageBlock, Prompt, TextBlock
 from .core import Harness, HarnessConfig
 from .events import (
     ApprovalResumedEvent,
@@ -37,6 +38,26 @@ from .hooks import (
     UserPromptSubmitContext,
 )
 from .output import NativeOutput, OutputSchema, PromptedOutput, TextOutput, ToolStructuredOutput
+from .plugins import (
+    DEFAULT_SUBAGENT_NAME,
+    BashPlugin,
+    ChildHarnessHost,
+    ChildHarnessOutcome,
+    ChildHarnessRequest,
+    ChildInheritablePlugin,
+    FilesystemPlugin,
+    MCPPlugin,
+    ParallelLlmPlugin,
+    Plugin,
+    PluginBinding,
+    PluginConnector,
+    PluginContext,
+    PluginContribution,
+    SkillsPlugin,
+    SubAgentArgs,
+    SubAgentConfig,
+    SubagentsPlugin,
+)
 from .providers import (
     AnthropicMessagesModel,
     AnthropicProvider,
@@ -59,10 +80,7 @@ from .providers import (
     infer_model,
     parse_model_ref,
 )
-from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentArgs, SubAgentConfig, build_child_harness, create_subagent_tool
 from .tools import (
-    BashArgs,
-    BashTool,
     FilePromptSource,
     FileTools,
     InlinePromptSource,
@@ -72,7 +90,6 @@ from .tools import (
     MCPServerSSE,
     MCPServerStdio,
     MCPServerStreamableHTTP,
-    McpToolInfo,
     ModelRetry,
     ParallelLlmArgs,
     ParallelLlmTool,
@@ -81,12 +98,11 @@ from .tools import (
     Skill,
     SkillRegistry,
     ToolEnvelope,
+    ToolOrigin,
     ToolResult,
     ToolSpec,
-    builtin_tools,
     call_tool,
     contained_path,
-    create_parallel_llm_tool,
 )
 from .tracing import LocalTracing, OtlpTracing, TracingOptions, create_local_tracing, create_local_tracing_options, create_otlp_tracing
 from .types import ApprovalDecision, HarnessError, HarnessResult, PendingApproval, RunUsage, UnexpectedModelBehavior
@@ -98,9 +114,17 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
-    "BashArgs",
-    "BashTool",
+    "BashPlugin",
+    "ContentBlock",
+    "ImageBlock",
+    "Prompt",
+    "TextBlock",
+    "ChildHarnessHost",
+    "ChildHarnessOutcome",
+    "ChildHarnessRequest",
+    "ChildInheritablePlugin",
     "FileTools",
+    "FilesystemPlugin",
     "FilePromptSource",
     "InlinePromptSource",
     "Harness",
@@ -129,6 +153,9 @@ __all__ = [
     "ModelRetry",
     "UnexpectedModelBehavior",
     "MCPDependencyError",
+    "MCPPlugin",
+    "ParallelLlmPlugin",
+    "SkillsPlugin",
     "MCPError",
     "MCPServer",
     "MCPServerSSE",
@@ -152,6 +179,7 @@ __all__ = [
     "SkillRegistry",
     "SubAgentArgs",
     "SubAgentConfig",
+    "SubagentsPlugin",
     "DEFAULT_SUBAGENT_NAME",
     "Model",
     "ModelCapabilities",
@@ -175,8 +203,13 @@ __all__ = [
     "ToolStructuredOutput",
     "PathPolicy",
     "PathValidationError",
-    "McpToolInfo",
+    "Plugin",
+    "PluginBinding",
+    "PluginConnector",
+    "PluginContext",
+    "PluginContribution",
     "ToolEnvelope",
+    "ToolOrigin",
     "ParallelLlmArgs",
     "ParallelLlmTool",
     "ToolResult",
@@ -185,14 +218,10 @@ __all__ = [
     "LocalTracing",
     "OtlpTracing",
     "TracingOptions",
-    "build_child_harness",
-    "builtin_tools",
     "call_tool",
     "contained_path",
-    "create_parallel_llm_tool",
     "create_local_tracing",
     "create_local_tracing_options",
-    "create_subagent_tool",
     "create_otlp_tracing",
     "infer_model",
     "parse_model_ref",

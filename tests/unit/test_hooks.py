@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import (
@@ -16,6 +17,7 @@ from fakes import (
     tool_output,
 )
 
+import thinharness.tool_execution as tool_execution_module
 from thinharness import (
     AfterToolCallContext,
     BeforeToolCallContext,
@@ -27,10 +29,10 @@ from thinharness import (
     LimitReachedContext,
     RunEndContext,
     RunStartContext,
+    SubagentsPlugin,
     ToolResult,
     ToolSpec,
     UserPromptSubmitContext,
-    create_subagent_tool,
 )
 from thinharness.hooks import current_tool_runtime_context
 from thinharness.providers import ModelToolCall, ModelTurn, ProviderError
@@ -38,6 +40,61 @@ from thinharness.providers import ModelToolCall, ModelTurn, ProviderError
 
 def test_current_tool_runtime_context_is_unset_outside_tool_call() -> None:
     assert current_tool_runtime_context() is None
+
+
+async def test_tool_runtime_scope_copies_metadata_and_preserves_map_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    original_init = tool_execution_module.ToolCallExecutor.__init__
+
+    def capture_init(self, *args: Any, **kwargs: Any) -> None:
+        run_context = kwargs["run_context"]
+        captured.update(
+            run_metadata=run_context.metadata,
+            tool_map=kwargs["tool_map"],
+            tool_composition=kwargs["tool_composition"],
+        )
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(tool_execution_module.ToolCallExecutor, "__init__", capture_init)
+    copied_leases: list[object] = []
+
+    async def inspect(_args: Any) -> str:
+        scope = current_tool_runtime_context()
+        assert scope is not None
+        captured["scope"] = scope
+
+        async def copied_context() -> None:
+            copied = current_tool_runtime_context()
+            assert copied is not None
+            copied_leases.append(copied.lease)
+
+        await asyncio.create_task(copied_context())
+        return "ok"
+
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="inspect", name="inspect", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    metadata = {"conversation_id": "scope-test"}
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([session]),
+        tools=[ToolSpec("inspect", "inspect", {"type": "object"}, inspect)],
+    )
+
+    assert (await harness.run("go", metadata=metadata)).text == "done"
+    scope = captured["scope"]
+    assert scope.run_metadata == metadata
+    assert scope.run_metadata is not captured["run_metadata"]
+    assert scope.tool_map is captured["tool_map"]
+    assert scope.tool_composition is captured["tool_composition"]
+    assert len(copied_leases) == 1
+    assert copied_leases[0] is scope.lease
+    assert scope.lease.active is False
+
 
 def test_hook_registry_rejects_invalid_filters() -> None:
     with pytest.raises(ValueError, match="tools filter"):
@@ -49,11 +106,12 @@ def test_hook_registry_rejects_invalid_filters() -> None:
     with pytest.raises(ValueError, match="unknown hook event"):
         Hook("unknown", lambda ctx: None)  # type: ignore[arg-type]
 
+
 def test_hook_filter_warnings_wait_for_constructor_tools(tmp_path: Path, caplog) -> None:
     hook = Hook("before_tool_call", lambda ctx: None, tools=["second"])
 
     Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([]),
         tools=[
             ToolSpec("first", "first", {"type": "object", "properties": {}}, lambda args: "first"),
@@ -63,6 +121,7 @@ def test_hook_filter_warnings_wait_for_constructor_tools(tmp_path: Path, caplog)
     )
 
     assert "unknown tool name" not in caplog.text
+
 
 def test_run_end_fires_when_new_session_fails(tmp_path: Path) -> None:
     events = []
@@ -76,7 +135,7 @@ def test_run_end_fires_when_new_session_fails(tmp_path: Path) -> None:
         events.append((ctx.stop_reason, type(ctx.error).__name__, ctx.usage.model_requests))
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=BrokenModel([]),
         hooks=[Hook("run_end", on_end)],
     )
@@ -96,7 +155,7 @@ def test_new_session_provider_error_is_wrapped_and_reported(tmp_path: Path) -> N
             raise provider_error
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=BrokenProviderModel([]),
         hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
     )
@@ -111,7 +170,7 @@ def test_new_session_provider_error_is_wrapped_and_reported(tmp_path: Path) -> N
 def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> None:
     events = []
     provider_harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([FailingSession()]),
         hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
     )
@@ -121,7 +180,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
 
     unexpected = ScriptedSession(start_turn=ModelTurn(), on_start=lambda *_args: (_ for _ in ()).throw(ValueError("boom")))
     error_harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([unexpected]),
         hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
     )
@@ -130,6 +189,7 @@ def test_run_end_fires_for_provider_and_unexpected_errors(tmp_path: Path) -> Non
         error_harness.run_sync("go")
 
     assert events == [("provider_error", "HarnessError"), ("error", "ValueError")]
+
 
 async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
     calls = 0
@@ -141,11 +201,13 @@ async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
             raise RuntimeError("end hook failed")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=True),
-        model=ScriptedModel([
-            ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
-            ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
-        ]),
+        HarnessConfig(root=tmp_path, strict_hooks=True),
+        model=ScriptedModel(
+            [
+                ScriptedSession(start_turn=ModelTurn(text="first", raw={"id": "first"})),
+                ScriptedSession(start_turn=ModelTurn(text="second", raw={"id": "second"})),
+            ]
+        ),
         hooks=[Hook("run_end", fail_once)],
     )
 
@@ -153,6 +215,7 @@ async def test_strict_run_end_hook_resets_running_flag(tmp_path: Path) -> None:
         await harness.run("first")
 
     assert (await harness.run("second")).text == "second"
+
 
 def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> None:
     captured = {}
@@ -171,7 +234,7 @@ def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> Non
         Hook("run_end", lambda ctx: events.append((ctx.event, isinstance(ctx, RunEndContext), ctx.result.usage.model_requests))),
     ]
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}), on_start=on_start)
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), hooks=hooks)
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), hooks=hooks)
 
     result = harness.run_sync("summarize")
 
@@ -180,6 +243,7 @@ def test_run_hooks_append_prompt_context_and_report_usage(tmp_path: Path) -> Non
     assert result.usage.tool_calls == 0
     assert result.stop_reason == "end_turn"
     assert events == [("run_start", True), ("run_end", True, 1)]
+
 
 def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> None:
     events = []
@@ -199,7 +263,7 @@ def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> Non
         on_start=lambda *_args: pytest.fail("model should not be called"),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         hooks=[Hook("user_prompt_submit", cancel), Hook("run_end", on_run_end)],
     )
@@ -209,10 +273,11 @@ def test_user_prompt_hook_can_cancel_before_model_request(tmp_path: Path) -> Non
 
     assert events == ["user_prompt_submit", ("run_end", "cancelled_by_hook", "HarnessError")]
 
+
 def test_same_harness_reentrant_run_is_rejected(tmp_path: Path) -> None:
     captured = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
 
@@ -225,6 +290,7 @@ def test_same_harness_reentrant_run_is_rejected(tmp_path: Path) -> None:
 
     assert harness.run_sync("outer").text == "done"
     assert captured == ["Harness.run is not re-entrant"]
+
 
 def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path) -> None:
     client = MultiCallClient([("block", "{}"), ("ok", "{}")])
@@ -243,7 +309,7 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
             ctx.output = json.dumps({"ok": True, "content": "rewritten", "metadata": {}})
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[
             ToolSpec("block", "blocked", {"type": "object", "properties": {}}, lambda args: "bad"),
@@ -266,6 +332,7 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
     assert result.usage.cancelled_tool_calls == 1
     assert len(result.tool_call_records) == 2
 
+
 def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
     seen = []
@@ -281,7 +348,7 @@ def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: P
         seen.append(("after", dict(ctx.metadata)))
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
         hooks=[Hook("before_tool_call", before), Hook("after_tool_call", after)],
@@ -293,6 +360,7 @@ def test_tool_hook_metadata_is_copied_between_before_and_after_hooks(tmp_path: P
         ("before", {"conversation_id": "conv-1", "extra": "hook-only"}),
         ("after", {"conversation_id": "conv-1", "extra": "hook-only"}),
     ]
+
 
 def test_after_tool_hooks_see_refreshed_envelope(tmp_path: Path) -> None:
     client = MultiCallClient([("ok", "{}")])
@@ -306,7 +374,7 @@ def test_after_tool_hooks_see_refreshed_envelope(tmp_path: Path) -> None:
         seen.append(ctx.envelope)
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original")],
         hooks=[Hook("after_tool_call", rewrite), Hook("after_tool_call", observe)],
@@ -326,7 +394,7 @@ def test_after_tool_hook_in_place_envelope_mutation_updates_output(tmp_path: Pat
         ctx.envelope.metadata["stage"] = 1
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=_fake_openai(client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "original")],
         hooks=[Hook("after_tool_call", rewrite)],
@@ -348,7 +416,7 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
         raise RuntimeError("after failed")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, model="openai:test-model", strict_hooks=True),
         model=_fake_openai(client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
         hooks=[Hook("after_tool_call", fail)],
@@ -357,11 +425,48 @@ def test_after_tool_hook_strict_exception_preserves_original_error(tmp_path: Pat
     with pytest.raises(RuntimeError, match="after failed"):
         harness.run_sync("go")
 
+
+@pytest.mark.parametrize("field", ["output", "envelope"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_after_tool_hook_invalid_mutation_uses_hook_error_policy(field: str, strict: bool) -> None:
+    original = ToolResult(True, "original", {"stable": True})
+
+    def mutate(ctx: AfterToolCallContext) -> None:
+        if field == "output":
+            ctx.output = "not canonical json"
+        else:
+            ctx.envelope.metadata = {"bad": Path("not-json")}
+
+    registry = HookRegistry([Hook("after_tool_call", mutate)], strict_hooks=strict)
+    ctx = AfterToolCallContext(
+        harness=None,  # type: ignore[arg-type]
+        call_id="call_1",
+        tool_name="raw",
+        arguments="{}",
+        original_output=original.to_json(),
+        output=original.to_json(),
+        envelope=original,
+        duration_ms=0,
+    )
+
+    if strict:
+        with pytest.raises(HarnessError, match="canonical output validation failed"):
+            registry.fire_after_tool_call(ctx)
+    else:
+        registry.fire_after_tool_call(ctx)
+
+    if not strict:
+        assert ctx.output == ToolResult(True, "original", {"stable": True}).to_json()
+        assert ctx.envelope == ToolResult(True, "original", {"stable": True})
+
+
 def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
     seen = []
-    registry = HookRegistry([
-        Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope)),
-    ])
+    registry = HookRegistry(
+        [
+            Hook("after_tool_call", lambda ctx: seen.append(ctx.envelope)),
+        ]
+    )
     ctx = AfterToolCallContext(
         harness=None,  # type: ignore[arg-type]
         call_id="call_1",
@@ -377,6 +482,7 @@ def test_after_tool_hook_envelope_uses_normalized_invalid_output() -> None:
 
     assert seen == [ToolResult(False, "not json", {"error_type": "InvalidToolOutput"})]
 
+
 def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}")])
 
@@ -385,7 +491,7 @@ def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path
             raise RuntimeError("strict hook failed")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, model="openai:test-model", strict_hooks=True),
         model=_fake_openai(client),
         tools=[slow_tool("a", 0.01), slow_tool("b", 0.01)],
         hooks=[Hook("before_tool_call", fail_for_b)],
@@ -393,6 +499,7 @@ def test_strict_tool_hook_exception_surfaces_from_parallel_worker(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="strict hook failed"):
         harness.run_sync("go")
+
 
 def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}")])
@@ -408,7 +515,7 @@ def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_
         run_end_usage.append((ctx.stop_reason, ctx.usage.tool_calls, ctx.usage.cancelled_tool_calls))
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, model="openai:test-model", strict_hooks=True),
         model=_fake_openai(client),
         tools=[slow_tool("a", 0.01), slow_tool("b", 0.01)],
         hooks=[Hook("before_tool_call", fail_for_a), Hook("run_end", on_run_end)],
@@ -418,6 +525,7 @@ def test_strict_tool_hook_exception_counts_attempted_calls_in_run_end_usage(tmp_
         harness.run_sync("go")
 
     assert run_end_usage == [("error", 2, 0)]
+
 
 async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path: Path) -> None:
     client = MultiCallClient([("fail", "{}"), ("wait", "{}")])
@@ -435,7 +543,7 @@ async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path
             raise RuntimeError("strict hook failed")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, model="openai:test-model", strict_hooks=True),
         model=_fake_openai(client),
         tools=[
             ToolSpec("wait", "wait", {"type": "object", "properties": {}}, wait),
@@ -450,16 +558,18 @@ async def test_strict_tool_hook_cancels_async_sibling_before_completion(tmp_path
 
     assert cancelled.is_set()
 
+
 def test_explicit_hook_registry_strict_mode_is_preserved(tmp_path: Path) -> None:
     registry = HookRegistry([Hook("user_prompt_submit", lambda ctx: (_ for _ in ()).throw(RuntimeError("strict registry")))], strict_hooks=True)
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=False),
+        HarnessConfig(root=tmp_path, strict_hooks=False),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
         hooks=registry,
     )
 
     with pytest.raises(RuntimeError, match="strict registry"):
         harness.run_sync("go")
+
 
 def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
     events = []
@@ -471,11 +581,11 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
         async def continue_with_tools(self, outputs, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
-        async def continue_with_user_text(self, text, constants, *, notices=None):
+        async def continue_with_user_content(self, text, constants, *, notices=None):
             raise HarnessError("bare harness error")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[]),
+        HarnessConfig(root=tmp_path, model="openai:test-model"),
         model=ScriptedModel([BareHarnessErrorSession()]),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
         hooks=[Hook("run_end", lambda ctx: events.append((ctx.stop_reason, type(ctx.error).__name__)))],
@@ -485,6 +595,7 @@ def test_bare_harness_error_reports_error_stop_reason(tmp_path: Path) -> None:
         harness.run_sync("go")
 
     assert events == [("error", "HarnessError")]
+
 
 def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
     client = MultiCallClient([("a", "{}"), ("b", "{}"), ("c", "{}")])
@@ -499,7 +610,7 @@ def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
         events.append((ctx.event, ctx.stop_reason, ctx.usage.tool_calls))
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], max_tool_calls=2),
+        HarnessConfig(root=tmp_path, model="openai:test-model", max_tool_calls=2),
         model=_fake_openai(client),
         tools=[slow_tool("a", 0), slow_tool("b", 0), slow_tool("c", 0)],
         hooks=[Hook("limit_reached", on_limit), Hook("run_end", on_end)],
@@ -511,16 +622,17 @@ def test_explicit_limits_fire_limit_hook_and_run_end(tmp_path: Path) -> None:
     assert events == [("limit_reached", "tool_calls", 2, 3), ("run_end", "limit_reached", 0)]
     assert client.invocations == 1
 
+
 def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> None:
     immediate = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1),
+        HarnessConfig(root=tmp_path, max_model_requests=1),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
     assert immediate.run_sync("go").usage.model_requests == 1
 
     client = MultiCallClient([("ok", "{}")])
     limited = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], max_model_requests=1),
+        HarnessConfig(root=tmp_path, model="openai:test-model", max_model_requests=1),
         model=_fake_openai(client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
     )
@@ -529,11 +641,12 @@ def test_max_model_requests_limits_provider_continuations(tmp_path: Path) -> Non
 
     allowed_client = MultiCallClient([("ok", "{}")])
     allowed = Harness(
-        HarnessConfig(root=tmp_path, model="openai:test-model", builtin_tools=[], max_model_requests=2),
+        HarnessConfig(root=tmp_path, model="openai:test-model", max_model_requests=2),
         model=_fake_openai(allowed_client),
         tools=[ToolSpec("ok", "ok", {"type": "object", "properties": {}}, lambda args: "ok")],
     )
     assert allowed.run_sync("go").usage.model_requests == 2
+
 
 def test_strict_subagent_hook_exception_surfaces_to_parent_run(tmp_path: Path) -> None:
     parent_call = ModelTurn(
@@ -546,11 +659,11 @@ def test_strict_subagent_hook_exception_surfaces_to_parent_run(tmp_path: Path) -
         raise RuntimeError("strict subagent hook failed")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, strict_hooks=True),
         model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin()],
         hooks=[Hook("before_subagent_run", fail)],
     )
-    harness.add_tool(create_subagent_tool(harness, []))
 
     with pytest.raises(RuntimeError, match="strict subagent hook failed"):
         harness.run_sync("delegate")

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from .approvals import build_approval_envelope
+from .content import ImageBlock, NormalizedContent, Prompt, redact_image_data
 from .events import (
     HarnessStreamEvent,
     LimitWarningEvent,
@@ -25,7 +26,7 @@ from .projections import (
     model_request_delta_from_tool_outputs,
     stream_tool_calls_from_assistant,
 )
-from .providers import ModelNotice, ModelSession, ModelTurn, ToolOutput
+from .providers import ModelNotice, ModelSession, ModelTurn, ProviderError, ToolOutput
 from .tracing import (
     RunTracer,
     annotate_agent_result,
@@ -166,7 +167,7 @@ class RunContext:
     """Mutable state for one harness run."""
 
     harness: Harness
-    prompt: str
+    prompt: Prompt
     metadata: Json
     usage: RunUsage
     responses: list[Json] = field(default_factory=list)
@@ -181,6 +182,20 @@ class RunContext:
     agent_span: _TraceSpan | None = None
     stream: RunStreamContext | None = None
     emitter: StreamEmitter | None = None
+    image_blocks: list[ImageBlock] = field(default_factory=list)
+
+    def set_prompt_content(self, content: NormalizedContent) -> None:
+        """Record normalized prompt images for later error redaction."""
+        self.prompt = content
+        self.image_blocks.extend(block for block in content if isinstance(block, ImageBlock))
+
+    def register_image_blocks(self, blocks: Sequence[ImageBlock]) -> None:
+        """Register known images for later error redaction."""
+        self.image_blocks.extend(blocks)
+
+    def record_tool_result_images(self, result: Any) -> None:
+        """Record tool-result images for later error redaction."""
+        self.register_image_blocks([block for block in result.blocks if isinstance(block, ImageBlock)])
 
     def stream_base(self) -> dict[str, Any]:
         """Return common event metadata for this run."""
@@ -271,7 +286,7 @@ class RunContext:
         *,
         request_kind: ModelRequestKind,
         structured_output: str | None,
-        prompt: str | None = None,
+        prompt: NormalizedContent | None = None,
         tool_outputs: list[ToolOutput] | None = None,
         output_retry: bool = False,
     ) -> tuple[ModelTurn, OutputTurnDecision]:
@@ -335,9 +350,20 @@ class RunContext:
                     self.usage.output_tokens += turn.usage.output_tokens or 0
                     self.usage.cached_tokens += turn.usage.cached_tokens or 0
             except Exception as exc:
-                model_span.record_exception(exc)
-                model_span.set_error(str(exc), type(exc).__name__)
-                raise
+                message = redact_image_data(str(exc), self.image_blocks)
+                if message == str(exc):
+                    model_span.record_exception(exc)
+                    model_span.set_error(message, type(exc).__name__)
+                    raise
+                if isinstance(exc, ProviderError):
+                    sanitized: Exception = ProviderError(message, status_code=exc.status_code)
+                else:
+                    sanitized = HarnessError(message)
+                    sanitized.__dict__["_thinharness_error_type"] = type(exc).__name__
+                sanitized.__dict__["_thinharness_sanitized"] = True
+                model_span.record_exception(sanitized)
+                model_span.set_error(message, type(exc).__name__)
+                raise sanitized from None
             model_span.for_each(
                 lambda span, option: annotate_model_span(
                     span,
@@ -401,7 +427,7 @@ class RunContext:
                 result=self.result,
                 output_schema=self.harness.output_schema,
                 capture_messages=option.capture_messages,
-                top_level=not self.harness._is_child_run,
+                top_level=not self.harness._is_child_harness,
             )
         )
         self.fire_run_end_once()
@@ -438,7 +464,7 @@ class RunContext:
                 result=self.result,
                 output_schema=self.harness.output_schema,
                 capture_messages=option.capture_messages,
-                top_level=not self.harness._is_child_run,
+                top_level=not self.harness._is_child_harness,
             )
         )
         self.attach_resume_state(active_session, require_dump_state=require_dump_state)

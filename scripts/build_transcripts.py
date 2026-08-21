@@ -10,7 +10,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 LONGMEMEVAL_MD = EXAMPLES_ROOT / "longmemeval.md"
-DEFAULT_OUTPUT = REPO_ROOT / "docs" / "site" / "examples.html"
+DEFAULT_OUTPUT = REPO_ROOT / ".html" / "example-agent-transcripts.html"
 LONG_PREVIEW_CHARS = 1200
 WEB_RESEARCH_REPORT_META = {
     "slug": "web_research_report",
@@ -74,8 +74,7 @@ def md_table(block: str) -> str:
 def render_markdown(md: str) -> str:
     """Render the LongMemEval excerpt (headings, paragraphs, one table) to HTML.
 
-    Block-level only, matching the regex-based markdown approach used in build_site.py; the
-    leading h1 gets a site-style eyebrow so it reads like the rest of the docs pages.
+    Block-level only; the leading h1 gets an eyebrow that identifies the benchmark.
     """
     out: list[str] = []
     eyebrow_done = False
@@ -375,7 +374,7 @@ def event_from_span(span: dict[str, Any], trace_rel: str, index: int, call_label
         tool_name = str(attrs.get("gen_ai.tool.name") or name.removeprefix("execute_tool "))
         args = parse_jsonish(attrs.get("gen_ai.tool.call.arguments"))
         result = tool_result_parts(attrs.get("gen_ai.tool.call.result"))
-        is_subagent = tool_name == "subagent"
+        is_subagent = attrs.get("subagent.delegation") is True
         event = {
             **base,
             "kind": "subagent" if is_subagent else "tool",
@@ -418,10 +417,10 @@ def event_from_span(span: dict[str, Any], trace_rel: str, index: int, call_label
     return event
 
 
-def load_agents() -> list[dict[str, Any]]:
+def load_agents(*, examples_root: Path = EXAMPLES_ROOT) -> list[dict[str, Any]]:
     agents: list[dict[str, Any]] = []
     audit_metadata = spec_audit_metadata()
-    for summary_path in sorted(EXAMPLES_ROOT.glob("*/outputs/run_summary.json")):
+    for summary_path in sorted(examples_root.glob("*/outputs/run_summary.json")):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         root = summary_path.parents[1]
         slug = str(summary.get("slug") or root.name)
@@ -527,13 +526,22 @@ def render_html(agents: list[dict[str, Any]], *, template_path: Path | None = No
     return template
 
 
+def write_transcripts(output: Path, *, examples_root: Path = EXAMPLES_ROOT) -> list[dict[str, Any]]:
+    """Rebuild one tracked transcript page without allowing an empty source set to blank it."""
+    agents = load_agents(examples_root=examples_root)
+    if not agents:
+        raise ValueError("no example transcript sources found; existing output was not changed")
+    rendered = render_html(agents, template_path=output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
+    return agents
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render example agent traces as readable example HTML.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
-    agents = load_agents()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(render_html(agents, template_path=args.output), encoding="utf-8")
+    agents = write_transcripts(args.output)
     print(args.output)
     print(json.dumps({"agents": [agent["slug"] for agent in agents], "count": len(agents)}, indent=2))
 

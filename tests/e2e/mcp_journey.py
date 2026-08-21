@@ -1,55 +1,97 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig, Hook, MCPServerStdio
+from thinharness import Harness, HarnessConfig, Hook, MCPPlugin, MCPServerStdio, ModelToolCall, ModelTurn, TextBlock
 
-MODEL = os.getenv("E2E_MCP_MODEL", "openrouter:anthropic/claude-sonnet-4.5")
-SYSTEM_PROMPT = """You are an MCP test agent. Use the discovered MCP tool for arithmetic."""
-PROMPT = """
-Use the MCP multiply tool to multiply 6 by 7.
-Your final answer must include "product=42" and end with MCP_DONE.
-""".strip()
+
+class DeterministicSession:
+    """Drive one MCP call without provider credentials."""
+
+    async def start(self, prompt: Any, constants: Any, **_kwargs: Any) -> ModelTurn:
+        assert prompt == (TextBlock("multiply"),)
+        assert [tool["name"] for tool in constants.tools] == ["multiply"]
+        return ModelTurn(
+            tool_calls=[ModelToolCall(id="multiply-1", name="multiply", arguments='{"left":6,"right":7}')],
+            raw={"id": "start"},
+        )
+
+    async def continue_with_tools(self, outputs: list[Any], constants: Any, **_kwargs: Any) -> ModelTurn:
+        del constants
+        assert len(outputs) == 1
+        assert "product=42" in outputs[0].output
+        return ModelTurn(text="product=42 MCP_DONE", raw={"id": "done"})
+
+    async def continue_with_user_content(self, text: str, constants: Any, **_kwargs: Any) -> ModelTurn:
+        raise AssertionError(f"unexpected user continuation: {text!r}, {constants!r}")
+
+    def dump_state(self) -> None:
+        return None
+
+
+class DeterministicModel:
+    """Return the deterministic MCP journey session."""
+
+    model = "deterministic:mcp"
+    api_key = "unused"
+    provider = SimpleNamespace(name="Deterministic")
+
+    def new_session(self) -> DeterministicSession:
+        return DeterministicSession()
 
 
 def main() -> None:
-    if _should_skip(MODEL):
+    """Run local stdio discovery, execution, and cleanup end to end."""
+    missing = _missing_mcp_dependencies()
+    if missing:
+        packages = ", ".join(missing)
+        print(f"SKIP mcp_journey missing optional dependencies: {packages}; install thinharness[mcp]")
         return
+    asyncio.run(_run())
 
+
+def _missing_mcp_dependencies() -> list[str]:
+    """Return MCP packages that are not installed."""
+    missing: list[str] = []
+    for package in ("mcp", "fastmcp"):
+        try:
+            available = importlib.util.find_spec(package) is not None
+        except (ImportError, ValueError):
+            available = False
+        if not available:
+            missing.append(package)
+    return missing
+
+
+async def _run() -> None:
     with TemporaryDirectory(prefix="thinharness-e2e-mcp-") as raw_root:
         root = Path(raw_root)
         server_path = root / "tiny_mcp_server.py"
         server_path.write_text(SERVER_CODE, encoding="utf-8")
         tool_names: list[str] = []
+        server = MCPServerStdio(sys.executable, [str(server_path)])
 
-        # Config
-        harness = Harness(
-            HarnessConfig(
-                root=root,
-                model=MODEL,
-                system_prompt=SYSTEM_PROMPT,
-                builtin_tools=[],
-                mcp_servers=[MCPServerStdio(sys.executable, [str(server_path)])],
-                max_model_requests=6,
-                max_tool_calls=3,
-            ),
+        async with Harness(
+            HarnessConfig(root=root, max_model_requests=2, max_tool_calls=1),
+            model=DeterministicModel(),
+            plugins=[MCPPlugin(servers=[server])],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
-        )
+        ) as harness:
+            assert harness.tools == []
+            result = await harness.run("multiply")
+            assert [tool.name for tool in harness.tools] == ["multiply"]
 
-        # Run
-        result = harness.run_sync(PROMPT)
-
-        # Assertions
-        assert tool_names == ["multiply"], f"expected MCP multiply call; saw {tool_names}"
-        assert "product=42" in result.text
-        assert "MCP_DONE" in result.text
-        print(f"PASS mcp_journey model={MODEL} tools={tool_names}")
+        assert tool_names == ["multiply"]
+        assert result.text == "product=42 MCP_DONE"
+        print(f"PASS mcp_journey tools={tool_names} server={server.id}")
 
 
 SERVER_CODE = """
@@ -68,21 +110,6 @@ def multiply(left: int, right: int) -> str:
 if __name__ == "__main__":
     mcp.run()
 """.lstrip()
-
-
-def _should_skip(model: str) -> bool:
-    if os.getenv("CI"):
-        print("SKIP mcp_journey: CI is set")
-        return True
-    if importlib.util.find_spec("mcp") is None or importlib.util.find_spec("fastmcp") is None:
-        print("SKIP mcp_journey: install MCP support with `uv sync --extra mcp`")
-        return True
-    provider = model.split(":", 1)[0]
-    env_name = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}[provider]
-    if not os.getenv(env_name):
-        print(f"SKIP mcp_journey: {env_name} is not set")
-        return True
-    return False
 
 
 if __name__ == "__main__":

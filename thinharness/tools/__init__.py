@@ -2,27 +2,24 @@
 
 from .base import (
     Json,
-    McpToolInfo,
     ModelRetry,
     PathPolicy,
     PathValidationError,
     ToolEnvelope,
+    ToolOrigin,
     ToolResult,
     ToolSpec,
     call_tool,
     contained_path,
 )
-from .bash import BashArgs, BashTool
-from .filesystem import FileTools, builtin_tools
+from .filesystem import FileTools
 from .jsonl import JsonlFieldSearch, JsonlSearch, JsonlSearchArgs, JsonlWhereFilter
 from .mcp import MCPDependencyError, MCPError, MCPServer, MCPServerSSE, MCPServerStdio, MCPServerStreamableHTTP
-from .parallel_llm import FilePromptSource, InlinePromptSource, ParallelLlmArgs, ParallelLlmTool, create_parallel_llm_tool
+from .parallel_llm import FilePromptSource, InlinePromptSource, ParallelLlmArgs, ParallelLlmTool
 from .skills import Skill, SkillRegistry
 
 __all__ = [
     "FileTools",
-    "BashArgs",
-    "BashTool",
     "Json",
     "JsonlSearch",
     "JsonlSearchArgs",
@@ -35,10 +32,10 @@ __all__ = [
     "MCPServerStdio",
     "MCPServerStreamableHTTP",
     "ModelRetry",
-    "McpToolInfo",
     "PathPolicy",
     "PathValidationError",
     "ToolEnvelope",
+    "ToolOrigin",
     "FilePromptSource",
     "InlinePromptSource",
     "ParallelLlmArgs",
@@ -47,8 +44,6 @@ __all__ = [
     "SkillRegistry",
     "ToolResult",
     "ToolSpec",
-    "builtin_tools",
     "call_tool",
     "contained_path",
-    "create_parallel_llm_tool",
 ]

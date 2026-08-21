@@ -15,19 +15,26 @@ from pydantic import BaseModel
 
 from thinharness import (
     ApprovalDecision,
+    FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
     Hook,
+    ImageBlock,
     MCPError,
+    MCPPlugin,
     MCPServer,
     MCPServerSSE,
     MCPServerStdio,
     MCPServerStreamableHTTP,
     ModelTurn,
+    PluginBinding,
+    PluginContribution,
     SubAgentConfig,
+    SubagentsPlugin,
+    TextBlock,
+    ToolOrigin,
     TracingOptions,
-    build_child_harness,
 )
 from thinharness.providers import ModelToolCall, ToolOutput
 from thinharness.tools.base import Json, ToolResult, ToolSpec
@@ -64,10 +71,10 @@ class ObservedMCPServer(MCPServer):
         self.exited += 1
         return await super().__aexit__(*exc)
 
-    async def list_tools(self) -> list[ToolSpec]:
+    async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
         """Count discovery calls."""
         self.list_calls += 1
-        return await super().list_tools()
+        return await super().list_tools(server_id=server_id)
 
 
 def _lifespan_tracker() -> tuple[Any, dict[str, int]]:
@@ -87,6 +94,7 @@ def _lifespan_tracker() -> tuple[Any, dict[str, int]]:
 
 def _echo_handler(tool_name: str, records: list[tuple[str, Json]]) -> Any:
     """Build a recording echo tool function for an in-process backend."""
+
     def handler(value: str = "") -> str:
         records.append((tool_name, {"value": value}))
         return f"{tool_name}:{value}"
@@ -117,10 +125,7 @@ def _script_key(backend: Any) -> int:
 async def _scripted_list_tools(self: Any, max_pages: int = 250) -> list[Any]:
     """Return the scripted tool declarations for this client's backend."""
     script = _SCRIPTS[_script_key(self.transport.server)]
-    return [
-        SimpleNamespace(name=name, description=f"{name} tool", inputSchema=schema)
-        for name, schema in script["schemas"].items()
-    ]
+    return [SimpleNamespace(name=name, description=f"{name} tool", inputSchema=schema) for name, schema in script["schemas"].items()]
 
 
 async def _scripted_call_tool_mcp(self: Any, name: str, arguments: dict[str, Any], **_kwargs: Any) -> Any:
@@ -163,8 +168,9 @@ def scripted_server(
 class FailingListServer(ObservedMCPServer):
     """Server double whose discovery fails after entering the context."""
 
-    async def list_tools(self) -> list[ToolSpec]:
+    async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
         """Fail discovery after entering the context."""
+        del server_id
         async with self:
             raise MCPError("list failed")
 
@@ -192,7 +198,7 @@ class SequenceSession:
             raise AssertionError("unexpected tool continuation")
         return self.continue_turns.pop(0)
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Return the scripted turn for a resumed prompt; no tests expect corrections."""
         if self.requests_made:
             raise AssertionError("unexpected user-text correction")
@@ -388,7 +394,7 @@ async def test_structured_content_wins_over_blocks(monkeypatch) -> None:
     ("block_builder", "expected"),
     [
         pytest.param(lambda types: types.TextContent(type="text", text="plain"), "plain", id="text"),
-        pytest.param(lambda types: types.ImageContent(type="image", data="aGk=", mimeType="image/png"), "[image: image/png]", id="image"),
+        pytest.param(lambda types: types.ImageContent(type="image", data="aGk=", mimeType="image/png"), (ImageBlock(b"hi", "image/png"),), id="image"),
         pytest.param(lambda types: types.AudioContent(type="audio", data="aGk=", mimeType="audio/wav"), "[audio: audio/wav]", id="audio"),
         pytest.param(
             lambda types: types.EmbeddedResource(
@@ -405,7 +411,7 @@ async def test_structured_content_wins_over_blocks(monkeypatch) -> None:
         ),
     ],
 )
-async def test_content_block_conversion(monkeypatch, block_builder, expected: str) -> None:
+async def test_content_block_conversion(monkeypatch, block_builder, expected: str | tuple[ImageBlock, ...]) -> None:
     """Each supported MCP content block keeps its text conversion."""
     from mcp import types
 
@@ -438,7 +444,12 @@ async def test_mixed_content_blocks_preserve_order(monkeypatch) -> None:
 
     result = await server.call_tool("mixed", {})
 
-    assert result.content == "first\n[image: image/png]\n[resource: file:///data.bin]\nlast"
+    assert result.content == (
+        TextBlock("first"),
+        ImageBlock(b"hi", "image/png"),
+        TextBlock("[resource: file:///data.bin]"),
+        TextBlock("last"),
+    )
 
 
 async def test_tool_error_with_structured_content_stays_error_text(monkeypatch) -> None:
@@ -515,12 +526,12 @@ async def test_generic_default_id_collision_suffix(tmp_path) -> None:
 
     first = MCPServer(FastMCPTransport(make_backend("one")))
     second = MCPServer(FastMCPTransport(make_backend("two")))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[first, second]), model=_fake_openai(MultiCallClient([])))
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[first, second])], model=_fake_openai(MultiCallClient([])))
 
     await harness.connect()
     await harness.aclose()
 
-    metadata = {tool.name: tool.mcp.server_id for tool in harness.tools if tool.mcp is not None}
+    metadata = {tool.name: tool.origin.source for tool in harness.tools if tool.origin is not None}
     assert metadata == {"one": "FastMCPTransport", "two": "FastMCPTransport-2"}
 
 
@@ -579,7 +590,8 @@ async def test_semley_shaped_inprocess_harness_integration(tmp_path) -> None:
     backend.tool(hidden)
     server = MCPServer(FastMCPTransport(backend), id="semley", include_tools=["step", "reset_session"])
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=_fake_openai(MultiCallClient([("step", '{"action":"go"}')])),
     )
 
@@ -896,8 +908,9 @@ async def test_harness_connects_mcp_once_across_async_runs(tmp_path, monkeypatch
     """Harness runs reuse the discovered MCP tools until aclose."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
     client = MultiCallClient([("remote", '{"value":"ok"}')])
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=_fake_openai(client))
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[server])], model=_fake_openai(client))
 
+    assert harness.tools == []
     result = await harness.run("go")
     second = await harness.run("done")
     await harness.aclose()
@@ -910,11 +923,85 @@ async def test_harness_connects_mcp_once_across_async_runs(tmp_path, monkeypatch
     assert server.call_records == [("remote", {"value": "ok"})]
 
 
+def test_mcp_plugin_validates_server_collection() -> None:
+    """MCP server configuration is ordered, typed, and unique by identity."""
+    server = MCPServerStdio("unused")
+
+    with pytest.raises(TypeError, match="ordered sequence"):
+        MCPPlugin(servers={server})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="only MCPServer"):
+        MCPPlugin(servers=[object()])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="same server object"):
+        MCPPlugin(servers=[server, server])
+
+
+def test_mcp_plugin_name_is_fixed() -> None:
+    """Instances and classes cannot replace or remove the MCP plugin name."""
+    plugin = MCPPlugin(servers=[])
+
+    assert plugin.name == "mcp"
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin.name = "renamed"
+    assert plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        MCPPlugin.name = "renamed"
+    assert plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        del MCPPlugin.name
+    assert plugin.name == "mcp"
+
+    with pytest.raises(TypeError, match="cannot override"):
+        type("RenamedMCPPlugin", (MCPPlugin,), {"name": "renamed"})
+    assert plugin.name == "mcp"
+
+    class CustomMCPPlugin(MCPPlugin):
+        pass
+
+    custom_plugin = CustomMCPPlugin(servers=[])
+    with pytest.raises(AttributeError, match="fixed"):
+        CustomMCPPlugin.name = "renamed"
+    assert custom_plugin.name == "mcp"
+
+    with pytest.raises(AttributeError, match="fixed"):
+        del CustomMCPPlugin.name
+    assert custom_plugin.name == "mcp"
+
+
+def test_mcp_plugin_name_is_unique_and_config_path_is_removed(tmp_path, monkeypatch) -> None:
+    """One fixed-name MCP plugin is allowed and the old config path is rejected."""
+    first = scripted_server(monkeypatch, {"first": _schema()})
+    second = scripted_server(monkeypatch, {"second": _schema()})
+
+    with pytest.raises(ValueError, match="duplicate plugin name: mcp"):
+        Harness(
+            HarnessConfig(root=tmp_path),
+            plugins=[MCPPlugin(servers=[first]), MCPPlugin(servers=[second])],
+            model=ScriptedModel([]),
+        )
+    assert "mcp_servers" not in HarnessConfig.model_fields
+
+
+async def test_empty_mcp_plugin_connects_without_tools(tmp_path) -> None:
+    """An empty MCP plugin is a valid connected contribution."""
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[])],
+        model=ScriptedModel([]),
+    )
+
+    await harness.connect()
+    assert harness.tools == []
+    await harness.aclose()
+
+
 async def test_explicit_connect_does_not_reconnect_on_run(tmp_path, monkeypatch) -> None:
     """Explicit connect discovers MCP tools once before run."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=_fake_openai(MultiCallClient([])))
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[server])], model=_fake_openai(MultiCallClient([])))
 
+    await harness.connect()
     await harness.connect()
     result = await harness.run("go")
     await harness.aclose()
@@ -935,7 +1022,8 @@ async def test_is_error_drives_harness_retry(tmp_path, monkeypatch) -> None:
         ModelTurn(tool_calls=[ModelToolCall(id="call_2", name="error", arguments="{}")], raw={"id": "retry"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server], tool_retries=1),
+        HarnessConfig(root=tmp_path, tool_retries=1),
+        plugins=[MCPPlugin(servers=[server])],
         model=ScriptedModel([session]),
         hooks=[Hook("run_end", lambda ctx: run_end.append((ctx.stop_reason, dict(ctx.usage.tool_retries))))],
     )
@@ -949,15 +1037,149 @@ async def test_is_error_drives_harness_retry(tmp_path, monkeypatch) -> None:
     assert run_end == [("tool_retries_exceeded", {"error": 2})]
 
 
-async def test_partial_connect_failure_cleans_up(tmp_path, monkeypatch) -> None:
-    """A later MCP discovery failure closes earlier entered servers."""
-    first = scripted_server(monkeypatch, {"ok": _schema()})
-    second = FailingListServer(FastMCPTransport(FastMCP("failing-backend")), id="failing")
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[first, second]), model=_fake_openai(MultiCallClient([])))
+async def test_failed_second_server_entry_rolls_back_and_retries(tmp_path, monkeypatch) -> None:
+    """A second-server entry failure closes the first and leaves no contribution."""
+    first = scripted_server(monkeypatch, {"first": _schema()}, id="first")
+
+    class FailOnceEnterServer(ObservedMCPServer):
+        async def __aenter__(self) -> MCPServer:
+            """Fail the first outer entry, then use the normal wrapper."""
+            self.entered += 1
+            if self.entered == 1:
+                raise MCPError("entry failed")
+            return await MCPServer.__aenter__(self)
+
+    scripted_second = scripted_server(monkeypatch, {"second": _schema()}, id="second")
+    second = FailOnceEnterServer(scripted_second._transport, id="second")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[first, second])],
+        model=ScriptedModel([]),
+    )
+
+    with pytest.raises(MCPError, match="entry failed"):
+        await harness.connect()
+    assert harness.tools == []
+    assert first.exited == 2
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["first", "second"]
+    await harness.aclose()
+
+
+async def test_partial_connect_failure_cleans_up(tmp_path) -> None:
+    """A later discovery failure closes earlier servers and permits retry."""
+    first = observed_server("ok")
+
+    class FailOnceListServer(ObservedMCPServer):
+        def __init__(self, transport: Any, **kwargs: Any) -> None:
+            super().__init__(transport, **kwargs)
+            self.attempts = 0
+
+        async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
+            self.attempts += 1
+            if self.attempts == 1:
+                async with self:
+                    raise MCPError("list failed")
+            return await super().list_tools(server_id=server_id)
+
+    backend = FastMCP("failing-backend")
+    backend.tool(_echo_handler("recovered", []), name="recovered")
+    second = FailOnceListServer(FastMCPTransport(backend), id="failing")
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[first, second])], model=_fake_openai(MultiCallClient([])))
 
     with pytest.raises(MCPError, match="list failed"):
         await harness.connect()
 
+    assert harness.tools == []
+    assert first.exited == 2
+    assert second.exited == 2
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["ok", "recovered"]
+    await harness.aclose()
+
+
+async def test_cancellation_during_failed_discovery_cleanup_propagates_and_retries(tmp_path) -> None:
+    """Caller cancellation during failed discovery cleanup wins after cleanup."""
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class FailingDiscoverySlowCleanupServer(ObservedMCPServer):
+        def __init__(self, transport: Any, **kwargs: Any) -> None:
+            super().__init__(transport, **kwargs)
+            self.attempts = 0
+            self.block_cleanup = True
+
+        async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise MCPError("discovery failed")
+            return await super().list_tools(server_id=server_id)
+
+        async def __aexit__(self, *exc: object) -> None:
+            if self.block_cleanup:
+                self.block_cleanup = False
+                cleanup_started.set()
+                await release_cleanup.wait()
+            await super().__aexit__(*exc)
+
+    backend = FastMCP("failed-discovery-slow-cleanup")
+    backend.tool(_echo_handler("recovered", []), name="recovered")
+    server = FailingDiscoverySlowCleanupServer(FastMCPTransport(backend), id="slow-cleanup")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
+        model=ScriptedModel([]),
+    )
+    connecting = asyncio.create_task(harness.connect())
+    await cleanup_started.wait()
+
+    connecting.cancel()
+    await asyncio.sleep(0)
+    assert not connecting.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert harness.tools == []
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["recovered"]
+    await harness.aclose()
+
+
+async def test_direct_tool_collision_rolls_back_mcp(tmp_path, monkeypatch) -> None:
+    """Discovered MCP tools collide atomically with direct tools."""
+    server = scripted_server(monkeypatch, {"shared": _schema()})
+    direct = ToolSpec("shared", "Direct", _schema(), lambda _args: "direct")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
+        tools=[direct],
+        model=ScriptedModel([]),
+    )
+
+    with pytest.raises(ValueError, match=r"duplicate tool name: shared \(direct and mcp\)"):
+        await harness.connect()
+
+    assert harness.tools == [direct]
+    assert server.exited == 2
+
+
+async def test_mcp_server_tool_collision_rolls_back_all_servers(tmp_path, monkeypatch) -> None:
+    """Duplicate tools from different MCP servers install no contribution."""
+    first = scripted_server(monkeypatch, {"shared": _schema()}, id="first")
+    second = scripted_server(monkeypatch, {"shared": _schema()}, id="second")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[first, second])],
+        model=ScriptedModel([]),
+    )
+
+    with pytest.raises(ValueError, match=r"duplicate tool name: shared \(mcp and mcp\)"):
+        await harness.connect()
+
+    assert harness.tools == []
     assert first.exited == 2
     assert second.exited == 2
 
@@ -966,9 +1188,13 @@ async def test_mcp_collision_detected_before_model_request(tmp_path, monkeypatch
     """MCP names collide with existing tools during connect."""
     server = scripted_server(monkeypatch, {"read": _schema()})
     client = MultiCallClient([])
-    harness = Harness(HarnessConfig(root=tmp_path, mcp_servers=[server]), model=_fake_openai(client))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=_fake_openai(client),
+        plugins=[FilesystemPlugin(tools=["read"]), MCPPlugin(servers=[server])],
+    )
 
-    with pytest.raises(HarnessError, match="tool name collision"):
+    with pytest.raises(ValueError, match="duplicate tool name: read"):
         await harness.run("go")
     assert client.payloads == []
     assert server.exited == 2
@@ -976,6 +1202,7 @@ async def test_mcp_collision_detected_before_model_request(tmp_path, monkeypatch
 
 async def test_final_result_mcp_collision_detected(tmp_path, monkeypatch) -> None:
     """MCP tools also collide with synthetic structured-output tools."""
+
     class Answer(BaseModel):
         """Structured output type."""
 
@@ -983,11 +1210,12 @@ async def test_final_result_mcp_collision_detected(tmp_path, monkeypatch) -> Non
 
     server = scripted_server(monkeypatch, {"final_result": _schema()})
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Answer, output_mode="tool", mcp_servers=[server]),
+        HarnessConfig(root=tmp_path, output_type=Answer, output_mode="tool"),
+        plugins=[MCPPlugin(servers=[server])],
         model=_fake_openai(MultiCallClient([])),
     )
 
-    with pytest.raises(HarnessError, match="tool name collision"):
+    with pytest.raises(ValueError, match="reserved for structured output"):
         await harness.connect()
 
 
@@ -995,19 +1223,174 @@ async def test_duplicate_derived_id_disambiguated(tmp_path, monkeypatch) -> None
     """Duplicate MCP server ids get readable suffixes."""
     first = scripted_server(monkeypatch, {"one": _schema()}, id="same")
     second = scripted_server(monkeypatch, {"two": _schema()}, id="same")
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[first, second]), model=_fake_openai(MultiCallClient([])))
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[first, second])], model=_fake_openai(MultiCallClient([])))
 
     await harness.connect()
     await harness.aclose()
 
-    metadata = {tool.name: tool.mcp.server_id for tool in harness.tools if tool.mcp is not None}
-    assert metadata == {"one": "same", "two": "same-2"}
+    metadata = {tool.name: tool.origin for tool in harness.tools if tool.origin is not None}
+    assert metadata == {
+        "one": ToolOrigin(plugin="mcp", source="same", attributes={"tool_name": "one"}),
+        "two": ToolOrigin(plugin="mcp", source="same-2", attributes={"tool_name": "two"}),
+    }
+
+
+async def test_binding_local_ids_stay_stable_for_shared_server(tmp_path, monkeypatch) -> None:
+    """One shared wrapper gets independent ids, handlers, and trace attribution."""
+    shared = scripted_server(monkeypatch, {"shared": _schema()}, id="same")
+    first_neighbor = scripted_server(monkeypatch, {"first_neighbor": _schema()}, id="same")
+    second_neighbor = scripted_server(monkeypatch, {"second_neighbor": _schema()}, id="same")
+    first_tracer = FakeTracer()
+    second_tracer = FakeTracer()
+    first = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[shared, first_neighbor])],
+        model=_fake_openai(MultiCallClient([("shared", '{"value":"first"}')])),
+        tracing=[TracingOptions(tracer=first_tracer)],
+    )
+    second = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[second_neighbor, shared])],
+        model=_fake_openai(MultiCallClient([("shared", '{"value":"second"}')])),
+        tracing=[TracingOptions(tracer=second_tracer)],
+    )
+
+    assert shared.id == "same"
+    await first.connect()
+    await second.connect()
+    first_tool = next(tool for tool in first.tools if tool.name == "shared")
+    second_tool = next(tool for tool in second.tools if tool.name == "shared")
+    first_result = await first_tool.handler({"value": "direct-first"})
+    second_result = await second_tool.handler({"value": "direct-second"})
+
+    assert first_tool.origin == ToolOrigin(plugin="mcp", source="same", attributes={"tool_name": "shared"})
+    assert second_tool.origin == ToolOrigin(plugin="mcp", source="same-2", attributes={"tool_name": "shared"})
+    assert first_result.metadata["mcp_server_id"] == "same"
+    assert second_result.metadata["mcp_server_id"] == "same-2"
+    assert shared.id == "same"
+
+    await first.run("first")
+    await second.run("second")
+    first_span = next(span for span in first_tracer.spans if span.name == "execute_tool shared")
+    second_span = next(span for span in second_tracer.spans if span.name == "execute_tool shared")
+    assert first_span.attributes["mcp.server.id"] == "same"
+    assert second_span.attributes["mcp.server.id"] == "same-2"
+    await second.aclose()
+    await first.aclose()
+
+
+async def test_mcp_connect_cancellation_rolls_back_and_retries(tmp_path) -> None:
+    """Cancellation during discovery closes the server and leaves a clean retry."""
+    entered_discovery = asyncio.Event()
+
+    class CancelOnceListServer(ObservedMCPServer):
+        def __init__(self, transport: Any, **kwargs: Any) -> None:
+            super().__init__(transport, **kwargs)
+            self.attempts = 0
+
+        async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
+            self.attempts += 1
+            if self.attempts == 1:
+                entered_discovery.set()
+                await asyncio.Event().wait()
+            return await MCPServer.list_tools(self, server_id=server_id)
+
+    backend = FastMCP("cancel-discovery")
+    backend.tool(_echo_handler("remote", []), name="remote")
+    server = CancelOnceListServer(FastMCPTransport(backend), id="cancel")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
+        model=ScriptedModel([]),
+    )
+    connecting = asyncio.create_task(harness.connect())
+    await entered_discovery.wait()
+
+    connecting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert harness.tools == []
+    assert server.exited == 1
+
+    await harness.connect()
+    assert [tool.name for tool in harness.tools] == ["remote"]
+    await harness.aclose()
+
+
+async def test_mcp_plugin_close_cancellation_propagates(tmp_path) -> None:
+    """Cancellation during harness close propagates after MCP cleanup."""
+
+    @asynccontextmanager
+    async def slow_stop(server: Any):
+        try:
+            yield {}
+        finally:
+            await asyncio.sleep(1)
+
+    backend = FastMCP("plugin-slow-stop", lifespan=slow_stop)
+    backend.tool(_echo_handler("remote", []), name="remote")
+    server = MCPServer(FastMCPTransport(backend), id="slow-stop")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
+        model=ScriptedModel([]),
+    )
+    await harness.connect()
+    closing = asyncio.create_task(harness.aclose())
+    await asyncio.sleep(0.1)
+
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert harness._closed is True
+    async with server:
+        result = await server.call_tool("remote", {"value": "reused"})
+    assert result.ok is True
+
+
+async def test_mcp_and_other_plugins_close_in_reverse_order(tmp_path) -> None:
+    """Generic plugin order controls MCP cleanup with no core special case."""
+    events: list[str] = []
+
+    class LoggingServer(ObservedMCPServer):
+        async def __aexit__(self, *exc: object) -> None:
+            events.append("mcp")
+            await super().__aexit__(*exc)
+
+    class OtherPlugin:
+        name = "other"
+
+        def bind(self, context) -> PluginBinding:
+            @asynccontextmanager
+            async def connect():
+                try:
+                    yield PluginContribution()
+                finally:
+                    events.append("other")
+
+            return PluginBinding(connect=connect)
+
+    backend = FastMCP("close-order")
+    backend.tool(_echo_handler("remote", []), name="remote")
+    server = LoggingServer(FastMCPTransport(backend), id="close-order")
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server]), OtherPlugin()],
+        model=ScriptedModel([]),
+    )
+
+    await harness.connect()
+    events.clear()
+    await harness.aclose()
+
+    assert events == ["other", "mcp"]
 
 
 async def test_closed_harness_rejects_run_and_connect_but_keeps_schema(tmp_path, monkeypatch) -> None:
     """Closed harnesses are terminal but still inspectable."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=_fake_openai(MultiCallClient([])))
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[server])], model=_fake_openai(MultiCallClient([])))
 
     await harness.connect()
     await harness.aclose()
@@ -1023,7 +1406,7 @@ async def test_closed_harness_rejects_run_and_connect_but_keeps_schema(tmp_path,
 def test_run_sync_is_one_shot(tmp_path) -> None:
     """run_sync closes the harness after one call."""
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
 
@@ -1036,7 +1419,7 @@ async def test_aclose_with_injected_model_closes_mcp(tmp_path, monkeypatch) -> N
     """Harness-owned MCP resources close even when the model is injected."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
     model = _fake_openai(MultiCallClient([]))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=model)
+    harness = Harness(HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[server])], model=model)
 
     await harness.connect()
     await harness.aclose()
@@ -1048,7 +1431,7 @@ async def test_unknown_tool_hook_filter_is_allowed_and_never_fires(tmp_path) -> 
     """Tool hook filters are passive when a tool name is never registered."""
     seen = []
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=_fake_openai(MultiCallClient([])),
         hooks=[Hook("before_tool_call", lambda ctx: seen.append(ctx.tool_name), tools=["missing"])],
     )
@@ -1058,139 +1441,68 @@ async def test_unknown_tool_hook_filter_is_allowed_and_never_fires(tmp_path) -> 
     assert seen == []
 
 
-def test_default_subagent_does_not_implicitly_inherit_mcp(tmp_path, monkeypatch) -> None:
-    """MCP inheritance for child harnesses is explicit."""
+async def test_default_child_does_not_inherit_parent_mcp(tmp_path, monkeypatch) -> None:
+    """A default child receives no parent MCP binding."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=ScriptedModel([]))
+    seen = {}
 
-    child = build_child_harness(parent, None)
+    def child_start(_prompt, _instructions, tools, _metadata, _previous_response_id):
+        seen["tools"] = [tool["name"] for tool in tools]
 
-    assert child.config.mcp_servers == []
-
-
-def test_subagent_empty_fails_validation() -> None:
-    """Named subagents must still expose some tool source."""
-    with pytest.raises(ValueError, match="named subagents"):
-        SubAgentConfig(name="empty", description="Empty helper.")
-
-
-def test_subagent_mcp_override_and_union_config(tmp_path, monkeypatch) -> None:
-    """Child config encodes MCP override and union semantics."""
-    parent_server = scripted_server(monkeypatch, {"parent": _schema()})
-    child_server = scripted_server(monkeypatch, {"child": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[parent_server]), model=ScriptedModel([]))
-
-    override = build_child_harness(parent, SubAgentConfig(name="override", description="Override helper.", mcp_servers=[child_server]))
-    union = build_child_harness(parent, SubAgentConfig(
-        name="union",
-        description="Union helper.",
-        inherit_mcp_servers=True,
-        mcp_servers=[parent_server, child_server],
-    ))
-
-    assert override.config.mcp_servers == [child_server]
-    assert union.config.mcp_servers == [parent_server, child_server]
-
-
-async def test_subagent_overrides_mcp_only_runtime(tmp_path, monkeypatch) -> None:
-    """An override-only child sees explicit MCP servers but not parent MCP servers."""
-    parent_server = scripted_server(monkeypatch, {"parent": _schema()})
-    child_server = scripted_server(monkeypatch, {"child": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[parent_server]), model=ScriptedModel([]))
-
-    child = build_child_harness(parent, SubAgentConfig(name="override", description="Override helper.", mcp_servers=[child_server]))
-    await child.connect()
-    await child.aclose()
-
-    assert [tool.name for tool in child.tools] == ["child"]
-
-
-async def test_subagent_unions_inherit_plus_override_runtime(tmp_path, monkeypatch) -> None:
-    """An inherited-plus-override child sees both MCP tool sets."""
-    parent_server = scripted_server(monkeypatch, {"parent": _schema()})
-    child_server = scripted_server(monkeypatch, {"child": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[parent_server]), model=ScriptedModel([]))
-
-    child = build_child_harness(parent, SubAgentConfig(
-        name="union",
-        description="Union helper.",
-        inherit_mcp_servers=True,
-        mcp_servers=[child_server],
-    ))
-    await child.connect()
-    await child.aclose()
-
-    assert [tool.name for tool in child.tools] == ["parent", "child"]
-
-
-async def test_subagent_identity_dedup_runtime(tmp_path, monkeypatch) -> None:
-    """The same inherited and explicit MCP object is entered once in a child."""
-    server = scripted_server(monkeypatch, {"remote": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=ScriptedModel([]))
-
-    child = build_child_harness(parent, SubAgentConfig(
-        name="dedup",
-        description="Dedup helper.",
-        inherit_mcp_servers=True,
-        mcp_servers=[server],
-    ))
-    await child.connect()
-    await child.aclose()
-
-    assert [tool.name for tool in child.tools] == ["remote"]
-    assert child.config.mcp_servers == [server]
-
-
-async def test_subagent_id_equal_but_distinct_collides(tmp_path, monkeypatch) -> None:
-    """Distinct MCP objects with identical tools collide in child connect."""
-    first = scripted_server(monkeypatch, {"remote": _schema()}, id="same")
-    second = scripted_server(monkeypatch, {"remote": _schema()}, id="same")
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[first]), model=ScriptedModel([]))
-    child = build_child_harness(parent, SubAgentConfig(
-        name="child",
-        description="Child helper.",
-        inherit_mcp_servers=True,
-        mcp_servers=[second],
-    ))
-
-    with pytest.raises(HarnessError, match="tool name collision"):
-        await child.connect()
-
-
-async def test_subagent_inherited_parent_tools_skip_mcp_duplicates(tmp_path, monkeypatch) -> None:
-    """Parent MCP tools are not copied as custom tools when also inherited as MCP."""
-    server = scripted_server(monkeypatch, {"remote": _schema()})
-    parent = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=ScriptedModel([]))
-    await parent.connect()
-
-    child = build_child_harness(parent, SubAgentConfig(
-        name="child",
-        description="Child helper.",
-        inherit_parent_tools=True,
-        inherit_mcp_servers=True,
-    ))
-    await child.connect()
-    await child.aclose()
-    await parent.aclose()
-
-    assert [tool.name for tool in child.tools] == ["remote"]
-
-
-async def test_subagent_mcp_only_validates_and_inherits(tmp_path, monkeypatch) -> None:
-    """A named subagent can get its only tools from inherited MCP servers."""
-    server = scripted_server(monkeypatch, {"remote": _schema()})
-    config = SubAgentConfig(name="mcp", description="MCP helper.", inherit_mcp_servers=True)
-    parent_client = MultiCallClient([("subagent", '{"task":"use remote","agent":"mcp"}')])
+    parent_session = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="delegate", name="subagent", arguments='{"task":"help"}')],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    child_session = ScriptedSession(
+        start_turn=ModelTurn(text="child", raw={}),
+        on_start=child_start,
+    )
     parent = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=["subagent"], mcp_servers=[server], subagents=[config]),
-        model=_fake_openai(parent_client),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server]), SubagentsPlugin()],
+        model=ScriptedModel([parent_session, child_session]),
     )
 
-    result = await parent.run("delegate")
+    assert (await parent.run("delegate")).text == "done"
     await parent.aclose()
+    assert seen["tools"] == []
 
-    assert result.text == "done"
-    assert server.list_calls == 2
+
+async def test_named_child_uses_explicit_mcp_plugin(tmp_path, monkeypatch) -> None:
+    """A named child connects and closes its explicit MCP binding."""
+    parent_server = scripted_server(monkeypatch, {"parent": _schema()})
+    child_server = scripted_server(monkeypatch, {"child": _schema()})
+    seen_tools: list[list[str]] = []
+    config = SubAgentConfig(
+        name="mcp",
+        description="MCP helper.",
+        plugins=[MCPPlugin(servers=[child_server])],
+    )
+    parent_session = ScriptedSession(
+        start_turn=ModelTurn(
+            tool_calls=[ModelToolCall(id="delegate", name="subagent", arguments='{"task":"help","agent":"mcp"}')],
+            raw={},
+        ),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    child_session = ScriptedSession(start_turn=ModelTurn(text="child", raw={}))
+    parent = Harness(
+        HarnessConfig(root=tmp_path),
+        plugins=[
+            MCPPlugin(servers=[parent_server]),
+            SubagentsPlugin(agents=[config]),
+        ],
+        model=ScriptedModel([parent_session, child_session]),
+        hooks=[Hook("after_subagent_run", lambda ctx: seen_tools.append(ctx.tools), agents=["mcp"])],
+    )
+
+    assert (await parent.run("delegate")).text == "done"
+    await parent.aclose()
+    assert seen_tools == [["child"]]
+    assert child_server.exited == 2
 
 
 async def test_run_teardown_after_tool_exception_closes_mcp(tmp_path, monkeypatch) -> None:
@@ -1201,7 +1513,8 @@ async def test_run_teardown_after_tool_exception_closes_mcp(tmp_path, monkeypatc
         raise RuntimeError("boom")
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=_fake_openai(MultiCallClient([("boom", "{}")])),
         tools=[ToolSpec("boom", "Boom", {"type": "object", "properties": {}}, boom)],
     )
@@ -1222,7 +1535,8 @@ async def test_run_teardown_after_cancellation_closes_mcp(tmp_path, monkeypatch)
         await asyncio.sleep(60)
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=_fake_openai(MultiCallClient([("slow", "{}")])),
         tools=[ToolSpec("slow", "Slow", {"type": "object", "properties": {}}, slow)],
     )
@@ -1236,29 +1550,14 @@ async def test_run_teardown_after_cancellation_closes_mcp(tmp_path, monkeypatch)
     assert server.exited == 2
 
 
-async def test_subagent_effective_tools_include_mcp(tmp_path, monkeypatch) -> None:
-    """After-subagent hooks observe MCP-discovered child tools."""
-    seen_tools: list[list[str]] = []
-    server = scripted_server(monkeypatch, {"remote": _schema()})
-    config = SubAgentConfig(name="mcp", description="MCP helper.", inherit_mcp_servers=True)
-    parent = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=["subagent"], mcp_servers=[server], subagents=[config]),
-        model=_fake_openai(MultiCallClient([("subagent", '{"task":"use remote","agent":"mcp"}')])),
-        hooks=[Hook("after_subagent_run", lambda ctx: seen_tools.append(ctx.tools), agents=["mcp"])],
-    )
-
-    await parent.run("delegate")
-    await parent.aclose()
-
-    assert seen_tools == [["remote"]]
-
-
 async def test_resume_with_mcp_reuses_connection_and_keeps_state_clean(tmp_path, monkeypatch) -> None:
     """MCP tools are harness-local and not serialized into resume state."""
     server = scripted_server(monkeypatch, {"remote": _schema()})
     first_session = SequenceSession(ModelTurn(text="first", raw={"id": "first"}))
     second_session = SequenceSession(ModelTurn(text="second", raw={"id": "second"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]), model=ScriptedModel([first_session, second_session]))
+    harness = Harness(
+        HarnessConfig(root=tmp_path), plugins=[MCPPlugin(servers=[server])], model=ScriptedModel([first_session, second_session])
+    )
 
     first = await harness.run("first")
     second = await harness.run("second", resume_from=first.resume_state)
@@ -1294,7 +1593,8 @@ async def test_approval_resume_connects_mcp_before_validating_and_preserves_unkn
         requires_approval=True,
     )
     first_harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=model,
         tools=[approval_tool],
     )
@@ -1302,7 +1602,8 @@ async def test_approval_resume_connects_mcp_before_validating_and_preserves_unkn
     await first_harness.aclose()
 
     second_harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=model,
         tools=[approval_tool],
     )
@@ -1329,7 +1630,8 @@ async def test_trace_attribution_survives_after_tool_hook(tmp_path, monkeypatch)
         ctx.output = ToolResult(True, "rewritten", {}).as_json()
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[server]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[server])],
         model=_fake_openai(MultiCallClient([("remote", '{"value":"ok"}')])),
         hooks=[Hook("after_tool_call", rewrite, tools=["remote"])],
         tracing=[TracingOptions(tracer=tracer)],
@@ -1343,19 +1645,21 @@ async def test_trace_attribution_survives_after_tool_hook(tmp_path, monkeypatch)
     assert tool_span.attributes["mcp.tool.name"] == "remote"
 
 
-async def test_connection_failure_in_run_fires_run_hooks(tmp_path) -> None:
-    """MCP connection failures happen inside the normal run lifecycle."""
+async def test_connection_failure_happens_before_run_hooks(tmp_path) -> None:
+    """Connection failures happen before the normal run lifecycle."""
     events = []
     tracer = FakeTracer()
 
     class FailingConnectServer(ObservedMCPServer):
-        async def list_tools(self) -> list[ToolSpec]:
+        async def list_tools(self, *, server_id: str | None = None) -> list[ToolSpec]:
             """Fail MCP setup."""
+            del server_id
             raise MCPError("connect failed")
 
     failing = FailingConnectServer(FastMCPTransport(FastMCP("failing-connect")), id="failing")
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], mcp_servers=[failing]),
+        HarnessConfig(root=tmp_path),
+        plugins=[MCPPlugin(servers=[failing])],
         model=_fake_openai(MultiCallClient([])),
         hooks=[
             Hook("run_start", lambda ctx: events.append("start")),
@@ -1367,5 +1671,89 @@ async def test_connection_failure_in_run_fires_run_hooks(tmp_path) -> None:
     with pytest.raises(MCPError, match="connect failed"):
         await harness.run("go")
 
-    assert events == ["start", "error"]
-    assert tracer.spans[0].exceptions
+    assert events == []
+    assert tracer.spans == []
+
+
+async def test_structured_content_keeps_only_ordered_images_and_image_placeholders(monkeypatch) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text="discard text"),
+            types.AudioContent(type="audio", data="aGk=", mimeType="audio/wav"),
+            types.ImageContent(type="image", data="aGk=", mimeType="image/png"),
+            types.EmbeddedResource(
+                type="resource",
+                resource=types.TextResourceContents(uri="file:///discard.txt", text="discard"),
+            ),
+            types.ImageContent(type="image", data="***", mimeType="image/jpeg"),
+            types.ResourceLink(type="resource_link", uri="https://example.com/discard", name="discard"),
+            types.ImageContent(type="image", data="aGk=", mimeType="image/svg+xml"),
+        ],
+        structuredContent={"answer": 42},
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"mixed": _schema()}, {"mixed": scripted})
+
+    result = await server.call_tool("mixed", {})
+
+    assert result.content == (
+        TextBlock('{"answer": 42}'),
+        ImageBlock(b"hi", "image/png"),
+        TextBlock("[image: image/jpeg]"),
+        TextBlock("[image: image/svg+xml]"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "media_type"),
+    [("***", "image/png"), ("aGk=", "image/svg+xml")],
+)
+async def test_mcp_malformed_or_unsupported_images_become_placeholders(monkeypatch, data: str, media_type: str) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[types.ImageContent(type="image", data=data, mimeType=media_type)],
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"image": _schema()}, {"image": scripted})
+
+    result = await server.call_tool("image", {})
+
+    assert result.content == f"[image: {media_type}]"
+
+
+@pytest.mark.parametrize(
+    "texts, expected",
+    [
+        (["", "a"], "\na"),
+        (["a", "", "b"], "a\n\nb"),
+        (["a", ""], "a\n"),
+    ],
+)
+async def test_successful_mcp_text_preserves_empty_block_positions(monkeypatch, texts: list[str], expected: str) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(
+        content=[types.TextContent(type="text", text=text) for text in texts],
+        isError=False,
+    )
+    server = scripted_server(monkeypatch, {"text": _schema()}, {"text": scripted})
+
+    result = await server.call_tool("text", {})
+
+    assert result.ok is True
+    assert result.content == expected
+
+
+async def test_empty_successful_mcp_content_remains_successful(monkeypatch) -> None:
+    from mcp import types
+
+    scripted = types.CallToolResult(content=[], isError=False)
+    server = scripted_server(monkeypatch, {"empty": _schema()}, {"empty": scripted})
+
+    result = await server.call_tool("empty", {})
+
+    assert result.ok is True
+    assert result.content == ""

@@ -6,27 +6,38 @@ import asyncio
 import copy
 import inspect
 import json
+import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, TypeGuard, TypeVar, cast
+from typing import Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ..content import (
+    ContentBlock,
+    ImageBlock,
+    TextBlock,
+    content_from_json,
+    content_to_json,
+    normalize_content,
+    redact_image_data,
+    redacted_content_json,
+)
 from ..types import Json
 
-ToolKind = Literal["user", "subagent", "parallel_llm", "mcp"]
 ToolHandler = Callable[[Any], Any | Awaitable[Any]]
 T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True)
-class McpToolInfo:
-    """Framework-owned identity for an MCP-backed tool."""
+class ToolOrigin:
+    """Plugin provenance for one model-callable tool."""
 
-    server_id: str
-    tool_name: str
+    plugin: str
+    source: str | None = None
+    attributes: Json = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -42,13 +53,10 @@ class ToolSpec:
     max_retries: int | None = None
     instructions: str | None = None
     requires_approval: bool = False
-    kind: ToolKind = "user"
-    mcp: McpToolInfo | None = None
+    origin: ToolOrigin | None = None
 
     def __post_init__(self) -> None:
         """Validate per-tool retry configuration."""
-        if self.kind not in {"user", "subagent", "parallel_llm", "mcp"}:
-            raise ValueError(f"unknown tool kind: {self.kind}")
         if self.max_retries is not None and self.max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
 
@@ -74,38 +82,86 @@ class ToolResult:
     """Structured internal tool output envelope."""
 
     ok: bool
-    content: str
+    content: str | Sequence[ContentBlock]
     metadata: Json = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Detach and validate multimodal content."""
+        if not isinstance(self.ok, bool):
+            raise TypeError("ToolResult.ok must be a bool")
+        if not isinstance(self.metadata, dict):
+            raise TypeError("ToolResult.metadata must be a dict")
+        if not isinstance(self.content, str):
+            self.content = normalize_content(self.content, label="ToolResult.content")
+
+    @property
+    def blocks(self) -> tuple[ContentBlock, ...]:
+        """Return content in block form, including an empty string block."""
+        if isinstance(self.content, str):
+            return (TextBlock(self.content),)
+        return normalize_content(self.content, label="ToolResult.content")
+
+    @property
+    def has_image(self) -> bool:
+        """Return whether this result contains image content."""
+        return not isinstance(self.content, str) and any(isinstance(block, ImageBlock) for block in self.blocks)
+
+    def to_value(self) -> Json:
+        """Return the canonical JSON-compatible envelope value."""
+        content: str | list[Json]
+        if isinstance(self.content, str):
+            content = self.content
+        else:
+            content = content_to_json(self.blocks)
+        return {"ok": self.ok, "content": content, "metadata": self.metadata}
+
     @classmethod
-    def from_json(cls, output: str) -> ToolResult:
-        """Parse a provider-facing tool output string into an envelope."""
+    def from_value(cls, parsed: Any, *, label: str = "tool output") -> ToolResult:
+        """Strictly decode one canonical envelope value."""
+        if not isinstance(parsed, dict) or set(parsed) != {"ok", "content", "metadata"}:
+            raise ValueError(f"{label} has wrong keys")
+        if not isinstance(parsed["ok"], bool) or not isinstance(parsed["metadata"], dict):
+            raise ValueError(f"{label} has wrong type")
+        content = parsed["content"]
+        if isinstance(content, str):
+            return cls(parsed["ok"], content, parsed["metadata"])
+        return cls(parsed["ok"], content_from_json(content, label=f"{label} content"), parsed["metadata"])
+
+    @classmethod
+    def from_json(cls, output: str, *, strict: bool = False) -> ToolResult:
+        """Parse a canonical provider-facing tool output string."""
         try:
             parsed = json.loads(output)
-        except json.JSONDecodeError:
+            return cls.from_value(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            if strict:
+                raise ValueError("tool output is not a valid canonical ToolResult") from None
             return cls(False, output, {"error_type": "InvalidToolOutput"})
-        if not isinstance(parsed, dict):
-            return cls(False, output, {"error_type": "InvalidToolOutput"})
-        ok = parsed.get("ok")
-        content = parsed.get("content")
-        metadata = parsed.get("metadata")
-        return cls(
-            ok if isinstance(ok, bool) else False,
-            content if isinstance(content, str) else output,
-            metadata if isinstance(metadata, dict) else {},
-        )
 
     def to_json(self) -> str:
-        """Serialize the envelope for a provider-facing tool output."""
-        return json.dumps(
-            {"ok": self.ok, "content": self.content, "metadata": self.metadata},
-            ensure_ascii=False,
-            default=str,
-        )
+        """Serialize the canonical provider-facing tool envelope."""
+        return json.dumps(self.to_value(), ensure_ascii=False)
 
     def as_json(self) -> str:
-        """Serialize the envelope for compatibility with existing callers."""
+        """Serialize the canonical provider-facing tool envelope."""
         return self.to_json()
+
+    def message_text(self) -> str:
+        """Return a plain-text summary suitable for progress events."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n\n".join(block.text for block in self.blocks if isinstance(block, TextBlock))
+
+    def redacted_json(self) -> str:
+        """Return the canonical envelope without image bytes."""
+        if not self.has_image:
+            return self.to_json()
+        projection = json.dumps(
+            {"ok": self.ok, "content": redacted_content_json(self.blocks), "metadata": self.metadata},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return redact_image_data(projection, self.blocks)
 
     def retry_kind(self) -> str | None:
         """Return the retry error type if this envelope asks the model to retry."""
@@ -130,12 +186,12 @@ class ModelRetry(Exception):
         self.message = message
         super().__init__(message)
 
+
 @dataclass(frozen=True)
 class AllowedPath:
-    """One resolved path allowed by a workspace path policy."""
+    """One lexically normalized path allowed by a workspace path policy."""
 
     path: Path
-    exact: bool = False
 
 
 class PathValidationError(ValueError):
@@ -169,27 +225,29 @@ class PathPolicy:
         resolved = path.resolve()
         if not _is_relative_to(resolved, self.root):
             return False
-        for allowed in self.allowed_paths:
-            if allowed.exact:
-                if resolved == allowed.path:
-                    return True
-            elif resolved == allowed.path or allowed.path in resolved.parents:
+        for configured in self.allowed_paths:
+            allowed = contained_path(self.root, configured.path)
+            if resolved == allowed:
+                return True
+            if allowed in resolved.parents and not allowed.is_file():
                 return True
         return False
 
     def existing_search_roots(self) -> list[Path]:
         """Return existing allow roots for commands that accept search paths."""
-        return [allowed.path for allowed in self.allowed_paths if allowed.path.exists()]
+        roots = [contained_path(self.root, configured.path) for configured in self.allowed_paths]
+        return [root for root in roots if root.exists()]
 
     def _allowed_path(self, raw: str | Path) -> AllowedPath:
-        """Normalize a configured allow path under the workspace root."""
-        resolved = contained_path(self.root, raw)
-        return AllowedPath(resolved, exact=resolved.exists() and resolved.is_file())
+        """Normalize a configured allow path without filesystem metadata I/O."""
+        return AllowedPath(_lexical_path_under_root(self.root, raw))
+
 
 class StrictArgs(BaseModel):
     """Base class for tool arguments."""
 
     model_config = ConfigDict(extra="forbid")
+
 
 def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope | Any:
     """Parse and validate raw tool arguments."""
@@ -214,12 +272,26 @@ def _prepare_args(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope | Any:
 
 
 def _normalize_result(result: Any) -> ToolEnvelope:
-    """Normalize a tool handler result to a structured JSON envelope."""
+    """Normalize and validate a tool handler result."""
     if isinstance(result, ToolResult):
-        return result
-    if isinstance(result, str):
-        return ToolResult(True, result)
-    return ToolResult(True, json.dumps(result, indent=2, sort_keys=True, default=str))
+        envelope = result
+    elif isinstance(result, str):
+        envelope = ToolResult(True, result)
+    elif isinstance(result, Sequence) and result and all(isinstance(block, (TextBlock, ImageBlock)) for block in result):
+        envelope = ToolResult(True, result)
+    else:
+        envelope = ToolResult(True, json.dumps(result, indent=2, sort_keys=True))
+    envelope.to_json()
+    return envelope
+
+
+def _invalid_result_envelope(exc: Exception) -> ToolEnvelope:
+    """Return a failed envelope for an unsupported handler result."""
+    return ToolResult(
+        False,
+        f"Invalid tool result: {type(exc).__name__}: {exc}",
+        {"error_type": "InvalidToolResult"},
+    )
 
 
 def _retry_envelope(error_type: str, message: str, *, errors: list[Json] | None = None) -> ToolEnvelope:
@@ -280,7 +352,10 @@ def call_tool(spec: ToolSpec, raw_args: str | Json) -> str:
             "async handler requires harness execution",
             {"error_type": "AsyncHandlerInSyncContext"},
         ).to_json()
-    return _normalize_result(result).to_json()
+    try:
+        return _normalize_result(result).to_json()
+    except (TypeError, ValueError) as exc:
+        return _invalid_result_envelope(exc).to_json()
 
 
 async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope:
@@ -306,7 +381,10 @@ async def _invoke_tool(spec: ToolSpec, raw_args: str | Json) -> ToolEnvelope:
         if getattr(exc, "_thinharness_strict_hook", False):
             raise
         return ToolResult(False, f"{type(exc).__name__}: {exc}", {"error_type": type(exc).__name__})
-    return _normalize_result(result)
+    try:
+        return _normalize_result(result)
+    except (TypeError, ValueError) as exc:
+        return _invalid_result_envelope(exc)
 
 
 def _is_async_callable(handler: ToolHandler) -> bool:
@@ -316,9 +394,25 @@ def _is_async_callable(handler: ToolHandler) -> bool:
         obj = obj.func
     return inspect.iscoroutinefunction(obj) or (callable(obj) and inspect.iscoroutinefunction(obj.__call__))
 
+
 def contained_path(root: Path, raw: str | Path) -> Path:
     """Resolve a path and require it to remain inside root."""
     return _resolve_under_root(root, raw)
+
+
+def lexical_contained_path(root: Path, raw: str | Path) -> Path:
+    """Normalize a contained path without consulting filesystem metadata."""
+    return _lexical_path_under_root(root, raw)
+
+
+def _lexical_path_under_root(root: Path, raw: str | Path) -> Path:
+    """Normalize raw under root lexically and reject parent traversal."""
+    path = Path(raw).expanduser()
+    candidate = path if path.is_absolute() else root / path
+    normalized = Path(os.path.abspath(candidate))
+    if not _is_relative_to(normalized, root):
+        raise PathValidationError(f"path escapes root: {raw}")
+    return normalized
 
 
 def _resolve_under_root(root: Path, raw: str | Path) -> Path:
@@ -401,9 +495,11 @@ def _clean_schema(schema: Any) -> None:
             continue
         _clean_schema(value)
 
+
 def _timeout_error_message(command_name: str, timeout: int) -> str:
     """Return a compact timeout failure message."""
     return f"{command_name} timed out after {timeout}s"
+
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     """Return whether path is inside root."""

@@ -1,9 +1,9 @@
 """OpenTelemetry-compatible tracing helpers.
 
 Model input messages are constructed from provider-neutral request deltas,
-never from provider payloads. For top-level runs, the agent span stores the raw
-caller prompt while the first model span stores the effective prompt after
-hooks. OTel GenAI message shapes follow the semantic convention as retrieved
+never from provider payloads. Agent and model spans store effective prompt
+text plus redacted image descriptors after hooks. OTel GenAI message shapes
+follow the semantic convention as retrieved
 on 2026-05-19:
 https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/.
 """
@@ -25,6 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from .content import NormalizedContent, redacted_content_string, text_only_value
 from .projections import ModelRequestDelta, model_request_input_from_delta, trace_input_messages_from_entries, trace_output_messages_from_assistant
 from .providers import TokenUsage, extract_finish_reason, extract_response_model, extract_token_usage
 from .tools.base import Json
@@ -509,7 +510,7 @@ def annotate_model_span(span: _SpanAdapter, turn: Any, *, capture_messages: bool
 def annotate_agent_start(
     span: _SpanAdapter,
     *,
-    prompt: str,
+    prompt: NormalizedContent | None,
     instructions: str,
     capture_messages: bool,
     top_level: bool,
@@ -517,13 +518,14 @@ def annotate_agent_start(
     """Write opt-in agent input attributes before provider work runs."""
     if not capture_messages:
         return
+    projected_prompt = None if prompt is None else text_only_value(prompt) or redacted_content_string(prompt)
     if top_level:
         span.set_attributes({
-            "gen_ai.prompt": prompt,
+            "gen_ai.prompt": projected_prompt,
             "gen_ai.system_instructions": serialize_attribute_value([{"type": "text", "content": instructions}]),
         })
-    else:
-        span.set_attribute("gen_ai.prompt", prompt)
+    elif projected_prompt is not None:
+        span.set_attribute("gen_ai.prompt", projected_prompt)
 
 
 def annotate_agent_result(
@@ -557,9 +559,9 @@ def serialize_attribute_value(value: Any) -> str | None:
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value, ensure_ascii=False, default=str)
+        return json.dumps(value, ensure_ascii=False)
     except TypeError:
-        return str(value)
+        return "[unserializable value redacted]"
 
 
 def _usage_attributes(raw: Json, usage: TokenUsage | None) -> Json:

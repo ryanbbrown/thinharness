@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ._migration import REMOVED_HARNESS_CONFIG_FIELDS, reject_removed_fields
 from .approvals import (
     ApprovalPause,
     copy_restored_run_state,
@@ -17,6 +19,8 @@ from .approvals import (
     validate_approval_decisions,
     validate_approval_pause_state,
 )
+from .children import ChildHarnessHost, _ParentChildHarnessHost, _ToolComposition
+from .content import ImageBlock, NormalizedContent, Prompt, normalize_content, redact_image_data, redacted_content_string, text_only_value
 from .defaults import DEFAULT_SYSTEM_PROMPT
 from .events import (
     ApprovalResumedEvent,
@@ -43,6 +47,7 @@ from .output import (
     resolve_output_schema_for_model,
     structured_instructions,
 )
+from .plugins.base import Plugin, PluginBinding, PluginContext, PluginContribution
 from .providers import (
     Model,
     ModelSession,
@@ -53,13 +58,9 @@ from .providers import (
     StructuredOutputRequest,
     infer_model,
     model_capabilities,
+    session_image_blocks,
 )
-from .subagents import DEFAULT_SUBAGENT_NAME, SubAgentConfig, create_subagent_tool
-from .tools.base import ToolSpec
-from .tools.filesystem import builtin_tools as make_builtin_tools
-from .tools.mcp import MCPServer
-from .tools.parallel_llm import create_parallel_llm_tool
-from .tools.skills import SkillRegistry
+from .tools.base import ToolOrigin, ToolSpec
 from .tracing import (
     LocalTracing,
     RunTracer,
@@ -70,8 +71,6 @@ from .tracing import (
 from .turns import TurnStart, advance_until_terminal
 from .types import ApprovalDecision, HarnessError, HarnessResult, Json, PendingApproval, RunUsage, UnexpectedModelBehavior
 
-DEFAULT_BUILTIN_TOOLS = {"read", "write", "edit", "search", "list", "glob"}
-
 
 def _local_tracing_enabled(configured: bool) -> bool:
     """Return whether local plaintext tracing should be active."""
@@ -79,26 +78,72 @@ def _local_tracing_enabled(configured: bool) -> bool:
     return configured and not disabled
 
 
+def _error_type(exc: BaseException) -> str:
+    """Return the stable public error classification for an exception."""
+    value = getattr(exc, "_thinharness_error_type", None)
+    return value if isinstance(value, str) else type(exc).__name__
+
+
+def _sanitized_failure(exc: Exception, message: str) -> Exception:
+    """Return an exception with a safe message and stable classification."""
+    if message == str(exc):
+        return exc
+    if isinstance(exc, ProviderError):
+        sanitized_provider = ProviderError(message, status_code=exc.status_code)
+        sanitized_provider.__dict__["_thinharness_sanitized"] = True
+        return sanitized_provider
+    sanitized = HarnessError(message)
+    sanitized.__dict__["_thinharness_error_type"] = _error_type(exc)
+    sanitized.__dict__["_thinharness_sanitized"] = True
+    if getattr(exc, "_thinharness_strict_hook", False):
+        sanitized.__dict__["_thinharness_strict_hook"] = True
+    return sanitized
+
+
 def _classify_run_failure(run_ctx: Any, agent_span: Any, exc: Exception) -> Exception:
     """Record a run failure and return the exception to raise."""
-    agent_span.record_exception(exc)
-    agent_span.set_error(str(exc), type(exc).__name__)
-    if isinstance(exc, ProviderError):
+    message = redact_image_data(str(exc), run_ctx.image_blocks)
+    safe_exc = _sanitized_failure(exc, message)
+    error_type = _error_type(safe_exc)
+    agent_span.record_exception(safe_exc)
+    agent_span.set_error(message, error_type)
+    if isinstance(safe_exc, ProviderError) or getattr(safe_exc, "_thinharness_provider_error", False):
         run_ctx.stop_reason = "provider_error"
-        run_ctx.terminal_error = HarnessError(str(exc))
-        return run_ctx.terminal_error
-    if isinstance(exc, UnexpectedModelBehavior):
+        terminal = HarnessError(message)
+        terminal.__dict__["_thinharness_error_type"] = error_type
+        status_code = getattr(safe_exc, "status_code", None)
+        if status_code is not None:
+            terminal.__dict__["status_code"] = status_code
+        if getattr(safe_exc, "_thinharness_sanitized", False):
+            terminal.__dict__["_thinharness_sanitized"] = True
+        run_ctx.terminal_error = terminal
+        return terminal
+    if isinstance(safe_exc, UnexpectedModelBehavior):
         run_ctx.stop_reason = "unexpected_model_behavior"
-        run_ctx.terminal_error = run_ctx.terminal_error or exc
-        return exc
-    if isinstance(exc, HarnessError):
-        run_ctx.terminal_error = run_ctx.terminal_error or exc
+        run_ctx.terminal_error = run_ctx.terminal_error or safe_exc
+        return safe_exc
+    if isinstance(safe_exc, HarnessError):
+        run_ctx.terminal_error = run_ctx.terminal_error or safe_exc
         if run_ctx.stop_reason == "end_turn":
             run_ctx.stop_reason = "error"
-        return exc
+        return safe_exc
     run_ctx.stop_reason = "error"
-    run_ctx.terminal_error = exc
-    return exc
+    run_ctx.terminal_error = safe_exc
+    return safe_exc
+
+
+def _normalize_public_prompt(prompt: Prompt, *, label: str) -> NormalizedContent:
+    """Normalize a public or hook prompt as a harness validation error."""
+    try:
+        return normalize_content(prompt, label=label)
+    except (TypeError, ValueError) as exc:
+        raise HarnessError(str(exc)) from exc
+
+
+def _event_prompt(content: NormalizedContent) -> str:
+    """Keep text-only stream values and redact multimodal values."""
+    text = text_only_value(content)
+    return text if text is not None else redacted_content_string(content)
 
 
 class HarnessConfig(BaseModel):
@@ -111,24 +156,12 @@ class HarnessConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    skills_dir: str | Path | list[str | Path] | None = None
-    selected_skills: list[str] | None = None
-    builtin_tools: list[str] | None = None
-    output_dir: str | Path | None = None
     max_model_requests: int = 64
     max_tool_calls: int | None = None
     strict_hooks: bool = False
     request_timeout: int = 120
     request_retries: int = Field(default=3, ge=0, le=10)
     request_retry_backoff: float = Field(default=1.0, ge=0, allow_inf_nan=False)
-    max_read_chars: int = 40_000
-    max_read_bytes: int = 1_000_000
-    max_tool_chars: int = 40_000
-    max_search_line_chars: int = 180
-    rg_timeout: int = 30
-    search_exclude_globs: list[str] = Field(default_factory=list)
-    read_paths: list[str | Path] | None = None
-    write_paths: list[str | Path] | None = None
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, ge=1)
     effort: str | None = None
@@ -137,46 +170,41 @@ class HarnessConfig(BaseModel):
     local_tracing: bool = True
     local_trace_dir: str | Path = "~/.thinharness/traces"
     tool_execution: Literal["auto", "sequential"] = "auto"
-    subagents: list[SubAgentConfig] = Field(default_factory=list)
     output_type: OutputSpec | None = None
     output_mode: OutputMode = "auto"
     output_retries: int = Field(default=1, ge=0)
     tool_retries: int = Field(default=1, ge=0)
-    builtin_parallel_llm_model: str | None = None
-    builtin_parallel_llm_temperature: float | None = None
-    parallel_llm_max_prompts: int = Field(default=100, ge=1)
-    mcp_servers: list[MCPServer] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def validate_config(self) -> HarnessConfig:
-        """Validate cross-field configuration settings."""
-        if self.selected_skills is not None and self.skills_dir is None:
-            raise ValueError("selected_skills requires skills_dir")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_fields(cls, data: object) -> object:
+        """Fail loudly when callers use configuration moved to plugins."""
+        return reject_removed_fields(
+            data,
+            owner="HarnessConfig",
+            migrations=REMOVED_HARNESS_CONFIG_FIELDS,
+        )
 
 
 class Harness:
-    """A non-interactive filesystem agent harness for SDK use."""
+    """A non-interactive agent harness for SDK use."""
 
     def __init__(
         self,
         config: HarnessConfig | None = None,
         *,
         model: Model | None = None,
+        plugins: list[Plugin] | None = None,
         tools: list[ToolSpec] | None = None,
         tracing: list[TracingOptions] | None = None,
-        skills: SkillRegistry | None = None,
         hooks: list[Hook] | HookRegistry | None = None,
-        subagent_hooks: dict[str, list[Hook] | HookRegistry] | None = None,
         _owns_model: bool | None = None,
-        _is_child_run: bool = False,
+        _is_child_harness: bool = False,
+        _child_harnesses: ChildHarnessHost | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
-        self._is_child_run = _is_child_run
-        if skills is not None and (self.config.skills_dir is not None or self.config.selected_skills is not None):
-            raise ValueError("skills cannot be combined with skills_dir or selected_skills")
+        self._is_child_harness = _is_child_harness
         self.root = Path(self.config.root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
         self.model_ref = os.getenv("HARNESS_MODEL", self.config.model)
         self.model = model or infer_model(
             self.model_ref,
@@ -192,52 +220,87 @@ class Harness:
         )
         self._owns_model = _owns_model if _owns_model is not None else model is None
         self.model_capabilities = model_capabilities(self.model)
-        self.skills = skills or SkillRegistry(self.config.skills_dir, selected_skills=self.config.selected_skills)
         output_schema = resolve_output_schema_for_model(self.model, self.config.output_type, self.config.output_mode)
-        filesystem_tools = make_builtin_tools(
-            self.root,
-            output_dir=self.config.output_dir,
-            max_read_chars=self.config.max_read_chars,
-            max_read_bytes=self.config.max_read_bytes,
-            max_tool_chars=self.config.max_tool_chars,
-            max_search_line_chars=self.config.max_search_line_chars,
-            rg_timeout=self.config.rg_timeout,
-            search_exclude_globs=self.config.search_exclude_globs,
-            read_paths=self.config.read_paths,
-            write_paths=self.config.write_paths,
-        )
-        builtin_candidates = [
-            *filesystem_tools,
-            *self.skills.specs(),
-            create_subagent_tool(self, self.config.subagents),
-            create_parallel_llm_tool(self),
+        self.output_schema = output_schema
+
+        child_harnesses = _child_harnesses or _ParentChildHarnessHost(self)
+        configured_plugins = tuple(plugins or [])
+        plugin_names = [plugin.name for plugin in configured_plugins]
+        if any(not isinstance(name, str) or not name.strip() for name in plugin_names):
+            raise ValueError("plugin name must be a non-empty string")
+        duplicate_plugin = next((name for index, name in enumerate(plugin_names) if name in plugin_names[:index]), None)
+        if duplicate_plugin is not None:
+            raise ValueError(f"duplicate plugin name: {duplicate_plugin}")
+        plugin_context = PluginContext(root=self.root, model=self.model, child_harnesses=child_harnesses)
+        bindings = tuple(plugin.bind(plugin_context) for plugin in configured_plugins)
+        for plugin, binding in zip(configured_plugins, bindings, strict=True):
+            if not isinstance(binding, PluginBinding):
+                raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
+        if isinstance(child_harnesses, _ParentChildHarnessHost):
+            child_harnesses._seal_registration()
+        static_tools: list[ToolSpec] = []
+        static_compositions: list[_ToolComposition] = []
+        static_instructions: list[str] = []
+        static_hooks: list[Hook] = []
+        for plugin_index, (plugin, binding) in enumerate(zip(configured_plugins, bindings, strict=True)):
+            contribution = self._normalize_contribution(plugin.name, binding.static)
+            static_tools.extend(contribution.tools)
+            static_compositions.extend(
+                _ToolComposition(
+                    source="plugin",
+                    plugin_index=plugin_index,
+                    delegation=isinstance(child_harnesses, _ParentChildHarnessHost)
+                    and child_harnesses.is_delegation_tool(raw_tool),
+                )
+                for raw_tool in binding.static.tools
+            )
+            static_instructions.extend(contribution.instructions)
+            static_hooks.extend(contribution.hooks)
+
+        direct_tools = list(tools or [])
+        configured_tools = [*static_tools, *direct_tools]
+        configured_compositions = [
+            *static_compositions,
+            *(_ToolComposition(source="direct") for _ in direct_tools),
         ]
-        builtin = self._select_builtin_tools(builtin_candidates, self.config.builtin_tools)
-        configured_tools = [*builtin, *(tools or [])]
         self._validate_tool_list(
             configured_tools,
             output_schema=output_schema,
             model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
+            is_child_harness=self._is_child_harness,
         )
         tool_map = {tool.name: tool for tool in configured_tools}
-        hook_registry = hooks if isinstance(hooks, HookRegistry) else HookRegistry(hooks, strict_hooks=self.config.strict_hooks)
-        self._validate_hook_registry(hook_registry, self.config.subagents)
-        self._validate_skill_tool_selection_for(self.skills, configured_tools)
+        caller_hooks = list(hooks.hooks) if isinstance(hooks, HookRegistry) else list(hooks or [])
+        strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
+        hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
+        registered_agent_names = set(child_harnesses._agent_catalog()) if isinstance(child_harnesses, _ParentChildHarnessHost) else set()
+        self._validate_hook_registry(hook_registry, registered_agent_names)
 
+        self.plugins = configured_plugins
+        self._plugin_bindings = bindings
+        self._base_tools = list(configured_tools)
+        self._base_compositions = list(configured_compositions)
+        self._base_instructions = list(static_instructions)
+        self._strict_hooks = strict_hooks
         self.tools = configured_tools
         self._tool_map = tool_map
-        self.output_schema = output_schema
+        self._tool_composition = {
+            tool.name: composition
+            for tool, composition in zip(configured_tools, configured_compositions, strict=True)
+        }
+        self._plugin_instructions = list(static_instructions)
         self.hooks = hook_registry
-        self.subagent_hooks = subagent_hooks or {}
-        self._mcp_servers = list(self.config.mcp_servers)
-        self._resolve_mcp_server_ids()
-        self._mcp_stack: AsyncExitStack | None = None
-        self._mcp_connected = False
-        self._skills_enabled = bool(self.skills.skills) and any(tool.name in {"skill_read", "skill_run"} for tool in self.tools)
+        self._child_harnesses = child_harnesses
+        if isinstance(child_harnesses, _ParentChildHarnessHost):
+            child_harnesses.validate_recipes(configured_tools, configured_compositions)
+        self._plugin_stack: AsyncExitStack | None = None
+        self._connected = False
+        self._connect_lock = asyncio.Lock()
+        self._connect_task: asyncio.Task[None] | None = None
+        self._connect_waiters = 0
         self.local_tracing: LocalTracing | None = None
         external_tracing = list(self.config.tracing if tracing is None else tracing)
-        if _local_tracing_enabled(self.config.local_tracing) and not _is_child_run:
+        if _local_tracing_enabled(self.config.local_tracing) and not _is_child_harness:
             self.local_tracing = create_local_tracing(self.config.local_trace_dir, project_root=self.root)
             self.tracing = [
                 TracingOptions(
@@ -253,7 +316,7 @@ class Harness:
         self._running = False
         self._closed = False
 
-    async def run(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
+    async def run(self, prompt: Prompt, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Run one prompt to completion."""
         result: HarnessResult | None = None
         stream = self.stream(prompt, resume_from=resume_from, metadata=metadata)
@@ -311,7 +374,7 @@ class Harness:
 
     def stream(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         resume_from: dict[str, Any] | None = None,
         metadata: Json | None = None,
@@ -335,15 +398,17 @@ class Harness:
         )
         emitter = StreamEmitter(stream_context)
         loop = asyncio.get_running_loop()
-        task = loop.create_task(self._run_streaming(
-            prompt,
-            resume_from=resume_from,
-            approval_state=None,
-            approval_decisions=None,
-            metadata=metadata,
-            emitter=emitter,
-            stream_context=stream_context,
-        ))
+        task = loop.create_task(
+            self._run_streaming(
+                prompt,
+                resume_from=resume_from,
+                approval_state=None,
+                approval_decisions=None,
+                metadata=metadata,
+                emitter=emitter,
+                stream_context=stream_context,
+            )
+        )
         self._running = True
         return HarnessStream(task, emitter)
 
@@ -363,21 +428,23 @@ class Harness:
         stream_context = create_stream_context(options=stream_options)
         emitter = StreamEmitter(stream_context)
         loop = asyncio.get_running_loop()
-        task = loop.create_task(self._run_streaming(
-            "",
-            resume_from=None,
-            approval_state=state,
-            approval_decisions=decisions,
-            metadata=metadata,
-            emitter=emitter,
-            stream_context=stream_context,
-        ))
+        task = loop.create_task(
+            self._run_streaming(
+                "",
+                resume_from=None,
+                approval_state=state,
+                approval_decisions=decisions,
+                metadata=metadata,
+                emitter=emitter,
+                stream_context=stream_context,
+            )
+        )
         self._running = True
         return HarnessStream(task, emitter)
 
     async def _run_streaming(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         resume_from: dict[str, Any] | None,
         approval_state: dict[str, Any] | None,
@@ -391,6 +458,7 @@ class Harness:
         from .tool_execution import ToolBatchExecutor
 
         try:
+            await self._ensure_connected()
             run_tracer = RunTracer(self.tracing)
             approval_pause: ApprovalPause | None = None
             approval_decision_map: dict[str, ApprovalDecision] | None = None
@@ -409,43 +477,51 @@ class Harness:
             else:
                 run_metadata = dict(metadata or {})
                 usage = RunUsage()
+            raw_prompt: NormalizedContent = () if approval_pause is not None else _normalize_public_prompt(prompt, label="prompt")
             run_ctx = RunContext(
                 harness=self,
-                prompt=prompt,
+                prompt=raw_prompt,
                 metadata=run_metadata,
                 usage=usage,
                 tracer=run_tracer,
                 stream=stream_context,
                 emitter=emitter,
             )
+            run_ctx.register_image_blocks(tuple(block for block in raw_prompt if isinstance(block, ImageBlock)))
             if approval_pause is not None:
                 run_ctx.responses = restored_responses
                 run_ctx.tool_call_records = restored_records
                 run_ctx.emitted_limit_warnings = restored_warnings
-            run_ctx.emit(RunStartedEvent(
-                **run_ctx.stream_base(),
-                prompt=None if approval_pause is not None else prompt,
-                root=str(self.root),
-                max_model_requests=self.config.max_model_requests,
-                max_tool_calls=self.config.max_tool_calls,
-            ))
-            if approval_pause is not None:
-                run_ctx.emit(ApprovalResumedEvent(
+            run_ctx.emit(
+                RunStartedEvent(
                     **run_ctx.stream_base(),
-                    decisions=tuple(approval_decisions or []),
-                ))
-        except Exception as exc:
+                    prompt=None if approval_pause is not None else _event_prompt(raw_prompt),
+                    root=str(self.root),
+                    max_model_requests=self.config.max_model_requests,
+                    max_tool_calls=self.config.max_tool_calls,
+                )
+            )
+            if approval_pause is not None:
+                run_ctx.emit(
+                    ApprovalResumedEvent(
+                        **run_ctx.stream_base(),
+                        decisions=tuple(approval_decisions or []),
+                    )
+                )
+        except BaseException as exc:
             self._running = False
-            emitter.emit(RunFailedEvent(
-                run_id=stream_context.run_id,
-                sequence=0,
-                parent_run_id=stream_context.parent_run_id,
-                parent_tool_call_id=stream_context.parent_tool_call_id,
-                agent_name=stream_context.agent_name,
-                stop_reason="error",
-                error_type=type(exc).__name__,
-                message=str(exc),
-            ))
+            emitter.emit(
+                RunFailedEvent(
+                    run_id=stream_context.run_id,
+                    sequence=0,
+                    parent_run_id=stream_context.parent_run_id,
+                    parent_tool_call_id=stream_context.parent_tool_call_id,
+                    agent_name=stream_context.agent_name,
+                    stop_reason="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
             emitter.finish()
             raise
 
@@ -468,12 +544,14 @@ class Harness:
                         raise run_ctx.terminal_error
                     session = cast(ResumableModel, self.model).resume_session(resume_from)
                     first_turn_kind = "resume"
+                if session is not None:
+                    run_ctx.register_image_blocks(session_image_blocks(session))
                 conversation_id = str(run_metadata.get("conversation_id")) if run_metadata.get("conversation_id") else None
                 with run_tracer.agent(conversation_id=conversation_id) as agent_span:
                     run_ctx.agent_span = agent_span
                     try:
                         effective_prompt, instructions = await self._prepare_run_start(
-                            prompt,
+                            raw_prompt,
                             run_metadata,
                             run_ctx,
                             agent_span,
@@ -492,6 +570,7 @@ class Harness:
                             harness=self,
                             run_context=run_ctx,
                             tool_map=dict(self._tool_map),
+                            tool_composition=dict(self._tool_composition),
                             run_tracer=run_tracer,
                             tool_execution=self.config.tool_execution,
                         )
@@ -513,6 +592,8 @@ class Harness:
                         failure = _classify_run_failure(run_ctx, agent_span, exc)
                         if failure is exc:
                             raise
+                        if getattr(failure, "_thinharness_sanitized", False):
+                            raise failure from None
                         raise failure from exc
             finally:
                 run_ctx.fire_run_end_once()
@@ -521,12 +602,14 @@ class Harness:
                 run_ctx.terminal_error = exc
                 if run_ctx.stop_reason == "end_turn":
                     run_ctx.stop_reason = "error"
-            run_ctx.emit(RunFailedEvent(
-                **run_ctx.stream_base(),
-                stop_reason=run_ctx.stop_reason,
-                error_type=type(exc).__name__,
-                message=str(exc),
-            ))
+            run_ctx.emit(
+                RunFailedEvent(
+                    **run_ctx.stream_base(),
+                    stop_reason=run_ctx.stop_reason,
+                    error_type=_error_type(exc),
+                    message=redact_image_data(str(exc), run_ctx.image_blocks),
+                )
+            )
             raise
         finally:
             self._running = False
@@ -534,41 +617,44 @@ class Harness:
 
     async def _prepare_run_start(
         self,
-        prompt: str,
+        prompt: NormalizedContent,
         run_metadata: Json,
         run_ctx: Any,
         agent_span: Any,
         *,
         skip_user_prompt: bool = False,
-    ) -> tuple[str, str]:
-        """Fire start hooks and return the effective prompt plus instructions."""
-        self.hooks.fire(RunStartContext(
+    ) -> tuple[NormalizedContent, str]:
+        """Fire start hooks and return effective normalized content plus instructions."""
+        initial: NormalizedContent = () if skip_user_prompt else prompt
+        start_ctx = RunStartContext(
             harness=self,
             metadata=dict(run_metadata),
-            prompt=prompt,
+            prompt=initial,
             root=self.root,
             max_model_requests=self.config.max_model_requests,
             max_tool_calls=self.config.max_tool_calls,
-        ))
-        await self._ensure_mcp_connected()
-        effective_prompt = prompt
+        )
+        self.hooks.fire(start_ctx)
+        effective_prompt = initial if skip_user_prompt else _normalize_public_prompt(start_ctx.prompt, label="run_start prompt")
         if not skip_user_prompt:
-            prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=prompt)
+            prompt_ctx = UserPromptSubmitContext(harness=self, metadata=dict(run_metadata), prompt=effective_prompt)
             self.hooks.fire(prompt_ctx)
             if prompt_ctx.cancelled:
                 reason = prompt_ctx.cancel_reason or "unspecified"
                 run_ctx.stop_reason = "cancelled_by_hook"
                 run_ctx.terminal_error = HarnessError(f"run blocked by hook: {reason}")
                 raise run_ctx.terminal_error
-            effective_prompt = apply_prompt_context(prompt, prompt_ctx.additional_context)
+            submitted = _normalize_public_prompt(prompt_ctx.prompt, label="user_prompt_submit prompt")
+            effective_prompt = apply_prompt_context(submitted, prompt_ctx.additional_context)
+            run_ctx.set_prompt_content(effective_prompt)
         instructions = structured_instructions(self.system_instructions(), self.output_schema)
         agent_span.for_each(
             lambda span, option: annotate_agent_start(
                 span,
-                prompt=prompt,
+                prompt=None if skip_user_prompt else initial,
                 instructions=instructions,
                 capture_messages=option.capture_messages,
-                top_level=not self._is_child_run,
+                top_level=not self._is_child_harness,
             )
         )
         return effective_prompt, instructions
@@ -580,14 +666,14 @@ class Harness:
         except HarnessError as exc:
             message = str(exc)
             if message.startswith("resume_from"):
-                message = f"approval state provider_state{message[len('resume_from'):]}"
+                message = f"approval state provider_state{message[len('resume_from') :]}"
             raise HarnessError(message) from exc
 
     def _pending_approval_record(self, call: ModelToolCall) -> PendingApproval:
         """Return the host-facing pending approval shape for one call."""
         return PendingApproval(call_id=call.id, tool_name=call.name, arguments=call.arguments)
 
-    def run_sync(self, prompt: str, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
+    def run_sync(self, prompt: Prompt, *, resume_from: dict[str, Any] | None = None, metadata: Json | None = None) -> HarnessResult:
         """Synchronous wrapper around run."""
         if self._running:
             raise HarnessError("Harness.run is not re-entrant")
@@ -608,20 +694,37 @@ class Harness:
         return asyncio.run(_run_and_close())
 
     async def aclose(self) -> None:
-        """Close MCP servers and owned provider HTTP clients."""
-        if self._closed:
-            return
-        try:
-            if self._mcp_stack is not None:
-                await self._mcp_stack.aclose()
-                self._mcp_stack = None
-                self._mcp_connected = False
-            if self._owns_model:
-                aclose = getattr(self.model.provider, "aclose", None)
-                if aclose is not None:
-                    await aclose()
-        finally:
+        """Close connected plugins and an owned model."""
+        async with self._connect_lock:
+            if self._closed:
+                return
             self._closed = True
+            connect_task = self._connect_task
+            caller_cancelled = False
+            if connect_task is not None and not connect_task.done():
+                current_task = asyncio.current_task()
+                pending_cancels = current_task.cancelling() if current_task is not None else 0
+                connect_task.cancel()
+                try:
+                    await connect_task
+                except asyncio.CancelledError:
+                    caller_cancelled = current_task is not None and current_task.cancelling() > pending_cancels
+                except BaseException:
+                    pass
+            plugin_stack = self._plugin_stack
+            self._plugin_stack = None
+            self._connected = False
+            close_error = await self._close_resources(
+                plugin_stack=plugin_stack,
+                close_model=self._owns_model,
+            )
+            if caller_cancelled:
+                cancellation = asyncio.CancelledError()
+                if close_error is not None:
+                    cancellation.add_note(f"cleanup also failed: {type(close_error).__name__}: {close_error}")
+                raise cancellation
+            if close_error is not None:
+                raise close_error
 
     async def __aenter__(self) -> Harness:
         """Enter an async harness lifecycle."""
@@ -638,12 +741,21 @@ class Harness:
             spec,
             output_schema=self.output_schema,
             model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
+            is_child_harness=self._is_child_harness,
         )
         if spec.name in self._tool_map:
             raise ValueError(f"duplicate tool name: {spec.name}")
+        composition = _ToolComposition(source="direct")
+        candidate_tools = [*self.tools, spec]
+        candidate_compositions = [*self._tool_composition.values(), composition]
+        if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+            self._child_harnesses.validate_recipes(candidate_tools, candidate_compositions)
         self.tools.append(spec)
         self._tool_map[spec.name] = spec
+        self._tool_composition[spec.name] = composition
+        if not self._connected:
+            self._base_tools.append(spec)
+            self._base_compositions.append(composition)
         self._validate_hook_filters()
 
     def tool_schemas(self) -> list[Json]:
@@ -655,11 +767,7 @@ class Harness:
 
     def system_instructions(self) -> str:
         """Return the full instruction text sent to the model."""
-        parts = [self.config.system_prompt, f"Workspace root: {self.root}"]
-        if self._skills_enabled:
-            skill_summary = self.skills.prompt_summary()
-            if skill_summary:
-                parts.append(skill_summary)
+        parts = [self.config.system_prompt, *self._plugin_instructions]
         tool_instructions = []
         for tool in self.tools:
             if tool.instructions is None:
@@ -680,11 +788,14 @@ class Harness:
     @staticmethod
     def _validate_unique_tools(tools: list[ToolSpec]) -> None:
         """Reject duplicate tool names before sending schemas to a provider."""
-        seen: set[str] = set()
+        seen: dict[str, ToolSpec] = {}
         for tool in tools:
-            if tool.name in seen:
-                raise ValueError(f"duplicate tool name: {tool.name}")
-            seen.add(tool.name)
+            previous = seen.get(tool.name)
+            if previous is not None:
+                first = previous.origin.plugin if previous.origin is not None else "direct"
+                second = tool.origin.plugin if tool.origin is not None else "direct"
+                raise ValueError(f"duplicate tool name: {tool.name} ({first} and {second})")
+            seen[tool.name] = tool
 
     @classmethod
     def _validate_tool_list(
@@ -693,7 +804,7 @@ class Harness:
         *,
         output_schema: OutputSchema | None,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Validate a complete tool list before assigning it to a harness."""
         cls._validate_unique_tools(tools)
@@ -702,7 +813,7 @@ class Harness:
                 tool,
                 output_schema=output_schema,
                 model_supports_approval_resume=model_supports_approval_resume,
-                is_child_run=is_child_run,
+                is_child_harness=is_child_harness,
             )
 
     @staticmethod
@@ -711,31 +822,17 @@ class Harness:
         *,
         output_schema: OutputSchema | None,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Validate one tool against explicit harness state."""
         if not callable(spec.handler):
             raise TypeError(f"handler for tool {spec.name!r} is not callable")
-        if spec.name == "subagent" and spec.kind != "subagent":
-            raise ValueError("subagent is a reserved tool name")
-        if (
-            spec.name == FINAL_RESULT_TOOL_NAME
-            and output_schema is not None
-            and output_schema.mode != "text"
-        ):
+        if spec.name == FINAL_RESULT_TOOL_NAME and output_schema is not None and output_schema.mode != "text":
             raise ValueError(f"{FINAL_RESULT_TOOL_NAME} is reserved for structured output")
         Harness._validate_tool_approval_policy_for(
             spec,
             model_supports_approval_resume=model_supports_approval_resume,
-            is_child_run=is_child_run,
-        )
-
-    def _validate_tool_approval_policy(self, tool: ToolSpec) -> None:
-        """Reject approval policies incompatible with this harness configuration."""
-        self._validate_tool_approval_policy_for(
-            tool,
-            model_supports_approval_resume=self._model_supports_approval_resume(),
-            is_child_run=self._is_child_run,
+            is_child_harness=is_child_harness,
         )
 
     @staticmethod
@@ -743,100 +840,177 @@ class Harness:
         tool: ToolSpec,
         *,
         model_supports_approval_resume: bool,
-        is_child_run: bool,
+        is_child_harness: bool,
     ) -> None:
         """Reject approval policies incompatible with explicit harness state."""
         if tool.requires_approval and not model_supports_approval_resume:
             raise ValueError("approval-required tools require a resumable model")
-        if tool.requires_approval and is_child_run:
-            raise ValueError("approval-required tools are not supported inside subagents")
-
-    @staticmethod
-    def _validate_skill_tool_selection_for(skills: SkillRegistry, tools: list[ToolSpec]) -> None:
-        """Require explicit skill tool selection for explicit skills and tool state."""
-        if not skills.skills:
-            return
-        tool_names = {tool.name for tool in tools}
-        if not tool_names.intersection({"skill_read", "skill_run"}):
-            raise ValueError("configured skills require exposing skill_read or skill_run")
+        if tool.requires_approval and is_child_harness:
+            raise ValueError("approval-required tools are not supported inside child harnesses")
 
     def _validate_hook_filters(self) -> None:
-        """Validate hook filters against registered subagents."""
-        self._validate_hook_registry(self.hooks, self.config.subagents)
+        """Validate hook filters against statically registered agent names."""
+        self._validate_hook_registry(self.hooks, self._registered_agent_names())
+
+    def _registered_agent_names(self) -> set[str]:
+        """Return the sealed parent-host catalog for hook validation."""
+        if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+            return set(self._child_harnesses._agent_catalog())
+        return set()
 
     @staticmethod
-    def _validate_hook_registry(hooks: HookRegistry, subagents: list[SubAgentConfig]) -> None:
-        """Validate hook filters against explicit subagent configuration."""
-        agent_names = {DEFAULT_SUBAGENT_NAME, *(config.name for config in subagents)}
+    def _validate_hook_registry(hooks: HookRegistry, agent_names: set[str]) -> None:
+        """Validate hook filters against statically contributed agent names."""
         hooks.validate_filters(agent_names=agent_names)
 
     def _model_supports_approval_resume(self) -> bool:
         """Return whether this harness model can resume provider sessions."""
         return hasattr(self.model, "resume_kind") and hasattr(self.model, "resume_session")
 
-    def _resolve_mcp_server_ids(self) -> None:
-        """Assign stable suffixes to duplicate MCP server ids."""
-        counts: dict[str, int] = {}
-        for server in self._mcp_servers:
-            server.resolve_id(counts)
-
     async def connect(self) -> None:
-        """Open MCP server connections and discover their tools."""
+        """Open connected plugins."""
         if self._closed:
             raise HarnessError("harness is closed")
-        await self._ensure_mcp_connected()
+        await self._ensure_connected()
 
-    async def _ensure_mcp_connected(self) -> None:
-        """Connect MCP servers and append their discovered tools once."""
-        if self._mcp_connected:
+    async def _ensure_connected(self) -> None:
+        """Share one connection attempt and commit its contributions atomically."""
+        if self._closed:
+            raise HarnessError("harness is closed")
+        if self._connected:
             return
-        if not self._mcp_servers:
-            self._mcp_connected = True
-            return
-        stack = AsyncExitStack()
+        async with self._connect_lock:
+            if self._closed:
+                raise HarnessError("harness is closed")
+            if self._connected:
+                return
+            task = self._connect_task
+            if task is None or (task.done() and self._connect_waiters == 0):
+                task = asyncio.create_task(self._connect_once())
+                self._connect_task = task
+            self._connect_waiters += 1
         try:
-            mcp_tools: list[ToolSpec] = []
-            seen = set(self._tool_map)
-            if self.output_schema is not None and self.output_schema.mode == "tool":
-                seen.add(FINAL_RESULT_TOOL_NAME)
-            for server in self._mcp_servers:
-                await stack.enter_async_context(server)
-                for tool in await server.list_tools():
-                    if tool.name in seen:
-                        raise HarnessError(
-                            f"MCP tool name collision for {tool.name!r}; use tool_prefix or exclude_tools to disambiguate"
-                        )
-                    self._validate_tool_approval_policy(tool)
-                    seen.add(tool.name)
-                    mcp_tools.append(tool)
-            self.tools.extend(mcp_tools)
-            self._tool_map.update({tool.name: tool for tool in mcp_tools})
-            self._mcp_stack = stack
-            self._mcp_connected = True
-        except BaseException:
-            await stack.aclose()
+            await task
+        finally:
+            async with self._connect_lock:
+                self._connect_waiters -= 1
+                if self._connect_waiters == 0 and task.done() and not self._connected and self._connect_task is task:
+                    self._connect_task = None
+
+    async def _connect_once(self) -> None:
+        """Open every dynamic contribution for one shared connection attempt."""
+        plugin_stack = AsyncExitStack()
+        base_hooks = list(self.hooks.hooks)
+        try:
+            dynamic_tools: list[ToolSpec] = []
+            dynamic_compositions: list[_ToolComposition] = []
+            dynamic_instructions: list[str] = []
+            dynamic_hooks: list[Hook] = []
+            for plugin_index, (plugin, binding) in enumerate(zip(self.plugins, self._plugin_bindings, strict=True)):
+                if binding.connect is None:
+                    continue
+                contribution = await plugin_stack.enter_async_context(binding.connect())
+                normalized = self._normalize_contribution(plugin.name, contribution)
+                dynamic_tools.extend(normalized.tools)
+                dynamic_compositions.extend(
+                    _ToolComposition(
+                        source="plugin",
+                        plugin_index=plugin_index,
+                        delegation=isinstance(self._child_harnesses, _ParentChildHarnessHost)
+                        and self._child_harnesses.is_delegation_tool(raw_tool),
+                    )
+                    for raw_tool in contribution.tools
+                )
+                dynamic_instructions.extend(normalized.instructions)
+                dynamic_hooks.extend(normalized.hooks)
+
+            candidate_tools = [*self._base_tools, *dynamic_tools]
+            candidate_compositions = [*self._base_compositions, *dynamic_compositions]
+            self._validate_tool_list(
+                candidate_tools,
+                output_schema=self.output_schema,
+                model_supports_approval_resume=self._model_supports_approval_resume(),
+                is_child_harness=self._is_child_harness,
+            )
+            if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+                self._child_harnesses.validate_recipes(candidate_tools, candidate_compositions)
+            candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
+            self._validate_hook_registry(candidate_hooks, self._registered_agent_names())
+
+            if self._closed:
+                raise HarnessError("harness is closed")
+
+            self.tools = candidate_tools
+            self._tool_map = {tool.name: tool for tool in candidate_tools}
+            self._tool_composition = {
+                tool.name: composition
+                for tool, composition in zip(candidate_tools, candidate_compositions, strict=True)
+            }
+            self._plugin_instructions = [*self._base_instructions, *dynamic_instructions]
+            self.hooks = candidate_hooks
+            self._plugin_stack = plugin_stack
+            self._connected = True
+        except BaseException as exc:
+            cleanup_error = await self._close_resources(
+                plugin_stack=plugin_stack,
+                close_model=False,
+            )
+            self.tools = list(self._base_tools)
+            self._tool_map = {tool.name: tool for tool in self.tools}
+            self._tool_composition = {
+                tool.name: composition
+                for tool, composition in zip(self.tools, self._base_compositions, strict=True)
+            }
+            self._plugin_instructions = list(self._base_instructions)
+            self.hooks = HookRegistry(base_hooks, strict_hooks=self._strict_hooks)
+            if cleanup_error is not None:
+                exc.add_note(f"cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
             raise
+
+    async def _close_resources(
+        self,
+        *,
+        plugin_stack: AsyncExitStack | None,
+        close_model: bool,
+    ) -> BaseException | None:
+        """Attempt every close in order and return the first failure."""
+        first_error: BaseException | None = None
+        if plugin_stack is not None:
+            try:
+                await plugin_stack.aclose()
+            except BaseException as exc:
+                first_error = exc
+        if close_model:
+            aclose = getattr(self.model.provider, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+        return first_error
+
+    @staticmethod
+    def _normalize_contribution(plugin_name: str, contribution: PluginContribution) -> PluginContribution:
+        """Validate contribution values and stamp missing tool provenance."""
+        if not isinstance(contribution, PluginContribution):
+            raise TypeError(f"plugin {plugin_name!r} returned an invalid contribution")
+        instructions = tuple(instruction for instruction in contribution.instructions if instruction.strip())
+        tools = tuple(
+            replace(
+                tool,
+                origin=ToolOrigin(
+                    plugin=plugin_name,
+                    source=tool.origin.source if tool.origin is not None else tool.name,
+                    attributes=dict(tool.origin.attributes) if tool.origin is not None else {},
+                ),
+            )
+            for tool in contribution.tools
+        )
+        return PluginContribution(tools=tools, instructions=instructions, hooks=tuple(contribution.hooks))
 
     def _structured_output_request(self) -> StructuredOutputRequest | None:
         """Return native structured-output request metadata."""
         if self.output_schema is None:
             return None
         return self.output_schema.structured_output_request()
-
-    @staticmethod
-    def _select_builtin_tools(tools: list[ToolSpec], selected_names: list[str] | None) -> list[ToolSpec]:
-        """Return all or the explicitly selected built-in tools."""
-        by_name = {tool.name: tool for tool in tools}
-        if selected_names is None:
-            return [tool for tool in tools if tool.name in DEFAULT_BUILTIN_TOOLS]
-        selected: list[ToolSpec] = []
-        seen: set[str] = set()
-        for name in selected_names:
-            if name in seen:
-                raise ValueError(f"duplicate selected builtin tool: {name}")
-            if name not in by_name:
-                available = ", ".join(sorted(by_name)) or "none"
-                raise ValueError(f"unknown builtin tool: {name}; available: {available}")
-            selected.append(by_name[name])
-            seen.add(name)
-        return selected

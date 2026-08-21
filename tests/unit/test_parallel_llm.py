@@ -7,9 +7,11 @@ from typing import Any
 
 import httpx
 import pytest
+from fakes import FakeChildHarnessHost
 from pydantic import BaseModel, ValidationError
 
-from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ToolOutput
+import thinharness.plugins.parallel_llm as parallel_plugin_module
+from thinharness import Harness, HarnessConfig, ModelCapabilities, ModelToolCall, ModelTurn, ParallelLlmPlugin, PluginContext, ToolOutput, ToolSpec
 from thinharness.providers import ModelSettings, OpenAIProvider, OpenAIResponsesModel, ProviderError
 from thinharness.tools.base import _invoke_tool
 from thinharness.tools.parallel_llm import (
@@ -18,7 +20,6 @@ from thinharness.tools.parallel_llm import (
     ParallelLlmArgs,
     ParallelLlmTool,
     _atomic_write_json,
-    create_parallel_llm_tool,
 )
 
 
@@ -98,7 +99,7 @@ class BatchSession:
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Batch sessions never continue."""
         raise AssertionError("batch session should not continue")
 
@@ -140,7 +141,7 @@ class MainSession:
         payload = json.loads(parsed["content"])
         return ModelTurn(text=f"done:{payload['succeeded']}", raw={"id": "done"})
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Main session never receives user-text continuations."""
         raise AssertionError("should not continue with user text")
 
@@ -149,14 +150,24 @@ class MainSession:
         return None
 
 
-def _parent(tmp_path: Path, batch_model: BatchModel | None = None, **config: Any) -> Harness:
-    """Build a harness parent for direct tool tests."""
-    return Harness(HarnessConfig(root=tmp_path, **config), model=batch_model or BatchModel())
+def _parent(
+    tmp_path: Path,
+    batch_model: BatchModel | None = None,
+    *,
+    plugin: ParallelLlmPlugin | None = None,
+    **config: Any,
+) -> Harness:
+    """Build a harness parent with the parallel LLM plugin."""
+    return Harness(
+        HarnessConfig(root=tmp_path, **config),
+        model=batch_model or BatchModel(),
+        plugins=[plugin or ParallelLlmPlugin()],
+    )
 
 
 async def _call_parallel(parent: Harness, args: dict[str, Any]) -> dict[str, Any]:
     """Invoke parallel_llm through the normal tool envelope."""
-    spec = create_parallel_llm_tool(parent)
+    spec = next(tool for tool in parent.tools if tool.name == "parallel_llm")
     output = await _invoke_tool(spec, args)
     parsed = json.loads(output.to_json())
     if parsed["ok"]:
@@ -266,9 +277,7 @@ async def test_parallel_llm_enforces_path_policies_and_prompt_cap(tmp_path: Path
     parent = _parent(
         tmp_path,
         batch_model=model,
-        read_paths=["allowed"],
-        write_paths=["allowed"],
-        parallel_llm_max_prompts=1,
+        plugin=ParallelLlmPlugin(read_paths=["allowed"], write_paths=["allowed"], max_prompts=1),
     )
 
     read_result = await _call_parallel(parent, _file("prompts.json"))
@@ -543,7 +552,7 @@ async def test_builtin_parallel_llm_stays_text_only_with_json_output(tmp_path: P
     model = BatchModel(outcomes=['{"name":"Ada","age":37}'])
     model.capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     parent = _parent(tmp_path, model)
-    spec = create_parallel_llm_tool(parent)
+    spec = next(tool for tool in parent.tools if tool.name == "parallel_llm")
 
     result = await _call_parallel(parent, {**_inline(["extract"]), "max_concurrency": 1})
 
@@ -618,7 +627,7 @@ async def test_parallel_llm_builtin_provider_uses_one_transport_retry_budget(
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("thinharness.providers.transport.asyncio.sleep", no_sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = OpenAIResponsesModel(
             "test-model",
@@ -656,6 +665,7 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
 
     assert spec.name == "parallel_extract"
     assert spec.description == "Extract fields."
+    assert "kind" not in ToolSpec.__dataclass_fields__
     assert isinstance(model, OpenAIResponsesModel)
     assert should_close is True
     assert model.provider.api_key == "key"
@@ -666,7 +676,7 @@ def test_parallel_llm_tool_custom_spec_and_model_resolution(tmp_path: Path) -> N
     assert model.settings == ModelSettings(temperature=0.3, max_tokens=2048, effort="medium", extra_body={"seed": 1})
 
 
-async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_parallel_llm_plugin_string_model_uses_its_provider_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, Any] = {}
     inferred = BatchModel()
 
@@ -676,46 +686,46 @@ async def test_builtin_parallel_llm_model_and_temperature_are_host_configured(mo
         return inferred
 
     monkeypatch.setattr("thinharness.providers.infer_model", fake_infer_model)
-    parent = _parent(
-        tmp_path,
-        BatchModel(),
-        api_key="parent-key",
+    plugin = ParallelLlmPlugin(
+        "openai:gpt-cheap",
+        api_key="plugin-key",
         base_url="https://example.test",
         max_tokens=4096,
         effort="low",
         request_retries=2,
         request_retry_backoff=0.25,
-        builtin_parallel_llm_model="openai:gpt-cheap",
-        builtin_parallel_llm_temperature=0.2,
+        temperature=0.2,
     )
+    parent = _parent(tmp_path, BatchModel(), plugin=plugin)
 
     result = await _call_parallel(parent, _inline(["x"]))
 
     assert result["payload"]["succeeded"] == 1
     assert captured["model_ref"] == "openai:gpt-cheap"
-    assert captured["kwargs"]["api_key"] == "parent-key"
+    assert captured["kwargs"]["api_key"] == "plugin-key"
     assert captured["kwargs"]["base_url"] == "https://example.test"
     assert captured["kwargs"]["temperature"] == 0.2
     assert captured["kwargs"]["max_tokens"] == 4096
     assert captured["kwargs"]["effort"] == "low"
     assert captured["kwargs"]["request_retries"] == 2
     assert captured["kwargs"]["request_retry_backoff"] == 0.25
+    assert inferred.provider.closed is True
 
 
-def test_parallel_llm_builtin_selection(tmp_path: Path) -> None:
+def test_parallel_llm_plugin_composition_and_builtin_migration(tmp_path: Path) -> None:
     default_harness = Harness(HarnessConfig(root=tmp_path / "default"))
-    selected_harness = Harness(HarnessConfig(root=tmp_path / "selected", builtin_tools=["parallel_llm"]))
+    selected_harness = Harness(HarnessConfig(root=tmp_path / "selected"), plugins=[ParallelLlmPlugin()])
 
     assert "parallel_llm" not in {tool.name for tool in default_harness.tools}
     assert "parallel_llm" in {tool.name for tool in selected_harness.tools}
     assert next(tool for tool in selected_harness.tools if tool.name == "parallel_llm").instructions == DEFAULT_PARALLEL_LLM_INSTRUCTIONS
-    with pytest.raises(ValueError, match="parallel_llm"):
-        Harness(HarnessConfig(root=tmp_path / "bad", builtin_tools=["not_a_tool"]))
+    with pytest.raises(ValueError, match="SubagentsPlugin"):
+        HarnessConfig(root=tmp_path / "bad", builtin_tools=["parallel_llm"])
 
 
 async def test_parallel_llm_usage_accounting_in_harness_run(tmp_path: Path) -> None:
     model = HybridModel()
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["parallel_llm"], max_model_requests=3), model=model)
+    harness = Harness(HarnessConfig(root=tmp_path, max_model_requests=3), model=model, plugins=[ParallelLlmPlugin()])
 
     result = await harness.run("go")
 
@@ -725,3 +735,265 @@ async def test_parallel_llm_usage_accounting_in_harness_run(tmp_path: Path) -> N
     tool_record = json.loads(result.tool_call_records[0]["output"])
     assert tool_record["metadata"]["model_requests"] == 2
     assert [call["prompt"] for call in model.calls] == ["a", "b"]
+
+
+def test_parallel_llm_plugin_static_contract_and_fixed_names(tmp_path: Path) -> None:
+    plugin = ParallelLlmPlugin(description="Batch now.", instructions="Use carefully.")
+    harness = Harness(HarnessConfig(root=tmp_path), model=BatchModel(), plugins=[plugin])
+    spec = harness.tools[0]
+
+    assert spec.name == "parallel_llm"
+    assert spec.description == "Batch now."
+    assert spec.instructions == "Use carefully."
+    assert "kind" not in ToolSpec.__dataclass_fields__
+    assert spec.origin is not None
+    assert spec.origin.plugin == "parallel_llm"
+    assert spec.origin.source == "parallel_llm"
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin.name = "other"
+    with pytest.raises(AttributeError, match="fixed"):
+        ParallelLlmPlugin.name = "other"
+    with pytest.raises(TypeError, match="cannot override"):
+        class RenamedParallelLlmPlugin(ParallelLlmPlugin):
+            name = "other"
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"api_key": "key"},
+        {"base_url": "https://example.test"},
+        {"request_timeout": 1},
+        {"request_retries": 1},
+        {"request_retry_backoff": 0.1},
+        {"temperature": 0.1},
+        {"max_tokens": 1},
+        {"effort": "low"},
+        {"extra_body": {}},
+    ],
+)
+def test_parallel_llm_plugin_rejects_provider_settings_for_borrowed_models(option: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="valid only when"):
+        ParallelLlmPlugin(**option)
+    with pytest.raises(ValueError, match="valid only when"):
+        ParallelLlmPlugin(BatchModel(), **option)
+
+
+def test_parallel_llm_plugin_rejects_invalid_prompt_cap() -> None:
+    with pytest.raises(ValueError, match="max_prompts"):
+        ParallelLlmPlugin(max_prompts=0)
+
+
+def test_parallel_llm_plugin_omits_default_sentinels_and_preserves_explicit_falsey_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    real_tool = parallel_plugin_module.ParallelLlmTool
+
+    def capture_tool(**kwargs: Any) -> ParallelLlmTool:
+        captured.append(kwargs)
+        return real_tool(**kwargs)
+
+    monkeypatch.setattr(parallel_plugin_module, "ParallelLlmTool", capture_tool)
+    context = PluginContext(root=tmp_path, model=BatchModel(), child_harnesses=FakeChildHarnessHost())
+
+    ParallelLlmPlugin("openai:default").bind(context)
+    ParallelLlmPlugin(
+        "openai:explicit",
+        api_key="",
+        base_url="",
+        request_timeout=0,
+        request_retries=0,
+        request_retry_backoff=0,
+        temperature=0,
+        max_tokens=1,
+        effort="",
+        extra_body={},
+    ).bind(context)
+
+    provider_names = {
+        "api_key",
+        "base_url",
+        "request_timeout",
+        "request_retries",
+        "request_retry_backoff",
+        "temperature",
+        "max_tokens",
+        "effort",
+        "extra_body",
+    }
+    assert provider_names.isdisjoint(captured[0])
+    assert {name: captured[1][name] for name in provider_names} == {
+        "api_key": "",
+        "base_url": "",
+        "request_timeout": 0,
+        "request_retries": 0,
+        "request_retry_backoff": 0,
+        "temperature": 0,
+        "max_tokens": 1,
+        "effort": "",
+        "extra_body": {},
+    }
+
+
+def test_parallel_llm_constructor_and_public_values_stay_frozen_across_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    real_tool = parallel_plugin_module.ParallelLlmTool
+
+    def capture_tool(**kwargs: Any) -> ParallelLlmTool:
+        captured.append(kwargs)
+        return real_tool(**kwargs)
+
+    monkeypatch.setattr(parallel_plugin_module, "ParallelLlmTool", capture_tool)
+    read_paths = ["inputs"]
+    write_paths = ["outputs"]
+    extra_body = {"nested": {"stable": True}}
+    plugin = ParallelLlmPlugin(
+        "openai:fixed",
+        read_paths=read_paths,
+        write_paths=write_paths,
+        extra_body=extra_body,
+    )
+    read_paths[0] = "mutated"
+    write_paths[0] = "mutated"
+    extra_body["nested"]["stable"] = False
+    returned = plugin.extra_body
+    returned["nested"]["stable"] = False
+
+    first_model = BatchModel()
+    second_model = BatchModel()
+    plugin.bind(PluginContext(root=tmp_path / "first", model=first_model, child_harnesses=FakeChildHarnessHost()))
+    plugin.for_child().bind(
+        PluginContext(root=tmp_path / "second", model=second_model, child_harnesses=FakeChildHarnessHost())
+    )
+
+    assert [entry["read_paths"] for entry in captured] == [["inputs"], ["inputs"]]
+    assert [entry["write_paths"] for entry in captured] == [["outputs"], ["outputs"]]
+    assert [entry["extra_body"] for entry in captured] == [
+        {"nested": {"stable": True}},
+        {"nested": {"stable": True}},
+    ]
+
+
+async def test_parallel_llm_plugin_reuse_borrows_each_harness_model(tmp_path: Path) -> None:
+    plugin = ParallelLlmPlugin()
+    first_model = BatchModel(outcomes=["first"])
+    second_model = BatchModel(outcomes=["second"])
+    first = _parent(tmp_path / "first", first_model, plugin=plugin)
+    second = _parent(tmp_path / "second", second_model, plugin=plugin)
+
+    first_result = await _call_parallel(first, _inline(["one"]))
+    second_result = await _call_parallel(second, _inline(["two"]))
+
+    assert first_result["payload"]["results"][0]["result"] == "first"
+    assert second_result["payload"]["results"][0]["result"] == "second"
+    assert [call["prompt"] for call in first_model.calls] == ["one"]
+    assert [call["prompt"] for call in second_model.calls] == ["two"]
+
+
+async def test_parallel_llm_plugin_borrows_explicit_model_without_closing_it(tmp_path: Path) -> None:
+    explicit_model = BatchModel(outcomes=["explicit"])
+    harness_model = BatchModel()
+    harness = _parent(tmp_path, harness_model, plugin=ParallelLlmPlugin(explicit_model))
+
+    result = await _call_parallel(harness, _inline(["x"]))
+    await harness.aclose()
+
+    assert result["payload"]["results"][0]["result"] == "explicit"
+    assert explicit_model.provider.closed is False
+    assert harness_model.provider.closed is False
+
+
+async def test_parallel_llm_plugin_does_not_close_borrowed_harness_owned_model_during_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inferred = BatchModel(outcomes=["borrowed"])
+    monkeypatch.setattr("thinharness.core.infer_model", lambda *_args, **_kwargs: inferred)
+    harness = Harness(
+        HarnessConfig(root=tmp_path, model="openai:owned"),
+        plugins=[ParallelLlmPlugin()],
+    )
+
+    result = await _call_parallel(harness, _inline(["x"]))
+
+    assert result["payload"]["results"][0]["result"] == "borrowed"
+    assert inferred.provider.closed is False
+    await harness.aclose()
+    assert inferred.provider.closed is True
+
+
+def test_parallel_llm_plugin_bind_is_io_free_and_does_not_infer_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = ParallelLlmPlugin("openai:gpt-child", read_paths=["future"], write_paths=["outputs"])
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("I/O or provider inference used during bind")
+
+    monkeypatch.setattr(Path, "resolve", fail)
+    monkeypatch.setattr(Path, "exists", fail)
+    monkeypatch.setattr(Path, "stat", fail)
+    monkeypatch.setattr("thinharness.providers.infer_model", fail)
+
+    binding = plugin.bind(PluginContext(root=tmp_path, model=BatchModel(), child_harnesses=FakeChildHarnessHost()))
+    assert binding.static.tools[0].name == "parallel_llm"
+
+
+async def test_parallel_llm_plugin_string_model_closes_provider_after_request_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inferred = BatchModel(outcomes=[RuntimeError("failed")])
+    monkeypatch.setattr("thinharness.providers.infer_model", lambda *_args, **_kwargs: inferred)
+    harness = _parent(tmp_path, BatchModel(), plugin=ParallelLlmPlugin("openai:gpt-child"))
+
+    result = await _call_parallel(harness, _inline(["x"]))
+
+    assert result["payload"]["failed"] == 1
+    assert inferred.provider.closed is True
+
+
+async def test_parallel_llm_plugin_string_model_closes_provider_after_schema_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inferred = BatchModel()
+    monkeypatch.setattr("thinharness.providers.infer_model", lambda *_args, **_kwargs: inferred)
+    monkeypatch.setattr(
+        "thinharness.tools.parallel_llm.resolve_output_schema_for_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("schema failed")),
+    )
+    harness = _parent(tmp_path, BatchModel(), plugin=ParallelLlmPlugin("openai:gpt-child"))
+
+    result = await _call_parallel(harness, _inline(["x"]))
+
+    assert result["ok"] is False
+    assert result["content"] == "schema failed"
+    assert inferred.provider.closed is True
+
+
+async def test_parallel_llm_plugin_string_model_closes_provider_after_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+
+    class BlockingModel(BatchModel):
+        async def complete(self, prompt: str, instructions: str, tools: list[dict[str, Any]], structured_output: Any = None) -> ModelTurn:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    inferred = BlockingModel()
+    monkeypatch.setattr("thinharness.providers.infer_model", lambda *_args, **_kwargs: inferred)
+    harness = _parent(tmp_path, BatchModel(), plugin=ParallelLlmPlugin("openai:gpt-child"))
+    task = asyncio.create_task(_call_parallel(harness, _inline(["x"])))
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert inferred.provider.closed is True

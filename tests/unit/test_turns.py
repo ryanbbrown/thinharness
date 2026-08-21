@@ -7,7 +7,7 @@ import pytest
 from fakes import ScriptedProvider, ScriptedSession
 from pydantic import BaseModel
 
-from thinharness import Harness, HarnessConfig, ModelMessageEvent, RequestConstants, ToolSpec, UnexpectedModelBehavior
+from thinharness import Harness, HarnessConfig, ModelMessageEvent, RequestConstants, ToolResult, ToolSpec, UnexpectedModelBehavior
 from thinharness.approvals import ApprovalPause, ApprovalToolCall
 from thinharness.providers import ModelToolCall, ModelTurn, ToolOutput
 from thinharness.tracing import RunTracer
@@ -89,7 +89,7 @@ class FakeToolExecutor:
     async def execute_batch(self, calls, tool_indices=None):
         self.batches.append([call.id for call in calls])
         records = [{"call": {"id": call.id, "name": call.name, "arguments": call.arguments}, "output": "ok"} for call in calls]
-        outputs = [ToolOutput(call.id, "ok") for call in calls]
+        outputs = [ToolOutput(call.id, ToolResult(True, "ok")) for call in calls]
         executions = [SimpleNamespace(cancelled=call.id in self.cancelled_ids, retry_kind=None) for call in calls]
         return records, outputs, executions
 
@@ -331,10 +331,10 @@ def test_correction_following_resume_uses_same_session(tmp_path: Path) -> None:
         continue_turn=ModelTurn(text='{"name":"Ada","age":37}', raw={"id": "corrected"}),
     )
     model = _ScriptedResumeModel([first_session, resumed_session])
-    first = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model).run_sync("first")
+    first = Harness(HarnessConfig(root=tmp_path), model=model).run_sync("first")
 
     resumed = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="prompted"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="prompted"),
         model=model,
     ).run_sync("follow-up", resume_from=first.resume_state)
 
@@ -343,8 +343,8 @@ def test_correction_following_resume_uses_same_session(tmp_path: Path) -> None:
     # The resumed session answers the resume prompt first, then the correction
     # lands on the same session as a continuation.
     assert [method for method, _notices in resumed_session.notice_calls] == [
-        "continue_with_user_text",
-        "continue_with_user_text",
+        "continue_with_user_content",
+        "continue_with_user_content",
     ]
     assert resumed.responses == [{"id": "resumed-bad"}, {"id": "corrected"}]
 
@@ -359,7 +359,7 @@ async def test_model_message_event_finalized_output_mode_populated(tmp_path: Pat
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool"),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool"),
         model=ScriptedModel([session]),
     )
 

@@ -16,8 +16,8 @@ from thinharness.defaults import (
     DEFAULT_SEARCH_DESCRIPTION,
     DEFAULT_WRITE_DESCRIPTION,
 )
-from thinharness.tools.base import StrictArgs, tool_parameters
-from thinharness.tools.filesystem import FileTools, PathValidationError, SearchArgs
+from thinharness.tools.base import PathPolicy, PathValidationError, StrictArgs, tool_parameters
+from thinharness.tools.filesystem import FileTools, SearchArgs
 from thinharness.tools.jsonl import JsonlSearchArgs
 
 
@@ -26,6 +26,7 @@ def test_file_tool_descriptions_use_defaults(tmp_path: Path) -> None:
 
     assert descriptions == {
         "read": DEFAULT_READ_DESCRIPTION,
+        "read_image": "Read one local PNG, JPEG, GIF, or WebP image for visual inspection.",
         "write": DEFAULT_WRITE_DESCRIPTION,
         "edit": DEFAULT_EDIT_DESCRIPTION,
         "search": DEFAULT_SEARCH_DESCRIPTION,
@@ -1290,6 +1291,28 @@ def test_gitignore_ignores_thinharness_outputs() -> None:
     ignore = Path(".gitignore").read_text(encoding="utf-8")
 
     assert ".thinharness/" in ignore
+
+
+def test_path_policy_defers_file_classification_until_use(tmp_path: Path) -> None:
+    future = tmp_path / "future"
+    policy = PathPolicy(tmp_path, ["future"], "read")
+
+    future.write_text("value", encoding="utf-8")
+
+    assert policy.resolve("future") == future
+    with pytest.raises(PathValidationError, match="outside allowed read paths"):
+        policy.resolve("future/child.txt")
+
+
+def test_path_policy_allows_existing_directory_descendants(tmp_path: Path) -> None:
+    directory = tmp_path / "docs"
+    directory.mkdir()
+    child = directory / "child.txt"
+    child.write_text("value", encoding="utf-8")
+    policy = PathPolicy(tmp_path, ["docs"], "read")
+
+    assert policy.resolve("docs/child.txt") == child
+
 
 def _contains_key(value: object, key: str) -> bool:
     if isinstance(value, dict):

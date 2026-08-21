@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from thinharness import Harness, HarnessConfig, Hook
+from thinharness import Harness, HarnessConfig, Hook, SkillsPlugin
 
 MODEL = os.getenv("E2E_SKILLS_MODEL", "anthropic:claude-sonnet-4-5-20250929")
 SYSTEM_PROMPT = """You are an exacting skill-using agent. Read a skill before running any script from it."""
@@ -37,12 +37,16 @@ def main() -> None:
                 root=root,
                 model=MODEL,
                 system_prompt=SYSTEM_PROMPT,
-                skills_dir=skills_dir,
-                selected_skills=["arithmetic-auditor"],
-                builtin_tools=["skill_read", "skill_run"],
                 max_model_requests=6,
                 max_tool_calls=4,
             ),
+            plugins=[
+                SkillsPlugin(
+                    skills_dir,
+                    selected_skills=["arithmetic-auditor"],
+                    tools=["skill_read", "skill_run"],
+                )
+            ],
             hooks=[Hook("before_tool_call", lambda ctx: tool_names.append(ctx.tool_name))],
         )
 

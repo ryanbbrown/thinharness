@@ -9,6 +9,8 @@ from typing import Any
 
 from thinharness import (
     AnthropicProvider,
+    ChildHarnessOutcome,
+    ChildHarnessRequest,
     OpenAIProvider,
     OpenAIResponsesModel,
     OpenRouterProvider,
@@ -17,6 +19,18 @@ from thinharness import (
 from thinharness.providers import ModelNotice, ModelTurn, ProviderError
 
 SCRIPTED_MODEL_NAME = "scripted-model"
+
+
+class FakeChildHarnessHost:
+    """No-op child host for direct third-party-style plugin bindings."""
+
+    def register_delegation_tool(self, tool: ToolSpec, recipes) -> ToolSpec:
+        del recipes
+        return tool
+
+    async def run(self, request: ChildHarnessRequest) -> ChildHarnessOutcome:
+        del request
+        raise AssertionError("unexpected child harness request")
 
 
 class FakeClient(OpenAIProvider):
@@ -207,32 +221,40 @@ class ScriptedSession:
         self.on_start = on_start
         self.on_continue = on_continue
         self.notice_calls: list[tuple[str, list[ModelNotice]]] = []
+        self.continue_calls: list[tuple[Any, Any, Any]] = []
         self._dump_state = dump_state if dump_state is not None else {"kind": "scripted", "version": 1, "model": SCRIPTED_MODEL_NAME}
 
     async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
         """Return the scripted start turn."""
+        from thinharness.content import normalize_content, text_only_value
+
+        prompt_value = text_only_value(normalize_content(prompt)) or prompt
         self.notice_calls.append(("start", list(notices or [])))
         if self.on_start:
-            self.on_start(prompt, constants.instructions, constants.tools, constants.metadata, previous_response_id)
+            self.on_start(prompt_value, constants.instructions, constants.tools, constants.metadata, previous_response_id)
         return self.start_turn
 
     async def continue_with_tools(self, outputs, constants, *, notices=None):
         """Return the scripted continuation turn."""
         self.notice_calls.append(("continue_with_tools", list(notices or [])))
+        self.continue_calls.append((outputs, constants.tools, constants.metadata))
         if self.on_continue:
             self.on_continue(outputs, constants.tools, constants.metadata)
         return self.continue_turn
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
-        """Return the start turn for a resume (first request on the session) or the continuation turn for a correction."""
+    async def continue_with_user_content(self, content, constants, *, notices=None):
+        """Return the first resumed turn or a scripted correction turn."""
+        from thinharness.content import normalize_content, text_only_value
+
+        content_value = text_only_value(normalize_content(content)) or content
         is_resume = not self.notice_calls
-        self.notice_calls.append(("continue_with_user_text", list(notices or [])))
+        self.notice_calls.append(("continue_with_user_content", list(notices or [])))
         if is_resume:
             if self.on_start:
-                self.on_start(text, constants.instructions, constants.tools, constants.metadata, None)
+                self.on_start(content_value, constants.instructions, constants.tools, constants.metadata, None)
             return self.start_turn
         if self.on_continue:
-            self.on_continue(text, constants.tools, constants.metadata)
+            self.on_continue(content_value, constants.tools, constants.metadata)
         return self.continue_turn
 
     def dump_state(self):
@@ -248,7 +270,7 @@ class FailingSession:
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, content, constants, *, notices=None):
         """Never continue after a failed start."""
         raise AssertionError("should not continue")
 

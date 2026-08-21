@@ -23,6 +23,7 @@ from thinharness import (
     RunStartedEvent,
     StreamOptions,
     SubAgentConfig,
+    SubagentsPlugin,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
     ToolSpec,
@@ -52,7 +53,7 @@ class SequenceSession:
         self.tool_outputs.append(outputs)
         return self._next_turn()
 
-    async def continue_with_user_text(self, text, constants, *, notices=None):
+    async def continue_with_user_content(self, text, constants, *, notices=None):
         """Return the first turn for a resume or record a correction and continue."""
         is_resume = self.requests_made == 0
         self.requests_made += 1
@@ -80,7 +81,7 @@ async def _collect_events(harness: Harness, prompt: str, **kwargs):
 
 async def test_stream_returns_final_harness_result(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]))
 
     events = await _collect_events(harness, "go")
 
@@ -94,8 +95,8 @@ async def test_stream_returns_final_harness_result(tmp_path: Path) -> None:
 async def test_run_consumes_stream_and_returns_result(tmp_path: Path) -> None:
     run_session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
     stream_session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    run_harness = Harness(HarnessConfig(root=tmp_path / "run", builtin_tools=[]), model=ScriptedModel([run_session]))
-    stream_harness = Harness(HarnessConfig(root=tmp_path / "stream", builtin_tools=[]), model=ScriptedModel([stream_session]))
+    run_harness = Harness(HarnessConfig(root=tmp_path / "run"), model=ScriptedModel([run_session]))
+    stream_harness = Harness(HarnessConfig(root=tmp_path / "stream"), model=ScriptedModel([stream_session]))
 
     run_result = await run_harness.run("go")
     events = await _collect_events(stream_harness, "go")
@@ -114,7 +115,7 @@ async def test_stream_emits_model_and_tool_lifecycle(tmp_path: Path) -> None:
         ),
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[echo_tool()])
 
     events = await _collect_events(harness, "go")
 
@@ -145,7 +146,7 @@ async def test_stream_payloads_are_high_level_without_raw_provider_payloads(tmp_
         ),
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]), tools=[echo_tool()])
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]), tools=[echo_tool()])
 
     events = await _collect_events(harness, "go")
 
@@ -163,7 +164,7 @@ async def test_stream_payloads_are_high_level_without_raw_provider_payloads(tmp_
 
 async def test_stream_options_keep_model_text_visible(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="visible", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]))
 
     events = await _collect_events(harness, "go", stream_options=StreamOptions())
 
@@ -184,13 +185,13 @@ async def test_recovered_provider_retry_is_one_logical_stream_request(monkeypatc
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("thinharness.providers.transport.asyncio.sleep", no_sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = OpenAIResponsesModel(
             "test-model",
             provider=OpenAIProvider(api_key="key", request_retries=1, request_retry_backoff=0, http_client=client),
         )
-        harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=model)
+        harness = Harness(HarnessConfig(root=tmp_path), model=model)
         events = await _collect_events(harness, "go")
 
     assert calls == 2
@@ -201,7 +202,7 @@ async def test_recovered_provider_retry_is_one_logical_stream_request(monkeypatc
 
 async def test_stream_limit_warning_events(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[], max_model_requests=1), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path, max_model_requests=1), model=ScriptedModel([session]))
 
     events = await _collect_events(harness, "go")
 
@@ -217,7 +218,7 @@ async def test_stream_failed_tool_content_is_included_by_default(tmp_path: Path)
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[ToolSpec("fail", "Fail", {"type": "object", "properties": {}}, lambda args: ToolResult(False, error_message).as_json())],
     )
@@ -230,7 +231,7 @@ async def test_stream_failed_tool_content_is_included_by_default(tmp_path: Path)
 
 
 async def test_stream_failure_yields_failed_event_then_raises(tmp_path: Path) -> None:
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([FailingSession()]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([FailingSession()]))
     events = []
     stream = harness.stream("go")
 
@@ -241,7 +242,7 @@ async def test_stream_failure_yields_failed_event_then_raises(tmp_path: Path) ->
     failed = [event for event in events if isinstance(event, RunFailedEvent)]
     assert len(failed) == 1
     assert failed[0].stop_reason == "provider_error"
-    assert failed[0].error_type == "HarnessError"
+    assert failed[0].error_type == "ProviderError"
 
 
 async def test_stream_subagent_events_include_parent_ids(tmp_path: Path) -> None:
@@ -251,12 +252,11 @@ async def test_stream_subagent_events_include_parent_ids(tmp_path: Path) -> None
         continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}),
     )
     harness = Harness(
-        HarnessConfig(
-            root=tmp_path,
-            builtin_tools=["subagent"],
-            subagents=[SubAgentConfig(name="helper", description="Helper.", tools=[ToolSpec("x", "X", {"type": "object"}, lambda args: "x")])],
-        ),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin(agents=[
+            SubAgentConfig(name="helper", description="Helper.", tools=[ToolSpec("x", "X", {"type": "object"}, lambda args: "x")])
+        ])],
     )
 
     events = await _collect_events(harness, "delegate")
@@ -276,7 +276,11 @@ async def test_stream_options_can_hide_subagent_events(tmp_path: Path) -> None:
         start_turn=ModelTurn(tool_calls=[ModelToolCall(id="call_1", name="subagent", arguments='{"task":"help"}')], raw={"id": "parent"}),
         continue_turn=ModelTurn(text="parent done", raw={"id": "parent-done"}),
     )
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=["subagent"]), model=ScriptedModel([parent, child]))
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent, child]),
+        plugins=[SubagentsPlugin()],
+    )
 
     events = await _collect_events(harness, "delegate", stream_options=StreamOptions(include_subagents=False))
 
@@ -294,7 +298,7 @@ async def test_stream_close_after_early_break_cleans_up(tmp_path: Path) -> None:
     session = ScriptedSession(start_turn=ModelTurn(text="unused", raw={"id": "unused"}))
     session.start = slow_start
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session, ScriptedSession(start_turn=ModelTurn(text="again", raw={}))]),
     )
 
@@ -321,7 +325,7 @@ async def test_stream_structured_output_retry_event(tmp_path: Path) -> None:
         ),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], output_type=Person, output_mode="tool", output_retries=1),
+        HarnessConfig(root=tmp_path, output_type=Person, output_mode="tool", output_retries=1),
         model=ScriptedModel([session]),
     )
 
@@ -354,7 +358,7 @@ async def test_stream_tool_retry_event(tmp_path: Path) -> None:
         return "ok"
 
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([session]),
         tools=[ToolSpec("flaky", "Flaky", {"type": "object", "properties": {}}, flaky)],
     )
@@ -368,7 +372,7 @@ async def test_stream_tool_retry_event(tmp_path: Path) -> None:
 
 async def test_stream_resume_from_emits_resume_kind(tmp_path: Path) -> None:
     session = SequenceSession(ModelTurn(text="done", raw={"id": "done"}))
-    harness = Harness(HarnessConfig(root=tmp_path, builtin_tools=[]), model=ScriptedModel([session]))
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([session]))
 
     events = await _collect_events(harness, "go", resume_from={"kind": "scripted", "version": 1, "model": "scripted-model"})
 
@@ -378,7 +382,7 @@ async def test_stream_resume_from_emits_resume_kind(tmp_path: Path) -> None:
 
 def test_stream_without_running_loop_does_not_brick_harness(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
 
@@ -390,7 +394,7 @@ def test_stream_without_running_loop_does_not_brick_harness(tmp_path: Path) -> N
 
 def test_stream_run_sync_still_works(tmp_path: Path) -> None:
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[]),
+        HarnessConfig(root=tmp_path),
         model=ScriptedModel([ScriptedSession(start_turn=ModelTurn(text="done", raw={"id": "done"}))]),
     )
 
@@ -403,7 +407,7 @@ async def test_stream_strict_after_tool_hook_failure_completes_started_tool(tmp_
         continue_turn=ModelTurn(text="done", raw={"id": "done"}),
     )
     harness = Harness(
-        HarnessConfig(root=tmp_path, builtin_tools=[], strict_hooks=True),
+        HarnessConfig(root=tmp_path, strict_hooks=True),
         model=ScriptedModel([session]),
         tools=[echo_tool()],
         hooks=[Hook("after_tool_call", lambda ctx: (_ for _ in ()).throw(RuntimeError("after failed")))],
