@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from ..tools.skills import SkillRegistry
+from ._builtin import _FrozenBuiltinPlugin
 from .base import PluginBinding, PluginContext, PluginContribution
 
 SkillToolName = Literal["skill_read", "skill_run"]
@@ -21,48 +22,11 @@ class _SkillsConfig:
     contribution: PluginContribution
 
 
-class _SkillsPluginMeta(type):
-    """Keep the skills plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("SkillsPlugin.name is fixed to 'skills'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("SkillsPlugin.name is fixed to 'skills'")
-        super().__delattr__(attribute)
-
-
-class SkillsPlugin(metaclass=_SkillsPluginMeta):
+class SkillsPlugin(_FrozenBuiltinPlugin, fixed_name="skills"):
     """Expose one constructor-time skill catalog through selected tools."""
 
-    name = "skills"
     _config: _SkillsConfig
     _frozen: bool
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("SkillsPlugin subclasses cannot override the fixed name 'skills'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject configuration changes after construction."""
-        if attribute == "name":
-            raise AttributeError("SkillsPlugin.name is fixed to 'skills'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("SkillsPlugin configuration is frozen")
-        object.__setattr__(self, attribute, value)
-
-    def __delattr__(self, attribute: str) -> None:
-        """Reject configuration deletion after construction."""
-        if attribute == "name":
-            raise AttributeError("SkillsPlugin.name is fixed to 'skills'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("SkillsPlugin configuration is frozen")
-        object.__delattr__(self, attribute)
 
     def __init__(
         self,

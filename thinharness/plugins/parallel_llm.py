@@ -13,6 +13,7 @@ from ..tools.parallel_llm import (
     DEFAULT_PARALLEL_LLM_INSTRUCTIONS,
     ParallelLlmTool,
 )
+from ._builtin import _FrozenBuiltinPlugin
 from .base import PluginBinding, PluginContext, PluginContribution
 
 if TYPE_CHECKING:
@@ -38,48 +39,11 @@ class _ParallelLlmConfig:
     extra_body: dict[str, Any] | None
 
 
-class _ParallelLlmPluginMeta(type):
-    """Keep the parallel LLM plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("ParallelLlmPlugin.name is fixed to 'parallel_llm'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("ParallelLlmPlugin.name is fixed to 'parallel_llm'")
-        super().__delattr__(attribute)
-
-
-class ParallelLlmPlugin(metaclass=_ParallelLlmPluginMeta):
+class ParallelLlmPlugin(_FrozenBuiltinPlugin, fixed_name="parallel_llm"):
     """Expose one root-scoped text-only parallel completion tool."""
 
-    name = "parallel_llm"
     _config: _ParallelLlmConfig
     _frozen: bool
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("ParallelLlmPlugin subclasses cannot override the fixed name 'parallel_llm'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject configuration changes after construction."""
-        if attribute == "name":
-            raise AttributeError("ParallelLlmPlugin.name is fixed to 'parallel_llm'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("ParallelLlmPlugin configuration is frozen")
-        object.__setattr__(self, attribute, value)
-
-    def __delattr__(self, attribute: str) -> None:
-        """Reject configuration deletion after construction."""
-        if attribute == "name":
-            raise AttributeError("ParallelLlmPlugin.name is fixed to 'parallel_llm'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("ParallelLlmPlugin configuration is frozen")
-        object.__delattr__(self, attribute)
 
     def __getattr__(self, attribute: str) -> Any:
         """Expose immutable values or copies from the constructor snapshot."""

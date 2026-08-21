@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import (
@@ -16,6 +17,7 @@ from fakes import (
     tool_output,
 )
 
+import thinharness.tool_execution as tool_execution_module
 from thinharness import (
     AfterToolCallContext,
     BeforeToolCallContext,
@@ -38,6 +40,59 @@ from thinharness.providers import ModelToolCall, ModelTurn, ProviderError
 
 def test_current_tool_runtime_context_is_unset_outside_tool_call() -> None:
     assert current_tool_runtime_context() is None
+
+
+async def test_tool_runtime_scope_copies_metadata_and_preserves_map_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    original_init = tool_execution_module.ToolCallExecutor.__init__
+
+    def capture_init(self, *args: Any, **kwargs: Any) -> None:
+        run_context = kwargs["run_context"]
+        captured.update(
+            run_metadata=run_context.metadata,
+            tool_map=kwargs["tool_map"],
+            tool_composition=kwargs["tool_composition"],
+        )
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(tool_execution_module.ToolCallExecutor, "__init__", capture_init)
+    copied_leases: list[object] = []
+
+    async def inspect(_args: Any) -> str:
+        scope = current_tool_runtime_context()
+        assert scope is not None
+        captured["scope"] = scope
+
+        async def copied_context() -> None:
+            copied = current_tool_runtime_context()
+            assert copied is not None
+            copied_leases.append(copied.lease)
+
+        await asyncio.create_task(copied_context())
+        return "ok"
+
+    session = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="inspect", name="inspect", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    metadata = {"conversation_id": "scope-test"}
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([session]),
+        tools=[ToolSpec("inspect", "inspect", {"type": "object"}, inspect)],
+    )
+
+    assert (await harness.run("go", metadata=metadata)).text == "done"
+    scope = captured["scope"]
+    assert scope.run_metadata == metadata
+    assert scope.run_metadata is not captured["run_metadata"]
+    assert scope.tool_map is captured["tool_map"]
+    assert scope.tool_composition is captured["tool_composition"]
+    assert copied_leases == [scope.lease]
+    assert scope.lease.active is False
 
 def test_hook_registry_rejects_invalid_filters() -> None:
     with pytest.raises(ValueError, match="tools filter"):

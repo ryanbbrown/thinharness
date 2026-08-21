@@ -236,11 +236,12 @@ class Harness:
         for plugin, binding in zip(configured_plugins, bindings, strict=True):
             if not isinstance(binding, PluginBinding):
                 raise TypeError(f"plugin {plugin.name!r} returned an invalid binding")
+        if isinstance(child_harnesses, _ParentChildHarnessHost):
+            child_harnesses.seal()
         static_tools: list[ToolSpec] = []
         static_compositions: list[_ToolComposition] = []
         static_instructions: list[str] = []
         static_hooks: list[Hook] = []
-        agent_names: list[str] = []
         for plugin_index, (plugin, binding) in enumerate(zip(configured_plugins, bindings, strict=True)):
             contribution = self._normalize_contribution(plugin.name, binding.static)
             static_tools.extend(contribution.tools)
@@ -255,7 +256,6 @@ class Harness:
             )
             static_instructions.extend(contribution.instructions)
             static_hooks.extend(contribution.hooks)
-            agent_names.extend(self._validate_binding_agent_names(binding.agent_names, agent_names))
 
         direct_tools = list(tools or [])
         configured_tools = [*static_tools, *direct_tools]
@@ -273,7 +273,8 @@ class Harness:
         caller_hooks = list(hooks.hooks) if isinstance(hooks, HookRegistry) else list(hooks or [])
         strict_hooks = hooks.strict_hooks if isinstance(hooks, HookRegistry) else self.config.strict_hooks
         hook_registry = HookRegistry([*static_hooks, *caller_hooks], strict_hooks=strict_hooks)
-        self._validate_hook_registry(hook_registry, set(agent_names))
+        registered_agent_names = set(child_harnesses.agent_names()) if isinstance(child_harnesses, _ParentChildHarnessHost) else set()
+        self._validate_hook_registry(hook_registry, registered_agent_names)
 
         self.plugins = configured_plugins
         self._plugin_bindings = bindings
@@ -289,7 +290,6 @@ class Harness:
         }
         self._plugin_instructions = list(static_instructions)
         self.hooks = hook_registry
-        self._agent_names = set(agent_names)
         self._child_harnesses = child_harnesses
         if isinstance(child_harnesses, _ParentChildHarnessHost):
             child_harnesses.validate_recipes(configured_tools, configured_compositions)
@@ -849,27 +849,19 @@ class Harness:
             raise ValueError("approval-required tools are not supported inside child harnesses")
 
     def _validate_hook_filters(self) -> None:
-        """Validate hook filters against statically contributed agent names."""
-        self._validate_hook_registry(self.hooks, self._agent_names)
+        """Validate hook filters against statically registered agent names."""
+        self._validate_hook_registry(self.hooks, self._registered_agent_names())
+
+    def _registered_agent_names(self) -> set[str]:
+        """Return the sealed parent-host catalog for hook validation."""
+        if isinstance(self._child_harnesses, _ParentChildHarnessHost):
+            return set(self._child_harnesses.agent_names())
+        return set()
 
     @staticmethod
     def _validate_hook_registry(hooks: HookRegistry, agent_names: set[str]) -> None:
         """Validate hook filters against statically contributed agent names."""
         hooks.validate_filters(agent_names=agent_names)
-
-    @staticmethod
-    def _validate_binding_agent_names(names: tuple[str, ...], previous: list[str]) -> list[str]:
-        """Validate immutable agent names within and across plugin bindings."""
-        if not isinstance(names, tuple):
-            raise TypeError("PluginBinding.agent_names must be a tuple")
-        accepted: list[str] = []
-        for name in names:
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("plugin agent name must be a non-empty string")
-            if name in previous or name in accepted:
-                raise ValueError(f"duplicate plugin agent name: {name}")
-            accepted.append(name)
-        return accepted
 
     def _model_supports_approval_resume(self) -> bool:
         """Return whether this harness model can resume provider sessions."""
@@ -943,7 +935,7 @@ class Harness:
             if isinstance(self._child_harnesses, _ParentChildHarnessHost):
                 self._child_harnesses.validate_recipes(candidate_tools, candidate_compositions)
             candidate_hooks = HookRegistry([*base_hooks, *dynamic_hooks], strict_hooks=self._strict_hooks)
-            self._validate_hook_registry(candidate_hooks, self._agent_names)
+            self._validate_hook_registry(candidate_hooks, self._registered_agent_names())
 
             if self._closed:
                 raise HarnessError("harness is closed")

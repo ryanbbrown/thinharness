@@ -44,7 +44,6 @@ class PluginBinding:
 
     static: PluginContribution = field(default_factory=PluginContribution)
     connect: PluginConnector | None = None
-    agent_names: tuple[str, ...] = ()
 
 
 @runtime_checkable

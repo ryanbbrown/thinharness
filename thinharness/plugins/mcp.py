@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from ..tools.base import ToolSpec
 from ..tools.mcp import MCPServer
+from ._builtin import _BuiltinPlugin
 from .base import PluginBinding, PluginContext, PluginContribution
 
 
@@ -24,36 +25,8 @@ class _BoundServer:
         return await self.server.list_tools(server_id=self.resolved_id)
 
 
-class _MCPPluginMeta(type):
-    """Keep the MCP plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("MCPPlugin.name is fixed to 'mcp'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("MCPPlugin.name is fixed to 'mcp'")
-        super().__delattr__(attribute)
-
-
-class MCPPlugin(metaclass=_MCPPluginMeta):
+class MCPPlugin(_BuiltinPlugin, fixed_name="mcp"):
     """Expose one ordered group of MCP servers through a harness plugin."""
-
-    name = "mcp"
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("MCPPlugin subclasses cannot override the fixed name 'mcp'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject instance changes to the fixed plugin name."""
-        if attribute == "name":
-            raise AttributeError("MCPPlugin.name is fixed to 'mcp'")
-        super().__setattr__(attribute, value)
 
     def __init__(self, *, servers: Sequence[MCPServer]) -> None:
         if isinstance(servers, (set, frozenset)):

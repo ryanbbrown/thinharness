@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 from pathlib import Path
+
+from thinharness import PluginBinding
+
+
+def test_private_plugin_runtime_contracts_stay_narrow() -> None:
+    """The public binding excludes agent catalogs and the runtime scope stays private."""
+    root = Path(__file__).resolve().parents[2]
+    package_source = (root / "thinharness" / "__init__.py").read_text(encoding="utf-8")
+
+    assert [field.name for field in fields(PluginBinding)] == ["static", "connect"]
+    assert "_ToolRuntimeScope" not in package_source
 
 
 def test_core_has_no_bash_imports_or_construction() -> None:

@@ -14,7 +14,7 @@ from .hooks import (
     BeforeSubagentRunContext,
     Hook,
     HookRegistry,
-    _ToolRuntimeLease,
+    _ToolRuntimeScope,
     current_tool_call_context,
     current_tool_runtime_context,
 )
@@ -110,18 +110,37 @@ class _ParentChildHarnessHost:
         self._parent = parent
         self._delegation_tools: set[int] = set()
         self._recipes: list[ChildHarnessRequest] = []
+        self._agent_names: list[str] = []
+        self._sealed = False
 
     def register_delegation_tool(self, tool: ToolSpec, recipes: Sequence[ChildHarnessRequest]) -> ToolSpec:
+        if self._sealed:
+            raise HarnessError("child harness registration is sealed")
         if not isinstance(tool, ToolSpec):
             raise TypeError("delegation tool must be a ToolSpec")
-        if isinstance(recipes, (set, frozenset)):
+        if not isinstance(recipes, Sequence) or isinstance(recipes, str | bytes):
             raise TypeError("child recipes must be an ordered sequence")
         registered = tuple(recipes)
         if any(not isinstance(recipe, ChildHarnessRequest) for recipe in registered):
             raise TypeError("child recipe must be a ChildHarnessRequest")
+        names = tuple(recipe.agent_name for recipe in registered)
+        if any(not isinstance(name, str) or not name.strip() for name in names):
+            raise ValueError("child recipe agent name must be a non-empty string")
+
         self._delegation_tools.add(id(tool))
         self._recipes.extend(registered)
+        for name in names:
+            if name not in self._agent_names:
+                self._agent_names.append(name)
         return tool
+
+    def seal(self) -> None:
+        """Prevent all later delegation registration."""
+        self._sealed = True
+
+    def agent_names(self) -> tuple[str, ...]:
+        """Return the ordered unique catalog from static registration."""
+        return tuple(self._agent_names)
 
     def is_delegation_tool(self, tool: ToolSpec) -> bool:
         """Return whether a plugin registered this exact static tool."""
@@ -184,17 +203,14 @@ class _ParentChildHarnessHost:
         tool_call = current_tool_call_context()
         if runtime is None or tool_call is None:
             raise HarnessError("child harness request requires an active parent tool call")
-        lease = runtime.get("lease")
-        if not isinstance(lease, _ToolRuntimeLease) or not lease.active:
+        if not runtime.lease.active:
             raise HarnessError("child harness request requires an active parent tool call")
-        tool_map = runtime.get("tool_map")
-        composition_map = runtime.get("tool_composition")
-        if not isinstance(tool_map, dict) or not isinstance(composition_map, dict):
-            raise HarnessError("child harness request requires an active frozen tool runtime")
         active_name = str(tool_call.get("name", ""))
-        active_composition = composition_map.get(active_name)
+        active_composition = runtime.tool_composition.get(active_name)
         if not isinstance(active_composition, _ToolComposition) or not active_composition.delegation:
             raise HarnessError("child harness request requires a registered delegation tool")
+        if request.agent_name not in self._agent_names:
+            raise HarnessError(f"child harness request uses an unregistered agent name: {request.agent_name}")
 
         parent_metadata = _parent_run_metadata(runtime)
         parent_call_id = str(tool_call["call_id"]) if tool_call.get("call_id") else None
@@ -224,8 +240,8 @@ class _ParentChildHarnessHost:
             try:
                 child = self._build_child(
                     request,
-                    tool_map,
-                    composition_map,
+                    runtime.tool_map,
+                    runtime.tool_composition,
                     child_model=child_model,
                     owns_model=owns_model,
                 )
@@ -439,10 +455,9 @@ def _validate_plugin_names(plugins: Sequence[Plugin]) -> None:
         raise ValueError(f"duplicate plugin name: {duplicate}")
 
 
-def _parent_run_metadata(runtime: dict[str, Any]) -> Json:
+def _parent_run_metadata(runtime: _ToolRuntimeScope) -> Json:
     """Copy parent metadata from the active runtime."""
-    metadata = runtime.get("run_metadata")
-    return dict(metadata) if isinstance(metadata, dict) else {}
+    return dict(runtime.run_metadata)
 
 
 def _child_metadata(parent_metadata: Json, parent_call_id: str | None) -> Json:

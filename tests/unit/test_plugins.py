@@ -4,6 +4,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fakes import FakeChildHarnessHost, ScriptedModel, ScriptedSession, echo_tool
@@ -11,17 +12,22 @@ from pydantic import BaseModel
 
 import thinharness.core as core_module
 from thinharness import (
+    BashPlugin,
     FilesystemPlugin,
     Harness,
     HarnessConfig,
     HarnessError,
     Hook,
     HookRegistry,
+    MCPPlugin,
     ModelToolCall,
     ModelTurn,
+    ParallelLlmPlugin,
     PluginBinding,
     PluginContext,
     PluginContribution,
+    SkillsPlugin,
+    SubagentsPlugin,
     ToolOrigin,
     ToolSpec,
 )
@@ -31,6 +37,57 @@ from thinharness.tools.base import ToolOrigin as DefinedToolOrigin
 
 def _tool(name: str) -> ToolSpec:
     return ToolSpec(name, name, {"type": "object", "properties": {}}, lambda _args: "ok")
+
+
+def _builtin_plugins(tmp_path: Path) -> list[Any]:
+    return [
+        FilesystemPlugin(),
+        SkillsPlugin(tmp_path, tools=["skill_read"]),
+        ParallelLlmPlugin(),
+        SubagentsPlugin(),
+        BashPlugin(),
+        MCPPlugin(servers=[]),
+    ]
+
+
+@pytest.mark.parametrize("plugin_index", range(6))
+def test_builtin_plugin_fixed_name_contract(tmp_path: Path, plugin_index: int) -> None:
+    plugin = _builtin_plugins(tmp_path)[plugin_index]
+    plugin_type = type(plugin)
+    expected = plugin.name
+
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin.name = "renamed"
+    with pytest.raises(AttributeError, match="fixed"):
+        del plugin.name
+    with pytest.raises(AttributeError, match="fixed"):
+        plugin_type.name = "renamed"
+    with pytest.raises(AttributeError, match="fixed"):
+        del plugin_type.name
+    with pytest.raises(TypeError, match="cannot override"):
+        type("RenamedBuiltin", (plugin_type,), {"name": "renamed"})
+
+    assert plugin.name == expected
+
+
+@pytest.mark.parametrize("plugin_index", range(5))
+def test_frozen_builtin_plugin_mutation_contract(tmp_path: Path, plugin_index: int) -> None:
+    plugin = _builtin_plugins(tmp_path)[plugin_index]
+
+    with pytest.raises(AttributeError, match="configuration is frozen"):
+        plugin.extra = "value"
+    with pytest.raises(AttributeError, match="configuration is frozen"):
+        del plugin._frozen
+
+
+
+def test_mcp_plugin_remains_mutable_except_for_name(tmp_path: Path) -> None:
+    plugin = _builtin_plugins(tmp_path)[5]
+
+    plugin.extra = "value"
+    assert plugin.extra == "value"
+    del plugin.extra
+    assert not hasattr(plugin, "extra")
 
 
 class StaticPlugin:

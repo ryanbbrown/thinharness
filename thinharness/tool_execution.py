@@ -21,6 +21,7 @@ from .hooks import (
     AfterToolCallContext,
     BeforeToolCallContext,
     _ToolRuntimeLease,
+    _ToolRuntimeScope,
 )
 from .providers import ModelToolCall, ToolOutput
 from .tools.base import Json, ToolEnvelope, ToolResult, ToolSpec, _invoke_tool
@@ -167,12 +168,12 @@ class ToolCallExecutor:
                 span.set_attribute("subagent.delegation", True)
             lease = _ToolRuntimeLease()
             call_token = _CURRENT_TOOL_CALL.set({"call_id": call.id, "name": call.name})
-            runtime_token = _CURRENT_TOOL_RUNTIME.set({
-                "lease": lease,
-                "run_metadata": dict(self.run_context.metadata),
-                "tool_map": self.tool_map,
-                "tool_composition": self.tool_composition,
-            })
+            runtime_token = _CURRENT_TOOL_RUNTIME.set(_ToolRuntimeScope(
+                lease=lease,
+                run_metadata=dict(self.run_context.metadata),
+                tool_map=self.tool_map,
+                tool_composition=self.tool_composition,
+            ))
             emitter_token = _CURRENT_STREAM_EMITTER.set(self.run_context.emitter)
             cancelled = False
             start = time.perf_counter()

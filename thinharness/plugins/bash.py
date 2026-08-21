@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import Field, field_validator
 
 from ..tools.base import PathValidationError, StrictArgs, ToolOrigin, ToolResult, ToolSpec, contained_path
+from ._builtin import _FrozenBuiltinPlugin
 from .base import PluginBinding, PluginContext, PluginContribution
 
 _BASH_DESCRIPTION = (
@@ -69,48 +70,11 @@ class _BashConfig:
     requires_approval: bool
 
 
-class _BashPluginMeta(type):
-    """Keep the Bash plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("BashPlugin.name is fixed to 'bash'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("BashPlugin.name is fixed to 'bash'")
-        super().__delattr__(attribute)
-
-
-class BashPlugin(metaclass=_BashPluginMeta):
+class BashPlugin(_FrozenBuiltinPlugin, fixed_name="bash"):
     """Provide one bounded, non-interactive local Bash tool."""
 
-    name = "bash"
     _config: _BashConfig
     _frozen: bool
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("BashPlugin subclasses cannot override the fixed name 'bash'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject configuration changes after construction."""
-        if attribute == "name":
-            raise AttributeError("BashPlugin.name is fixed to 'bash'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("BashPlugin configuration is frozen")
-        object.__setattr__(self, attribute, value)
-
-    def __delattr__(self, attribute: str) -> None:
-        """Reject configuration deletion after construction."""
-        if attribute == "name":
-            raise AttributeError("BashPlugin.name is fixed to 'bash'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("BashPlugin configuration is frozen")
-        object.__delattr__(self, attribute)
 
     @property
     def env(self) -> dict[str, str]:

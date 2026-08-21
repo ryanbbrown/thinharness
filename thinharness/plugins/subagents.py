@@ -12,6 +12,7 @@ from ..children import ChildHarnessOutcome, ChildHarnessRequest
 from ..defaults import DEFAULT_SYSTEM_PROMPT
 from ..hooks import AGENT_EVENTS, Hook, HookRegistry
 from ..tools.base import ToolResult, ToolSpec
+from ._builtin import _FrozenBuiltinPlugin
 from .base import Plugin, PluginBinding, PluginContext, PluginContribution
 
 DEFAULT_SUBAGENT_NAME: Final[str] = "default"
@@ -88,50 +89,13 @@ class SubAgentArgs(BaseModel):
     )
 
 
-class _SubagentsPluginMeta(type):
-    """Keep the subagents plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("SubagentsPlugin.name is fixed to 'subagents'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("SubagentsPlugin.name is fixed to 'subagents'")
-        super().__delattr__(attribute)
-
-
-class SubagentsPlugin(metaclass=_SubagentsPluginMeta):
+class SubagentsPlugin(_FrozenBuiltinPlugin, fixed_name="subagents"):
     """Contribute one delegation tool backed by isolated child harnesses."""
 
-    name = "subagents"
     _agents: tuple[SubAgentConfig, ...]
     _default_hooks: tuple[Hook, ...] | HookRegistry | None
     _agent_hooks: tuple[tuple[Hook, ...] | HookRegistry | None, ...]
     _frozen: bool
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("SubagentsPlugin subclasses cannot override the fixed name 'subagents'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject configuration changes after construction."""
-        if attribute == "name":
-            raise AttributeError("SubagentsPlugin.name is fixed to 'subagents'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("SubagentsPlugin configuration is frozen")
-        object.__setattr__(self, attribute, value)
-
-    def __delattr__(self, attribute: str) -> None:
-        """Reject configuration deletion after construction."""
-        if attribute == "name":
-            raise AttributeError("SubagentsPlugin.name is fixed to 'subagents'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("SubagentsPlugin configuration is frozen")
-        object.__delattr__(self, attribute)
 
     def __init__(
         self,
@@ -211,10 +175,7 @@ class SubagentsPlugin(metaclass=_SubagentsPluginMeta):
             handler,
         )
         registered = host.register_delegation_tool(tool, recipes)
-        return PluginBinding(
-            static=PluginContribution(tools=(registered,)),
-            agent_names=(DEFAULT_SUBAGENT_NAME, *(agent.name for agent in self._agents)),
-        )
+        return PluginBinding(static=PluginContribution(tools=(registered,)))
 
     def _default_recipe(self) -> ChildHarnessRequest:
         """Return the fixed parent-derived unnamed-child recipe."""

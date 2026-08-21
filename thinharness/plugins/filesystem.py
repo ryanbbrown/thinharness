@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..tools.base import ToolOrigin
 from ..tools.filesystem import FileTools
+from ._builtin import _FrozenBuiltinPlugin
 from .base import PluginBinding, PluginContext, PluginContribution
 
 _DEFAULT_TOOLS = ("read", "write", "edit", "search", "list", "glob")
@@ -28,48 +29,11 @@ class _FilesystemConfig:
     write_paths: tuple[str | Path, ...] | None
 
 
-class _FilesystemPluginMeta(type):
-    """Keep the filesystem plugin name fixed on the class hierarchy."""
-
-    def __setattr__(cls, attribute: str, value: object) -> None:
-        if attribute == "name":
-            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
-        super().__setattr__(attribute, value)
-
-    def __delattr__(cls, attribute: str) -> None:
-        if attribute == "name":
-            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
-        super().__delattr__(attribute)
-
-
-class FilesystemPlugin(metaclass=_FilesystemPluginMeta):
+class FilesystemPlugin(_FrozenBuiltinPlugin, fixed_name="filesystem"):
     """Provide root-scoped filesystem tools to one harness."""
 
-    name = "filesystem"
     _config: _FilesystemConfig
     _frozen: bool
-
-    def __init_subclass__(cls) -> None:
-        """Reject subclasses that replace the fixed plugin name."""
-        super().__init_subclass__()
-        if "name" in cls.__dict__:
-            raise TypeError("FilesystemPlugin subclasses cannot override the fixed name 'filesystem'")
-
-    def __setattr__(self, attribute: str, value: object) -> None:
-        """Reject configuration changes after construction."""
-        if attribute == "name":
-            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("FilesystemPlugin configuration is frozen")
-        object.__setattr__(self, attribute, value)
-
-    def __delattr__(self, attribute: str) -> None:
-        """Reject configuration deletion after construction."""
-        if attribute == "name":
-            raise AttributeError("FilesystemPlugin.name is fixed to 'filesystem'")
-        if getattr(self, "_frozen", False):
-            raise AttributeError("FilesystemPlugin configuration is frozen")
-        object.__delattr__(self, attribute)
 
     def __init__(
         self,

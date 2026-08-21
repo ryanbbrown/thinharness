@@ -35,6 +35,7 @@ from thinharness import (
     TracingOptions,
     call_tool,
 )
+from thinharness.children import _DISABLED_CHILD_HOST
 from thinharness.providers import ModelToolCall, ModelTurn
 
 
@@ -67,6 +68,18 @@ class ClosingProvider:
         self.closed += 1
 
 
+def _request(name: str) -> ChildHarnessRequest:
+    return ChildHarnessRequest(
+        agent_name=name,
+        agent_description=f"{name} child",
+        trace_agent_name=f"subagent.{name}",
+        task="",
+        inherited=False,
+        tool_mode="explicit",
+        system_prompt=name,
+    )
+
+
 def _parent_call(*, agent: str | None = None, task: str = "help", call_id: str = "call_1") -> ModelTurn:
     agent_arg = f',"agent":"{agent}"' if agent is not None else ""
     return ModelTurn(
@@ -84,13 +97,75 @@ def _plugin_tool(plugin: SubagentsPlugin, tmp_path: Path) -> tuple[FakeChildHost
 def test_plugin_contributes_static_tool_and_default_agent(tmp_path: Path) -> None:
     host, tool, binding = _plugin_tool(SubagentsPlugin(), tmp_path)
 
-    assert binding.agent_names == (DEFAULT_SUBAGENT_NAME,)
+    assert not hasattr(binding, "agent_names")
+    assert [recipe.agent_name for recipe in host.recipes] == [DEFAULT_SUBAGENT_NAME]
     assert host.tools == [tool]
     assert tool.name == "subagent"
     assert tool.origin is None
     assert set(tool.response_tool()["parameters"]["properties"]) == {"task", "agent"}
     assert "Omit `agent`" in tool.description
     assert host.recipes[0].tool_mode == "inherited"
+
+
+def test_parent_host_catalog_is_ordered_unique_with_alias_tools(tmp_path: Path) -> None:
+    class DelegationPlugin:
+        def __init__(self, name: str, registrations: list[tuple[str, list[str]]]) -> None:
+            self.name = name
+            self.registrations = registrations
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            tools = []
+            for tool_name, names in self.registrations:
+                tool = ToolSpec(tool_name, tool_name, {"type": "object"}, lambda _args: "ok")
+                tools.append(context.child_harnesses.register_delegation_tool(tool, [_request(name) for name in names]))
+            return PluginBinding(static=PluginContribution(tools=tuple(tools)))
+
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([]),
+        plugins=[
+            DelegationPlugin("first", [("first_alias", ["shared", "first", "shared"])]),
+            DelegationPlugin("second", [("second_alias", ["second", "shared"])]),
+        ],
+        hooks=[Hook("before_subagent_run", lambda _ctx: None, agents=["shared", "first", "second"])],
+    )
+
+    host: Any = harness._child_harnesses
+    assert host.agent_names() == ("shared", "first", "second")
+
+
+def test_delegation_registration_validation_is_atomic(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class AtomicPlugin:
+        name = "atomic"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            host: Any = context.child_harnesses
+            captured["host"] = host
+            invalid_tool = ToolSpec("invalid", "invalid", {"type": "object"}, lambda _args: "ok")
+            valid_recipe = _request("valid")
+
+            with pytest.raises(TypeError, match="ToolSpec"):
+                host.register_delegation_tool(object(), [valid_recipe])  # type: ignore[arg-type]
+            with pytest.raises(TypeError, match="ChildHarnessRequest"):
+                host.register_delegation_tool(invalid_tool, [valid_recipe, object()])  # type: ignore[list-item]
+            with pytest.raises(ValueError, match="non-empty"):
+                host.register_delegation_tool(invalid_tool, [replace(valid_recipe, agent_name=" ")])
+
+            assert host.agent_names() == ()
+            assert not host.is_delegation_tool(invalid_tool)
+            assert host._recipes == []
+            valid_tool = ToolSpec("valid", "valid", {"type": "object"}, lambda _args: "ok")
+            host.register_delegation_tool(valid_tool, [valid_recipe])
+            captured["valid_tool"] = valid_tool
+            return PluginBinding(static=PluginContribution(tools=(valid_tool,)))
+
+    Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[AtomicPlugin()])
+    host = captured["host"]
+    assert host.agent_names() == ("valid",)
+    assert len(host._recipes) == 1
+    assert host.is_delegation_tool(captured["valid_tool"])
 
 
 def test_plain_harness_has_no_delegation_and_same_named_direct_tool_is_valid(tmp_path: Path) -> None:
@@ -822,9 +897,199 @@ async def test_detached_delegation_task_loses_active_call_lease(
     assert inferred == []
 
 
+async def test_sealed_host_rejects_connector_registration_without_mutation(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class LateConnectorPlugin:
+        name = "late-connector"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            host: Any = context.child_harnesses
+            base = ToolSpec("base_delegate", "base", {"type": "object"}, lambda _args: "ok")
+            host.register_delegation_tool(base, [_request("base")])
+            captured.update(host=host, base=base)
+
+            @asynccontextmanager
+            async def connect():
+                late = ToolSpec("late_delegate", "late", {"type": "object"}, lambda _args: "ok")
+                captured["late"] = late
+                host.register_delegation_tool(late, [_request("late")])
+                yield PluginContribution()  # pragma: no cover
+
+            return PluginBinding(static=PluginContribution(tools=(base,)), connect=connect)
+
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[LateConnectorPlugin()])
+    host = captured["host"]
+    before = (host.agent_names(), list(host._recipes), set(host._delegation_tools))
+
+    with pytest.raises(Exception, match="registration is sealed"):
+        await harness.connect()
+
+    assert (host.agent_names(), host._recipes, host._delegation_tools) == before
+    assert not host.is_delegation_tool(captured["late"])
+
+
+async def test_live_registration_is_rejected_without_host_mutation(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class LiveRegistrationPlugin:
+        name = "live-registration"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            host: Any = context.child_harnesses
+            catalog_tool = ToolSpec("catalog_delegate", "catalog", {"type": "object"}, lambda _args: "ok")
+            host.register_delegation_tool(catalog_tool, [_request("known")])
+            captured["host"] = host
+
+            def invoke(_args: Any) -> str:
+                late = ToolSpec("late", "late", {"type": "object"}, lambda _args: "ok")
+                host.register_delegation_tool(late, [_request("late")])
+                return "unexpected"
+
+            ordinary = ToolSpec("register_late", "register late", {"type": "object"}, invoke)
+            return PluginBinding(static=PluginContribution(tools=(catalog_tool, ordinary)))
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="late", name="register_late", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([parent]), plugins=[LiveRegistrationPlugin()])
+    host = captured["host"]
+    before = (host.agent_names(), list(host._recipes), set(host._delegation_tools))
+
+    assert (await harness.run("go")).text == "done"
+    output = tool_output(parent.continue_calls[0][0][0].output)
+    assert "registration is sealed" in output["content"]
+    assert (host.agent_names(), host._recipes, host._delegation_tools) == before
+
+
+async def test_runtime_rejects_unregistered_request_before_hooks_or_child_creation(tmp_path: Path) -> None:
+    hook_calls: list[str] = []
+
+    class UnknownRequestPlugin:
+        name = "unknown-request"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            async def invoke(_args: Any) -> str:
+                await context.child_harnesses.run(_request("unknown"))
+                return "unexpected"
+
+            tool = ToolSpec("unknown_delegate", "unknown", {"type": "object"}, invoke)
+            context.child_harnesses.register_delegation_tool(tool, [_request("known")])
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="unknown", name="unknown_delegate", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent]),
+        plugins=[UnknownRequestPlugin()],
+        hooks=[Hook("before_subagent_run", lambda ctx: hook_calls.append(ctx.agent), agents=["known"])],
+    )
+
+    assert (await harness.run("go")).text == "done"
+    output = tool_output(parent.continue_calls[0][0][0].output)
+    assert "unregistered agent name: unknown" in output["content"]
+    assert hook_calls == []
+
+
+async def test_ordinary_tool_cannot_use_registered_child_host(tmp_path: Path) -> None:
+    class OrdinaryPlugin:
+        name = "ordinary"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            async def invoke(_args: Any) -> str:
+                await context.child_harnesses.run(_request(DEFAULT_SUBAGENT_NAME))
+                return "unexpected"
+
+            return PluginBinding(static=PluginContribution(tools=(
+                ToolSpec("ordinary", "ordinary", {"type": "object"}, invoke),
+            )))
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="ordinary", name="ordinary", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="done", raw={}),
+    )
+    harness = Harness(
+        HarnessConfig(root=tmp_path),
+        model=ScriptedModel([parent]),
+        plugins=[SubagentsPlugin(), OrdinaryPlugin()],
+    )
+    assert (await harness.run("go")).text == "done"
+    output = tool_output(parent.continue_calls[0][0][0].output)
+    assert "registered delegation tool" in output["content"]
+
+
+async def test_disabled_host_rejects_registration_and_execution() -> None:
+    request = _request("nested")
+    tool = ToolSpec("nested", "nested", {"type": "object"}, lambda _args: "ok")
+
+    with pytest.raises(Exception, match="cannot create nested"):
+        _DISABLED_CHILD_HOST.register_delegation_tool(tool, [request])
+    with pytest.raises(Exception, match="cannot create nested"):
+        await _DISABLED_CHILD_HOST.run(request)
+
+
+@pytest.mark.parametrize("exit_mode", ["exception", "cancellation"])
+async def test_detached_delegation_is_revoked_after_abnormal_tool_exit(
+    tmp_path: Path,
+    exit_mode: str,
+) -> None:
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    blocker = asyncio.Event()
+    detached: list[asyncio.Task[ChildHarnessOutcome]] = []
+    request = _request("known")
+
+    class AbnormalExitPlugin:
+        name = "abnormal-exit"
+
+        def bind(self, context: PluginContext) -> PluginBinding:
+            async def invoke(_args: Any) -> str:
+                async def delayed() -> ChildHarnessOutcome:
+                    await release.wait()
+                    return await context.child_harnesses.run(request)
+
+                detached.append(asyncio.create_task(delayed()))
+                if exit_mode == "exception":
+                    error = RuntimeError("handler failed")
+                    error.__dict__["_thinharness_strict_hook"] = True
+                    raise error
+                entered.set()
+                await blocker.wait()
+                return "unexpected"
+
+            tool = ToolSpec("abnormal_delegate", "abnormal", {"type": "object"}, invoke)
+            context.child_harnesses.register_delegation_tool(tool, [request])
+            return PluginBinding(static=PluginContribution(tools=(tool,)))
+
+    parent = ScriptedSession(
+        start_turn=ModelTurn(tool_calls=[ModelToolCall(id="abnormal", name="abnormal_delegate", arguments="{}")], raw={}),
+        continue_turn=ModelTurn(text="unexpected", raw={}),
+    )
+    harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([parent]), plugins=[AbnormalExitPlugin()])
+
+    running = asyncio.create_task(harness.run("go"))
+    if exit_mode == "exception":
+        with pytest.raises(RuntimeError, match="handler failed"):
+            await running
+    else:
+        await entered.wait()
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    release.set()
+    with pytest.raises(Exception, match="active parent tool call"):
+        await detached[0]
+
+
 async def test_connected_registered_delegation_keeps_provenance_and_host_access(tmp_path: Path) -> None:
     tracer = FakeTracer()
     marker_at_hook: list[bool] = []
+    agent_hook_calls: list[str] = []
 
     class ConnectedDelegationPlugin:
         name = "connected-delegation"
@@ -870,11 +1135,14 @@ async def test_connected_registered_delegation_keeps_provenance_and_host_access(
         HarnessConfig(root=tmp_path),
         model=ScriptedModel([parent, child]),
         plugins=[ConnectedDelegationPlugin()],
-        hooks=[Hook(
-            "before_tool_call",
-            lambda _ctx: marker_at_hook.append(tracer.stack[-1].attributes.get("subagent.delegation") is True),
-            tools=["connected_delegate"],
-        )],
+        hooks=[
+            Hook(
+                "before_tool_call",
+                lambda _ctx: marker_at_hook.append(tracer.stack[-1].attributes.get("subagent.delegation") is True),
+                tools=["connected_delegate"],
+            ),
+            Hook("before_subagent_run", lambda ctx: agent_hook_calls.append(ctx.agent), agents=["connected"]),
+        ],
         tracing=[TracingOptions(tracer=tracer)],
     )
 
@@ -883,6 +1151,7 @@ async def test_connected_registered_delegation_keeps_provenance_and_host_access(
     span = next(span for span in tracer.spans if span.name == "execute_tool connected_delegate")
     assert output["content"] == "connected child done"
     assert marker_at_hook == [True]
+    assert agent_hook_calls == ["connected"]
     assert span.attributes["subagent.delegation"] is True
 
 
