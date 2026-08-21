@@ -185,7 +185,7 @@ async def test_recovered_provider_retry_is_one_logical_stream_request(monkeypatc
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("thinharness.providers.transport.asyncio.sleep", no_sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = OpenAIResponsesModel(
             "test-model",

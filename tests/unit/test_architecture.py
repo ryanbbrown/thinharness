@@ -4,7 +4,9 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
-from thinharness import PluginBinding
+import thinharness
+import thinharness.providers as providers
+from thinharness import Harness, HarnessConfig, ModelTurn, OpenAIProvider, OpenAIResponsesModel, PluginBinding
 
 
 def test_private_plugin_runtime_contracts_stay_narrow() -> None:
@@ -150,3 +152,104 @@ def test_core_has_no_skills_or_parallel_llm_implementation_details() -> None:
         "parallel_llm_max_prompts",
     ):
         assert f'"{field_name}"' in migration_source
+
+
+def test_provider_implementations_have_focused_package_ownership() -> None:
+    """Each built-in provider owns its model, session, transport, and wire dialect."""
+    root = Path(__file__).resolve().parents[2]
+    provider_root = root / "thinharness" / "providers"
+
+    assert not (root / "thinharness" / "providers.py").exists()
+    assert {path.name for path in provider_root.glob("*.py")} == {
+        "__init__.py",
+        "anthropic.py",
+        "base.py",
+        "openai.py",
+        "openrouter.py",
+        "transcript.py",
+        "transport.py",
+    }
+    assert providers.OpenAIProvider.__module__ == "thinharness.providers.openai"
+    assert providers.OpenAIResponsesModel.__module__ == "thinharness.providers.openai"
+    assert providers.OpenAIResponsesSession.__module__ == "thinharness.providers.openai"
+    assert providers.AnthropicProvider.__module__ == "thinharness.providers.anthropic"
+    assert providers.AnthropicMessagesModel.__module__ == "thinharness.providers.anthropic"
+    assert providers.AnthropicMessagesSession.__module__ == "thinharness.providers.anthropic"
+    assert providers.OpenRouterProvider.__module__ == "thinharness.providers.openrouter"
+    assert providers.OpenRouterModel.__module__ == "thinharness.providers.openrouter"
+    assert providers.OpenRouterSession.__module__ == "thinharness.providers.openrouter"
+
+    for shared_name in ("base.py", "transport.py", "transcript.py"):
+        source = (provider_root / shared_name).read_text(encoding="utf-8")
+        assert "from .openai" not in source
+        assert "from .anthropic" not in source
+        assert "from .openrouter" not in source
+
+
+def test_provider_public_imports_resolve_from_package_and_top_level() -> None:
+    """The package exports its API explicitly and keeps all top-level provider imports."""
+    assert all(getattr(providers, name) is not None for name in providers.__all__)
+    top_level_provider_names = {
+        "AnthropicMessagesModel",
+        "AnthropicProvider",
+        "Model",
+        "ModelCapabilities",
+        "ModelNotice",
+        "ModelSession",
+        "ModelSettings",
+        "ModelToolCall",
+        "ModelTurn",
+        "OpenAIProvider",
+        "OpenAIResponsesModel",
+        "OpenRouterModel",
+        "OpenRouterProvider",
+        "Provider",
+        "RequestConstants",
+        "StructuredOutputRequest",
+        "TokenUsage",
+        "ToolOutput",
+        "infer_model",
+        "parse_model_ref",
+    }
+    assert top_level_provider_names <= set(thinharness.__all__)
+    for name in top_level_provider_names:
+        assert getattr(thinharness, name) is getattr(providers, name)
+
+
+async def test_external_model_and_custom_builtin_transport_are_injectable(tmp_path: Path) -> None:
+    """Applications can inject custom model and transport implementations without source edits."""
+    class ExternalSession:
+        async def start(self, prompt, constants, *, previous_response_id=None, notices=None):
+            return ModelTurn(text="external model")
+
+        async def continue_with_tools(self, outputs, constants, *, notices=None):
+            raise AssertionError("external model must finish on its first turn")
+
+        async def continue_with_user_content(self, content, constants, *, notices=None):
+            raise AssertionError("external model must finish on its first turn")
+
+        def dump_state(self):
+            return None
+
+    class ExternalModel:
+        model = "external-model"
+        api_key = None
+        provider = type("ExternalProvider", (), {"name": "External"})()
+
+        def new_session(self):
+            return ExternalSession()
+
+    external_result = await Harness(HarnessConfig(root=tmp_path), model=ExternalModel()).run("hello")
+    assert external_result.text == "external model"
+
+    class CustomOpenAITransport(OpenAIProvider):
+        async def create_response(self, payload):
+            assert payload["model"] == "custom-transport-model"
+            return {"id": "resp_custom", "output_text": "custom transport"}
+
+    transport = CustomOpenAITransport(api_key="test-key")
+    model = OpenAIResponsesModel("custom-transport-model", provider=transport)
+    transport_result = await Harness(HarnessConfig(root=tmp_path), model=model).run("hello")
+
+    assert model.provider is transport
+    assert transport_result.text == "custom transport"

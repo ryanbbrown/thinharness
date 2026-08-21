@@ -627,7 +627,7 @@ async def test_parallel_llm_builtin_provider_uses_one_transport_retry_budget(
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("thinharness.providers.transport.asyncio.sleep", no_sleep)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = OpenAIResponsesModel(
             "test-model",

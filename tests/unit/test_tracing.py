@@ -283,7 +283,7 @@ async def test_recovered_provider_retry_uses_one_successful_model_span(
     async def no_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr("thinharness.providers.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("thinharness.providers.transport.asyncio.sleep", no_sleep)
     tracer = FakeTracer()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         model = OpenAIResponsesModel(
