@@ -95,6 +95,7 @@ These are source lines of code in the smallest first-party opinionated configura
 | Harness | Source LOC | What is counted |
 | --- | --- | --- |
 | **ThinHarness** | **10,359** | 6,297 core + 4,062 bundled plugins and tools |
+| [Tau](https://github.com/huggingface/tau) | 37,476 | `tau_coding` + its first-party `tau_agent` and `tau_ai` runtime layers |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 72,737 | The base and headless profiles + their first-party package dependency closure |
 | [Pydantic AI Coder](https://github.com/pydantic/pydantic-ai-harness) | 85,633 | Pydantic AI runtime + the Coder capability and everything it composes |
 | [Pi](https://github.com/earendil-works/pi) | 95,276 | `pi-coding-agent` + its first-party workspace dependency closure |
