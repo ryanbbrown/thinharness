@@ -219,6 +219,7 @@ class _StreamCapture:
         self._temporary_path: Path | None = None
         self._final_path: Path | None = None
         self.error: str | None = None
+        self.drain_complete = False
 
     def add(self, data: bytes) -> None:
         if self.error is None and self._file is None and self.buffer.total + len(data) > self.limit:
@@ -296,7 +297,11 @@ class _StreamCapture:
             return self.buffer.retained_bytes().decode("utf-8", errors="replace")
         ranges = " and ".join(f"[{start}, {end})" for start, end in self.buffer.retained_ranges)
         if self.artifact_path is not None:
-            artifact = f"complete {self.stream} saved to {self.artifact_path}"
+            if self.drain_complete:
+                artifact = f"complete {self.stream} saved to {self.artifact_path}"
+            else:
+                artifact = f"{self.stream} bytes captured before drain cutoff saved to {self.artifact_path}"
+            artifact += '; read with a Bash call using cwd="."'
         else:
             artifact = f"complete {self.stream} could not be saved ({self.error or 'unknown artifact error'})"
         marker = f"\n... retained bytes {ranges}; {self.buffer.omitted} bytes omitted; {artifact} ...\n"
@@ -455,6 +460,7 @@ class _BashRunner:
                 if capture.buffer.truncated:
                     metadata[f"{capture.stream}_omitted_bytes"] = capture.buffer.omitted
                     metadata[f"{capture.stream}_retained_ranges"] = capture.buffer.retained_ranges
+                    metadata[f"{capture.stream}_drain_complete"] = capture.drain_complete
                 if capture.artifact_path is not None:
                     metadata[f"{capture.stream}_artifact_path"] = capture.artifact_path
                 if capture.error is not None:
@@ -481,14 +487,14 @@ class _BashRunner:
             for reader in readers:
                 if not reader.done():
                     reader.cancel()
+            if not keep_artifacts:
+                for capture in captures:
+                    capture.discard()
             if readers:
                 await asyncio.gather(*readers, return_exceptions=True)
             if spawn_task is not None and not spawn_task.done():
                 spawn_task.cancel()
                 await asyncio.gather(spawn_task, return_exceptions=True)
-            if not keep_artifacts:
-                for capture in captures:
-                    capture.discard()
 
     @staticmethod
     def _start_error(exc: BaseException, cwd: Path, timeout: float, duration: float) -> ToolResult:
@@ -571,6 +577,7 @@ def _start_readers(
 async def _read_pipe(reader: asyncio.StreamReader, capture: _StreamCapture) -> None:
     while chunk := await reader.read(_READ_CHUNK_SIZE):
         capture.add(chunk)
+    capture.drain_complete = True
 
 
 async def _spawn_after_cancellation(task: asyncio.Task[asyncio.subprocess.Process]) -> asyncio.subprocess.Process | None:

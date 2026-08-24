@@ -96,6 +96,18 @@ async def _wait_for_file(path: Path, timeout: float = 2) -> None:
             await asyncio.sleep(0.01)
 
 
+def _artifact_entries(root: Path) -> list[Path]:
+    output_dir = root / ".thinharness" / "outputs"
+    return list(output_dir.iterdir()) if output_dir.exists() else []
+
+
+async def _wait_for_artifact_entry(root: Path, timeout: float = 2) -> list[Path]:
+    async with asyncio.timeout(timeout):
+        while not (entries := _artifact_entries(root)):
+            await asyncio.sleep(0.01)
+        return entries
+
+
 def test_plugin_is_explicit_static_and_uses_fixed_identity(tmp_path: Path) -> None:
     plain = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]))
     harness = Harness(HarnessConfig(root=tmp_path), model=ScriptedModel([]), plugins=[BashPlugin()])
@@ -510,17 +522,18 @@ async def test_cwd_must_exist_be_directory_and_stay_inside_root(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    ("limit", "head", "tail", "omitted"),
+    ("limit", "head", "tail", "ranges", "omitted"),
     [
-        (1, "a", "", 9),
-        (5, "abc", "ij", 5),
-        (6, "abc", "hij", 4),
+        (1, "a", "", [[0, 1]], 9),
+        (5, "abc", "ij", [[0, 3], [8, 10]], 5),
+        (6, "abc", "hij", [[0, 3], [7, 10]], 4),
     ],
 )
 async def test_output_uses_fixed_head_tail_split(
     limit: int,
     head: str,
     tail: str,
+    ranges: list[list[int]],
     omitted: int,
     tmp_path: Path,
 ) -> None:
@@ -530,16 +543,23 @@ async def test_output_uses_fixed_head_tail_split(
         plugin=BashPlugin(max_output_bytes=limit),
     )
 
-    stdout = _stdout(result)
-    stderr = _stderr(result)
-    assert stdout.startswith(head)
-    assert stdout.endswith(tail)
-    assert stderr.startswith(head.upper())
-    assert stderr.endswith(tail.upper())
-    assert f"{omitted} bytes omitted" in stdout
-    assert f"{omitted} bytes omitted" in stderr
-    assert f"complete stdout saved to {result.metadata['stdout_artifact_path']}" in stdout
-    assert f"complete stderr saved to {result.metadata['stderr_artifact_path']}" in stderr
+    stdout_path = result.metadata["stdout_artifact_path"]
+    stderr_path = result.metadata["stderr_artifact_path"]
+    rendered_ranges = " and ".join(f"[{start}, {end})" for start, end in ranges)
+    stdout_marker = (
+        f"\n... retained bytes {rendered_ranges}; {omitted} bytes omitted; complete stdout saved to {stdout_path}; "
+        'read with a Bash call using cwd="." ...\n'
+    )
+    stderr_marker = (
+        f"\n... retained bytes {rendered_ranges}; {omitted} bytes omitted; complete stderr saved to {stderr_path}; "
+        'read with a Bash call using cwd="." ...\n'
+    )
+    assert _stdout(result) == head + stdout_marker + tail
+    assert _stderr(result) == head.upper() + stderr_marker + tail.upper()
+    assert result.metadata["stdout_retained_ranges"] == ranges
+    assert result.metadata["stderr_retained_ranges"] == ranges
+    assert result.metadata["stdout_drain_complete"] is True
+    assert result.metadata["stderr_drain_complete"] is True
     assert result.metadata["stdout_bytes"] == 10
     assert result.metadata["stderr_bytes"] == 10
     assert result.metadata["stdout_truncated"] is True
@@ -570,6 +590,8 @@ async def test_truncated_streams_preserve_complete_bytes_in_separate_artifacts(t
     assert result.metadata["stderr_omitted_bytes"] == 495
     assert result.metadata["stdout_retained_ranges"] == [[0, 9], [504, 512]]
     assert result.metadata["stderr_retained_ranges"] == [[0, 9], [504, 512]]
+    assert result.metadata["stdout_drain_complete"] is True
+    assert result.metadata["stderr_drain_complete"] is True
     assert f"complete stdout saved to {stdout_path}" in _stdout(result)
     assert f"complete stderr saved to {stderr_path}" in _stderr(result)
     retained = "retained bytes [0, 9) and [504, 512); 495 bytes omitted"
@@ -585,14 +607,56 @@ async def test_large_no_newline_floods_are_drained_and_bounded_per_stream(tmp_pa
     assert result.metadata["stderr_bytes"] == 220_000
     assert result.metadata["stdout_truncated"] is True
     assert result.metadata["stderr_truncated"] is True
-    assert len(_stdout(result)) < 500
-    assert len(_stderr(result)) < 500
-    assert _stdout(result).startswith("x" * 51)
-    assert _stdout(result).endswith("x" * 50)
-    assert _stderr(result).startswith("y" * 51)
-    assert _stderr(result).endswith("y" * 50)
-    assert (tmp_path / result.metadata["stdout_artifact_path"]).read_bytes() == b"x" * 200_000
-    assert (tmp_path / result.metadata["stderr_artifact_path"]).read_bytes() == b"y" * 220_000
+    stdout_path = result.metadata["stdout_artifact_path"]
+    stderr_path = result.metadata["stderr_artifact_path"]
+    stdout_marker = (
+        f"\n... retained bytes [0, 51) and [199950, 200000); 199899 bytes omitted; complete stdout saved to {stdout_path}; "
+        'read with a Bash call using cwd="." ...\n'
+    )
+    stderr_marker = (
+        f"\n... retained bytes [0, 51) and [219950, 220000); 219899 bytes omitted; complete stderr saved to {stderr_path}; "
+        'read with a Bash call using cwd="." ...\n'
+    )
+    assert _stdout(result) == "x" * 51 + stdout_marker + "x" * 50
+    assert _stderr(result) == "y" * 51 + stderr_marker + "y" * 50
+    assert len(_stdout(result)) == 101 + len(stdout_marker)
+    assert len(_stderr(result)) == 101 + len(stderr_marker)
+    assert result.metadata["stdout_drain_complete"] is True
+    assert result.metadata["stderr_drain_complete"] is True
+    assert (tmp_path / stdout_path).read_bytes() == b"x" * 200_000
+    assert (tmp_path / stderr_path).read_bytes() == b"y" * 220_000
+
+
+async def test_escaped_descendant_pipe_cutoff_does_not_claim_complete_artifact(tmp_path: Path) -> None:
+    child_file = tmp_path / "escaped-child"
+    code = (
+        "import os,time; os.setsid(); os.write(1, b'abcdefghij'); "
+        f"open({str(child_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"
+    )
+    command = (
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)} & "
+        f"while ! test -f {shlex.quote(str(child_file))}; do sleep 0.01; done"
+    )
+
+    result, _ = await _run_bash(tmp_path, {"command": command}, plugin=BashPlugin(max_output_bytes=5))
+    child = int(child_file.read_text())
+    try:
+        artifact_path = result.metadata["stdout_artifact_path"]
+        marker = (
+            "\n... retained bytes [0, 3) and [8, 10); 5 bytes omitted; "
+            f"stdout bytes captured before drain cutoff saved to {artifact_path}; "
+            'read with a Bash call using cwd="." ...\n'
+        )
+        assert result.ok is True
+        assert result.metadata["stdout_drain_complete"] is False
+        assert _stdout(result) == "abc" + marker + "ij"
+        assert "complete stdout" not in _stdout(result)
+        assert (tmp_path / artifact_path).read_bytes() == b"abcdefghij"
+    finally:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 async def test_exact_output_limit_is_not_truncated(tmp_path: Path) -> None:
@@ -611,6 +675,40 @@ async def test_exact_output_limit_is_not_truncated(tmp_path: Path) -> None:
     assert "stdout_artifact_path" not in result.metadata
     assert "stderr_artifact_path" not in result.metadata
     assert not (tmp_path / ".thinharness").exists()
+
+
+async def test_asymmetric_truncation_creates_only_one_stream_artifact(tmp_path: Path) -> None:
+    result, _ = await _run_bash(
+        tmp_path,
+        {"command": "printf abcdefghij; printf err >&2"},
+        plugin=BashPlugin(max_output_bytes=5),
+    )
+
+    assert result.ok is True
+    assert (tmp_path / result.metadata["stdout_artifact_path"]).read_bytes() == b"abcdefghij"
+    assert result.metadata["stdout_drain_complete"] is True
+    assert result.metadata["stderr_bytes"] == 3
+    assert result.metadata["stderr_truncated"] is False
+    assert "stderr_artifact_path" not in result.metadata
+    assert "stderr_omitted_bytes" not in result.metadata
+    assert "stderr_retained_ranges" not in result.metadata
+    assert "stderr_drain_complete" not in result.metadata
+
+
+async def test_timeout_keeps_primary_error_and_complete_truncated_artifact(tmp_path: Path) -> None:
+    result, _ = await _run_bash(
+        tmp_path,
+        {"command": "printf abcdefghij; sleep 30", "timeout": 0.1},
+        plugin=BashPlugin(max_output_bytes=5),
+    )
+
+    assert result.ok is False
+    assert result.metadata["error_type"] == "Timeout"
+    assert result.metadata["timed_out"] is True
+    assert result.metadata["exit_code"] is not None
+    assert result.metadata["stdout_drain_complete"] is True
+    assert (tmp_path / result.metadata["stdout_artifact_path"]).read_bytes() == b"abcdefghij"
+    assert "complete stdout saved to" in _stdout(result)
 
 
 async def test_artifact_failure_is_explicit_and_preserves_primary_command_error(
@@ -637,13 +735,89 @@ async def test_artifact_failure_is_explicit_and_preserves_primary_command_error(
     assert succeeded.metadata["error_type"] == "OutputArtifactError"
     assert succeeded.metadata["output_artifact_errors"] == {"stdout": "OSError: artifact sentinel"}
     assert "stdout_artifact_path" not in succeeded.metadata
-    assert "complete stdout could not be saved (OSError: artifact sentinel)" in _stdout(succeeded)
-    assert len(_stdout(succeeded)) < 250
+    marker = (
+        "\n... retained bytes [0, 3) and [8, 10); 5 bytes omitted; "
+        "complete stdout could not be saved (OSError: artifact sentinel) ...\n"
+    )
+    assert _stdout(succeeded) == "abc" + marker + "ij"
     assert failed.ok is False
     assert failed.metadata["exit_code"] == 7
     assert failed.metadata["error_type"] == "NonZeroExit"
     assert failed.metadata["output_artifact_errors"] == {"stdout": "OSError: artifact sentinel"}
     assert not (tmp_path / ".thinharness").exists()
+
+
+async def test_mid_write_artifact_failure_removes_hidden_partial_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_write = bash_module._StreamCapture._write
+    failure_injected = False
+
+    def fail_after_partial_write(capture, data) -> None:
+        nonlocal failure_injected
+        if capture.stream == "stdout" and data and not failure_injected:
+            failure_injected = True
+            assert capture._file is not None
+            capture._file.write(data[:2])
+            raise OSError("mid-write sentinel")
+        real_write(capture, data)
+
+    monkeypatch.setattr(bash_module._StreamCapture, "_write", fail_after_partial_write)
+    result, _ = await _run_bash(
+        tmp_path,
+        {"command": "printf abcdefghij"},
+        plugin=BashPlugin(max_output_bytes=5),
+    )
+
+    marker = (
+        "\n... retained bytes [0, 3) and [8, 10); 5 bytes omitted; "
+        "complete stdout could not be saved (OSError: mid-write sentinel) ...\n"
+    )
+    assert failure_injected is True
+    assert result.ok is False
+    assert result.metadata["exit_code"] == 0
+    assert result.metadata["error_type"] == "OutputArtifactError"
+    assert result.metadata["output_artifact_errors"] == {"stdout": "OSError: mid-write sentinel"}
+    assert "stdout_artifact_path" not in result.metadata
+    assert _stdout(result) == "abc" + marker + "ij"
+    assert _artifact_entries(tmp_path) == []
+
+
+async def test_artifact_finalization_failure_removes_closed_temporary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_replace = Path.replace
+    failure_injected = False
+
+    def fail_artifact_replace(path: Path, target: Path) -> Path:
+        nonlocal failure_injected
+        if path.name.endswith(".tmp"):
+            failure_injected = True
+            assert path.exists()
+            raise OSError("rename sentinel")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_artifact_replace)
+    result, _ = await _run_bash(
+        tmp_path,
+        {"command": "printf abcdefghij"},
+        plugin=BashPlugin(max_output_bytes=5),
+    )
+
+    marker = (
+        "\n... retained bytes [0, 3) and [8, 10); 5 bytes omitted; "
+        "complete stdout could not be saved (OSError: rename sentinel) ...\n"
+    )
+    assert failure_injected is True
+    assert result.ok is False
+    assert result.metadata["exit_code"] == 0
+    assert result.metadata["error_type"] == "OutputArtifactError"
+    assert result.metadata["output_artifact_errors"] == {"stdout": "OSError: rename sentinel"}
+    assert "stdout_artifact_path" not in result.metadata
+    assert _stdout(result) == "abc" + marker + "ij"
+    assert _artifact_entries(tmp_path) == []
 
 
 async def test_invalid_and_split_utf8_decode_with_replacement(tmp_path: Path) -> None:
@@ -696,11 +870,10 @@ async def test_normal_exit_kills_term_ignoring_same_group_descendant(tmp_path: P
 
 async def test_cancelling_run_kills_group_and_propagates(tmp_path: Path) -> None:
     pgid_file = tmp_path / "pgid"
-    ready_file = tmp_path / "ready"
     session = ScriptedSession(start_turn=_call_turn({
         "command": (
             f"echo $$ > {shlex.quote(str(pgid_file))}; printf abcdefghij; "
-            f"touch {shlex.quote(str(ready_file))}; trap '' TERM; while :; do sleep 1; done"
+            "trap '' TERM; while :; do sleep 1; done"
         ),
     }))
     harness = Harness(
@@ -709,7 +882,10 @@ async def test_cancelling_run_kills_group_and_propagates(tmp_path: Path) -> None
         plugins=[BashPlugin(max_output_bytes=5)],
     )
     task = asyncio.create_task(harness.run("go"))
-    await _wait_for_file(ready_file)
+    entries = await _wait_for_artifact_entry(tmp_path)
+    assert len(entries) == 1
+    assert entries[0].name.startswith(".")
+    assert entries[0].name.endswith(".tmp")
     pgid = int(pgid_file.read_text())
 
     task.cancel()
@@ -717,7 +893,7 @@ async def test_cancelling_run_kills_group_and_propagates(tmp_path: Path) -> None
         await asyncio.wait_for(task, timeout=4)
 
     assert not _group_exists(pgid)
-    assert not list((tmp_path / ".thinharness" / "outputs").glob("*"))
+    assert _artifact_entries(tmp_path) == []
 
 
 async def test_repeated_cancellation_does_not_detach_cleanup(tmp_path: Path) -> None:
