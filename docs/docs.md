@@ -232,7 +232,9 @@ harness = Harness(
 )
 ```
 
-Each call starts a fresh `bash -c` process with no stdin, PTY, shared shell state, or persistent background-job interface. The host configures default and maximum timeouts and a byte limit for each output stream. The model can request only a timeout, which is capped by the host. Stdout and stderr are drained concurrently into separate bounded head-and-tail buffers; omitted middle bytes get a visible marker and are not written to spill files.
+Each call starts a fresh `bash -c` process with no stdin, PTY, shared shell state, or persistent background-job interface. The host configures default and maximum timeouts and a byte limit for each output stream. The model can request only a timeout, which is capped by the host. Stdout and stderr are drained concurrently into separate bounded head-and-tail buffers. For each truncated stream, the result reports the omitted byte count, zero-based half-open retained ranges, and a root-relative path under `.thinharness/outputs/` to a separate binary artifact containing every byte in order.
+
+Overflow artifacts are created lazily, so untruncated streams do not create files or the output directory. A returned artifact remains until an external caller removes it or removes the harness root; the plugin does not expire it. Cancellation removes unpublished artifacts. If artifact creation, writing, closing, or finalization fails, the result reports the failure and does not claim a partial file. That failure makes an otherwise successful command result fail, while an existing timeout or nonzero-exit result keeps its primary error type and command metadata.
 
 By default, commands inherit only `PATH`, `HOME`, temporary-directory, locale, and timezone values, plus fixed non-interactive defaults. Set `inherit_env=True` to copy the full host environment. In either mode, inherited `BASH_ENV` and `ENV` are removed before explicit host `env` values are applied.
 

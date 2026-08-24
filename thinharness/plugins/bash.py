@@ -7,10 +7,11 @@ import math
 import os
 import signal
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from pydantic import Field, field_validator
 
@@ -189,12 +190,123 @@ class _BoundedBuffer:
     def truncated(self) -> bool:
         return self.total > self.limit
 
+    @property
+    def omitted(self) -> int:
+        return self.total - len(self._head) - len(self._tail)
+
+    @property
+    def retained_ranges(self) -> list[list[int]]:
+        ranges = [[0, len(self._head)]]
+        if self._tail:
+            ranges.append([self.total - len(self._tail), self.total])
+        return ranges
+
+    def retained_bytes(self) -> bytes:
+        return bytes(self._head + self._tail)
+
+
+@dataclass
+class _StreamCapture:
+    """Keep bounded output and persist complete bytes after overflow."""
+
+    root: Path
+    stream: str
+    limit: int
+
+    def __post_init__(self) -> None:
+        self.buffer = _BoundedBuffer(self.limit)
+        self._file: BinaryIO | None = None
+        self._temporary_path: Path | None = None
+        self._final_path: Path | None = None
+        self.error: str | None = None
+
+    def add(self, data: bytes) -> None:
+        if self.error is None and self._file is None and self.buffer.total + len(data) > self.limit:
+            try:
+                self._start_artifact()
+            except Exception as exc:
+                self._fail(exc)
+        if self._file is not None:
+            try:
+                self._write(data)
+            except Exception as exc:
+                self._fail(exc)
+        self.buffer.add(data)
+
+    def _start_artifact(self) -> None:
+        output_dir = contained_path(self.root, ".thinharness/outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        basename = f"bash-{time.time_ns()}-{uuid.uuid4().hex}-{self.stream}.bin"
+        self._final_path = output_dir / basename
+        self._temporary_path = output_dir / f".{basename}.tmp"
+        self._file = self._temporary_path.open("xb", buffering=0)
+        self._write(self.buffer.retained_bytes())
+
+    def _write(self, data: bytes) -> None:
+        assert self._file is not None
+        remaining = memoryview(data)
+        while remaining:
+            written = self._file.write(remaining)
+            if written is None or written <= 0:
+                raise OSError("artifact write made no progress")
+            remaining = remaining[written:]
+
+    def finalize(self) -> None:
+        if not self.buffer.truncated or self.error is not None:
+            return
+        assert self._file is not None
+        assert self._temporary_path is not None
+        assert self._final_path is not None
+        try:
+            self._file.close()
+            self._file = None
+            self._temporary_path.replace(self._final_path)
+            self._temporary_path = None
+        except Exception as exc:
+            self._fail(exc)
+
+    def discard(self) -> None:
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+        for path in (self._temporary_path, self._final_path):
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self._temporary_path = None
+        self._final_path = None
+
+    def _fail(self, exc: BaseException) -> None:
+        self.error = f"{type(exc).__name__}: {exc}"
+        self.discard()
+
+    @property
+    def artifact_path(self) -> str | None:
+        if self._final_path is None:
+            return None
+        return self._final_path.relative_to(self.root).as_posix()
+
     def render(self) -> str:
-        if not self.truncated:
-            return bytes(self._head + self._tail).decode("utf-8", errors="replace")
-        omitted = self.total - len(self._head) - len(self._tail)
-        marker = f"\n... {omitted} bytes omitted ...\n"
-        return self._head.decode("utf-8", errors="replace") + marker + self._tail.decode("utf-8", errors="replace")
+        if not self.buffer.truncated:
+            return self.buffer.retained_bytes().decode("utf-8", errors="replace")
+        ranges = " and ".join(f"[{start}, {end})" for start, end in self.buffer.retained_ranges)
+        if self.artifact_path is not None:
+            artifact = f"complete {self.stream} saved to {self.artifact_path}"
+        else:
+            artifact = f"complete {self.stream} could not be saved ({self.error or 'unknown artifact error'})"
+        marker = f"\n... retained bytes {ranges}; {self.buffer.omitted} bytes omitted; {artifact} ...\n"
+        head_size = self.buffer.retained_ranges[0][1]
+        retained = self.buffer.retained_bytes()
+        return (
+            retained[:head_size].decode("utf-8", errors="replace")
+            + marker
+            + retained[head_size:].decode("utf-8", errors="replace")
+        )
 
 
 @dataclass
@@ -238,6 +350,8 @@ class _BashRunner:
         spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
         process: asyncio.subprocess.Process | None = None
         readers: list[asyncio.Task[None]] = []
+        captures: list[_StreamCapture] = []
+        keep_artifacts = False
         started: float | None = None
         try:
             try:
@@ -269,7 +383,7 @@ class _BashRunner:
                 _close_fds(write_fds)
                 write_fds.clear()
                 if process is not None:
-                    readers, _ = _start_readers(pipes, self._config.max_output_bytes)
+                    readers, captures = _start_readers(pipes, self._root, self._config.max_output_bytes)
                     wait_task = asyncio.create_task(process.wait())
                     _signal_group(process.pid, signal.SIGTERM)
                     cleanup = asyncio.create_task(_cleanup_process(
@@ -294,7 +408,7 @@ class _BashRunner:
 
             assert process is not None
             assert started is not None
-            readers, buffers = _start_readers(pipes, self._config.max_output_bytes)
+            readers, captures = _start_readers(pipes, self._root, self._config.max_output_bytes)
             wait_task = asyncio.create_task(process.wait())
             timed_out = False
             try:
@@ -321,6 +435,8 @@ class _BashRunner:
                 await _finish_cleanup_despite_cancellation(cleanup)
                 raise
 
+            for capture in captures:
+                capture.finalize()
             returncode = process.returncode
             duration = time.perf_counter() - started
             metadata: dict[str, Any] = {
@@ -329,20 +445,34 @@ class _BashRunner:
                 "duration_seconds": round(duration, 3),
                 "cwd": str(cwd),
                 "timeout_seconds": timeout,
-                "stdout_bytes": buffers[0].total,
-                "stderr_bytes": buffers[1].total,
-                "stdout_truncated": buffers[0].truncated,
-                "stderr_truncated": buffers[1].truncated,
+                "stdout_bytes": captures[0].buffer.total,
+                "stderr_bytes": captures[1].buffer.total,
+                "stdout_truncated": captures[0].buffer.truncated,
+                "stderr_truncated": captures[1].buffer.truncated,
             }
+            artifact_errors: dict[str, str] = {}
+            for capture in captures:
+                if capture.buffer.truncated:
+                    metadata[f"{capture.stream}_omitted_bytes"] = capture.buffer.omitted
+                    metadata[f"{capture.stream}_retained_ranges"] = capture.buffer.retained_ranges
+                if capture.artifact_path is not None:
+                    metadata[f"{capture.stream}_artifact_path"] = capture.artifact_path
+                if capture.error is not None:
+                    artifact_errors[capture.stream] = capture.error
+            if artifact_errors:
+                metadata["output_artifact_errors"] = artifact_errors
             if returncode is not None and returncode < 0:
                 metadata["signal"] = -returncode
             if timed_out:
                 metadata["error_type"] = "Timeout"
             elif returncode != 0:
                 metadata["error_type"] = "NonZeroExit"
+            elif artifact_errors:
+                metadata["error_type"] = "OutputArtifactError"
+            keep_artifacts = True
             return ToolResult(
-                not timed_out and returncode == 0,
-                _format_output(buffers[0].render(), buffers[1].render()),
+                not timed_out and returncode == 0 and not artifact_errors,
+                _format_output(captures[0].render(), captures[1].render()),
                 metadata,
             )
         finally:
@@ -356,6 +486,9 @@ class _BashRunner:
             if spawn_task is not None and not spawn_task.done():
                 spawn_task.cancel()
                 await asyncio.gather(spawn_task, return_exceptions=True)
+            if not keep_artifacts:
+                for capture in captures:
+                    capture.discard()
 
     @staticmethod
     def _start_error(exc: BaseException, cwd: Path, timeout: float, duration: float) -> ToolResult:
@@ -425,15 +558,19 @@ async def _open_owned_pipe() -> tuple[_OwnedPipe, int]:
         raise
 
 
-def _start_readers(pipes: list[_OwnedPipe], limit: int) -> tuple[list[asyncio.Task[None]], list[_BoundedBuffer]]:
-    buffers = [_BoundedBuffer(limit), _BoundedBuffer(limit)]
-    readers = [asyncio.create_task(_read_pipe(pipe.reader, buffer)) for pipe, buffer in zip(pipes, buffers, strict=True)]
-    return readers, buffers
+def _start_readers(
+    pipes: list[_OwnedPipe],
+    root: Path,
+    limit: int,
+) -> tuple[list[asyncio.Task[None]], list[_StreamCapture]]:
+    captures = [_StreamCapture(root, "stdout", limit), _StreamCapture(root, "stderr", limit)]
+    readers = [asyncio.create_task(_read_pipe(pipe.reader, capture)) for pipe, capture in zip(pipes, captures, strict=True)]
+    return readers, captures
 
 
-async def _read_pipe(reader: asyncio.StreamReader, buffer: _BoundedBuffer) -> None:
+async def _read_pipe(reader: asyncio.StreamReader, capture: _StreamCapture) -> None:
     while chunk := await reader.read(_READ_CHUNK_SIZE):
-        buffer.add(chunk)
+        capture.add(chunk)
 
 
 async def _spawn_after_cancellation(task: asyncio.Task[asyncio.subprocess.Process]) -> asyncio.subprocess.Process | None:
