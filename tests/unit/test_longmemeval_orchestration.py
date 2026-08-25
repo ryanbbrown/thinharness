@@ -12,6 +12,18 @@ from benchmarks.longmemeval_v2.orchestrate import (  # noqa: E402
     summarize_pairs,
     token_cost,
 )
+from benchmarks.longmemeval_v2.run_cell import thinharness_memory_params  # noqa: E402
+
+
+def test_thinharness_cell_has_explicit_runtime_paths_when_official_injection_ignores_custom_memory(tmp_path: Path) -> None:
+    output_dir = tmp_path / "cell"
+    data_root = tmp_path / "data"
+
+    params = thinharness_memory_params(output_dir, data_root)
+
+    assert params["workspace_dir"] == str((output_dir / "memory_workspace" / "shared").resolve())
+    assert params["trajectories_root_dir"] == str(data_root.resolve())
+    assert params["query_trace_dir"] == str((output_dir / "query_traces").resolve())
 
 
 def test_normalized_query_usage_preserves_cache_reasoning_requests_and_tools() -> None:

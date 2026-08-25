@@ -142,6 +142,26 @@ def run_native(args: argparse.Namespace) -> None:
         sys.argv = old_argv
 
 
+def thinharness_memory_params(output_dir: Path, data_root: Path) -> dict[str, Any]:
+    return {
+        "model": "openai:gpt-5.6-luna",
+        "base_url": None,
+        "api_key_env": "OPENAI_API_KEY",
+        "timeout_seconds": 1200.0,
+        "max_retries": 3,
+        "max_model_requests": 30,
+        "max_tool_calls": 128,
+        "output_retries": 1,
+        "builtin_tools": ["read", "search", "jsonl_search", "list", "glob"],
+        "output_mode": "native",
+        "reasoning_effort": "xhigh",
+        "extra_body": {},
+        "workspace_dir": str((output_dir / "memory_workspace" / "shared").resolve()),
+        "trajectories_root_dir": str(data_root.resolve()),
+        "query_trace_dir": str((output_dir / "query_traces").resolve()),
+    }
+
+
 def run_thinharness(args: argparse.Namespace) -> None:
     from data.public_data import materialize_runtime_haystack, materialize_runtime_questions
     from evaluation.harness import main as harness_main
@@ -168,21 +188,7 @@ def run_thinharness(args: argparse.Namespace) -> None:
         memory_config_path,
         {
             "memory_type": "thinharness",
-            "memory_params": {
-                "model": "openai:gpt-5.6-luna",
-                "base_url": None,
-                "api_key_env": "OPENAI_API_KEY",
-                "timeout_seconds": 1200.0,
-                "max_retries": 3,
-                "max_model_requests": 30,
-                "max_tool_calls": 128,
-                "output_retries": 1,
-                "builtin_tools": ["read", "search", "jsonl_search", "list", "glob"],
-                "output_mode": "native",
-                "reasoning_effort": "xhigh",
-                "extra_body": {},
-                "query_trace_dir": str((args.output_dir / "query_traces").resolve()),
-            },
+            "memory_params": thinharness_memory_params(args.output_dir, args.data_root),
         },
     )
     old_argv = sys.argv
