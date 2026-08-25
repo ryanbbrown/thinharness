@@ -8,11 +8,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from benchmarks.longmemeval_v2.orchestrate import (  # noqa: E402
+    normalize_patch_blank_context,
     normalized_query_usage,
     summarize_pairs,
     token_cost,
 )
 from benchmarks.longmemeval_v2.run_cell import thinharness_memory_params  # noqa: E402
+
+
+def test_patch_normalization_removes_only_blank_context_markers() -> None:
+    patch = b"@@ -1 +1 @@\n context\n \n-old\n+new\n"
+
+    assert normalize_patch_blank_context(patch) == b"@@ -1 +1 @@\n context\n\n-old\n+new\n"
 
 
 def test_thinharness_cell_has_explicit_runtime_paths_when_official_injection_ignores_custom_memory(tmp_path: Path) -> None:

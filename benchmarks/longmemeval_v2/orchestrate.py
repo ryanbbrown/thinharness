@@ -70,6 +70,13 @@ def command_output(command: list[str], cwd: Path | None = None) -> str:
     return subprocess.check_output(command, cwd=cwd, text=True).strip()
 
 
+def normalize_patch_blank_context(patch: bytes) -> bytes:
+    return b"".join(
+        b"\n" if line in {b" \n", b" "} else line
+        for line in patch.splitlines(keepends=True)
+    )
+
+
 def preflight(args: argparse.Namespace, selection: dict[str, Any]) -> dict[str, Any]:
     if len(selection["questions"]) != 14:
         raise RuntimeError("Frozen selection does not contain 14 questions")
@@ -83,7 +90,7 @@ def preflight(args: argparse.Namespace, selection: dict[str, Any]) -> dict[str, 
         ["git", "diff", "--", "evaluation/harness.py", "evaluation/run_eval.py", "evaluation/qa_eval_metrics.py"],
         cwd=args.official_root,
     )
-    if official_diff != patch_bytes:
+    if normalize_patch_blank_context(official_diff) != patch_bytes:
         raise RuntimeError("Official harness instrumentation differs from the committed patch")
     repo_status = command_output(["git", "status", "--porcelain"], cwd=args.repo_root)
     if repo_status:
@@ -418,6 +425,7 @@ def main() -> None:
                 break
             print(f"CELL_START {cell_name}", flush=True)
             evaluator_path = args.run_root / "evaluator_receipts" / f"{cell_name}.jsonl"
+            evaluator_path.parent.mkdir(parents=True, exist_ok=True)
             os.environ["LME_EVALUATOR_RECEIPTS_PATH"] = str(evaluator_path)
             command = [
                 sys.executable,

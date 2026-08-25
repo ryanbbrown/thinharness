@@ -1,5 +1,5 @@
 diff --git a/evaluation/harness.py b/evaluation/harness.py
-index 6a71824..d24b488 100644
+index 6a71824..3b4550a 100644
 --- a/evaluation/harness.py
 +++ b/evaluation/harness.py
 @@ -155,6 +155,11 @@ def parse_args() -> argparse.Namespace:
@@ -15,7 +15,7 @@ index 6a71824..d24b488 100644
      parser.add_argument("--memory-context-max-tokens", type=int, default=200000)
      parser.add_argument("--prompt-build-max-workers", type=int, default=1)
 @@ -850,6 +855,10 @@ def extract_text_from_response_message(message: Any) -> str:
- 
+
  def build_extra_body(args: argparse.Namespace) -> dict[str, Any] | None:
      extra_body: dict[str, Any] = {}
 +    if args.reader_provider_json is not None:
@@ -27,8 +27,8 @@ index 6a71824..d24b488 100644
      if args.repetition_penalty is not None:
 @@ -886,12 +895,19 @@ def build_reader_request(
      return req
- 
- 
+
+
 -def extract_usage_dict(response: Any) -> dict[str, int]:
 +def extract_usage_dict(response: Any) -> dict[str, Any]:
      usage = getattr(response, "usage", None)
@@ -44,8 +44,8 @@ index 6a71824..d24b488 100644
          "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
 +        "details": usage_payload,
      }
- 
- 
+
+
 @@ -899,11 +915,17 @@ async def call_reader_model_async(
      client: AsyncOpenAI,
      args: argparse.Namespace,
@@ -63,8 +63,8 @@ index 6a71824..d24b488 100644
 +        "provider": response_extra.get("provider") if isinstance(response_extra, dict) else None,
 +    }
 +    return text, extract_usage_dict(response), metadata
- 
- 
+
+
  async def generate_all_reader_outputs(
 @@ -920,7 +942,7 @@ async def generate_all_reader_outputs(
      async def run_one(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -90,17 +90,29 @@ index 6a71824..d24b488 100644
              "usage": usage,
 +            "reader_metadata": metadata,
          }
- 
+
      tasks = [asyncio.create_task(run_one(row)) for row in prompt_rows]
-@@ -1400,6 +1424,7 @@ def main() -> None:
+@@ -1375,6 +1399,11 @@ def main() -> None:
+     )
+
+     outputs_by_question_id = asyncio.run(generate_all_reader_outputs(args, prompt_rows))
++    with (output_dir / "reader_outputs.jsonl").open("w", encoding="utf-8") as fp:
++        for row in prompt_rows:
++            output = outputs_by_question_id[row["question_id"]]
++            fp.write(json.dumps({"question_id": row["question_id"], **output}, ensure_ascii=True) + "\n")
++            fp.flush()
+
+     per_question_path = output_dir / "per_question.jsonl"
+     records: list[dict[str, Any]] = []
+@@ -1400,6 +1429,7 @@ def main() -> None:
                  "response_parsed_boxed": output["response_parsed_boxed"],
                  "is_unknown": output["is_unknown"],
                  "usage": output["usage"],
 +                "reader_metadata": output["reader_metadata"],
              }
              score_bool, _, _ = score_prediction(row, eval_config)
- 
-@@ -1429,6 +1454,7 @@ def main() -> None:
+
+@@ -1429,6 +1459,7 @@ def main() -> None:
                  "score": 1.0 if score_bool else 0.0,
                  "score_bool": score_bool,
                  "usage": row["usage"],
@@ -109,20 +121,21 @@ index 6a71824..d24b488 100644
              }
              fp.write(json.dumps(record, ensure_ascii=True) + "\n")
 diff --git a/evaluation/qa_eval_metrics.py b/evaluation/qa_eval_metrics.py
-index 6197efa..e80fcf0 100644
+index 6197efa..74c44a6 100644
 --- a/evaluation/qa_eval_metrics.py
 +++ b/evaluation/qa_eval_metrics.py
-@@ -1,6 +1,8 @@
+@@ -1,6 +1,9 @@
 +import hashlib
  import json
  import os
  import re
 +from datetime import datetime, timezone
++from pathlib import Path
  from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
- 
- 
-@@ -529,6 +531,23 @@ def _call_chat_completion(
- 
+
+
+@@ -529,6 +532,25 @@ def _call_chat_completion(
+
      response = client.chat.completions.create(**request)
      message_content = response.choices[0].message.content
 +    receipt_path = os.getenv("LME_EVALUATOR_RECEIPTS_PATH")
@@ -140,7 +153,9 @@ index 6197efa..e80fcf0 100644
 +            "judgement_sha256": hashlib.sha256(content_text.encode()).hexdigest(),
 +            "judgement": content_text,
 +        }
-+        with open(receipt_path, "a", encoding="utf-8") as handle:
++        receipt_file = Path(receipt_path)
++        receipt_file.parent.mkdir(parents=True, exist_ok=True)
++        with receipt_file.open("a", encoding="utf-8") as handle:
 +            handle.write(json.dumps(receipt, ensure_ascii=True) + "\n")
      if isinstance(message_content, str):
          return message_content.strip()
