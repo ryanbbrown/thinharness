@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-25T21:05:40.244384+00:00",
+  "experiment_id": "luna-xhigh-rg-diagnostic-replicates-v1",
+  "status": "completed",
+  "completed_cells": 4,
+  "target_cells": 4,
+  "native_cells_run": 0,
+  "thinharness_replicate_cells_run": 4,
+  "cost_totals_usd": {
+    "query_api_equivalent": 0.29126218,
+    "reader_provider_reported": 0.0043216,
+    "evaluator_api_equivalent": 0.07109199999999999,
+    "total_api_equivalent": 0.37462468
+  }
+}

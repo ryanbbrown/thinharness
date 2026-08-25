@@ -232,19 +232,21 @@ def write_results_markdown(path: Path, comparison: dict[str, Any], cost_totals: 
         "",
         "These are four new ThinHarness-only stochastic replicates. They preserve and do not replace the original paired-wave cells.",
         "",
-        "| Question | Original Thin input | Replicate input | Native input | Original Thin tools "
-        "| Replicate tools | Search failures old/new | Score native/old/new |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Question | Evidence | Input tokens | Tool calls | Search failures | Latency | Query cost | Score |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in comparison["rows"]:
-        native = row["original_native"]
-        old = row["original_thinharness"]
-        new = row["rg_replicate_thinharness"]
-        lines.append(
-            f"| {row['question_id']} | {old['input_tokens']:,} | {new['input_tokens']:,} | {native['input_tokens']:,} "
-            f"| {old['tool_calls']} | {new['tool_calls']} | {old['failed_search_calls']}/{new['failed_search_calls']} "
-            f"| {native['score']:.0f}/{old['score']:.0f}/{new['score']:.0f} |"
-        )
+        for label, key in (
+            ("original native", "original_native"),
+            ("original ThinHarness", "original_thinharness"),
+            ("rg ThinHarness replicate", "rg_replicate_thinharness"),
+        ):
+            values = row[key]
+            lines.append(
+                f"| {row['question_id']} | {label} | {values['input_tokens']:,} | {values['tool_calls']} "
+                f"| {values['failed_search_calls']} | {values['latency_seconds']:.2f}s "
+                f"| ${values['query_cost_usd']:.8f} | {values['score']:.0f} |"
+            )
     totals = comparison["totals"]
     ratio_old = totals["replicate_vs_original_thinharness"]
     ratio_native = totals["replicate_vs_original_native"]
@@ -256,6 +258,11 @@ def write_results_markdown(path: Path, comparison: dict[str, Any], cost_totals: 
         f"- Replicate/original ThinHarness query-cost ratio: {ratio_old['query_cost_usd_ratio']:.3f}x.",
         f"- Replicate/original native input ratio: {ratio_native['input_tokens_ratio']:.3f}x.",
         f"- Replicate/original native query-cost ratio: {ratio_native['query_cost_usd_ratio']:.3f}x.",
+        f"- Search failures: {totals['original_thinharness']['failed_search_calls']:.0f} original ThinHarness, "
+        f"{totals['rg_replicate_thinharness']['failed_search_calls']:.0f} replicate; replicate rg-unavailable failures: 0.",
+        f"- Correct scores: {totals['original_native']['correct']:.0f}/4 native, "
+        f"{totals['original_thinharness']['correct']:.0f}/4 original ThinHarness, "
+        f"{totals['rg_replicate_thinharness']['correct']:.0f}/4 replicate.",
         f"- Replicate final-cell API-equivalent cost: ${cost_totals['total_api_equivalent']:.8f}.",
         "- Scores are stochastic outcomes. This diagnostic cannot attribute score changes only to ripgrep.",
     ])

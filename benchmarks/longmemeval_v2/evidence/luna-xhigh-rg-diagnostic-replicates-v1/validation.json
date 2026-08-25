@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "checks": {
+    "selection_count": 4,
+    "selection_ids": [
+      "f61a096f",
+      "109b334c",
+      "b82d0dd6",
+      "18b91103"
+    ],
+    "completed_cells": 4,
+    "target_cells": 4,
+    "native_cells_run": 0,
+    "thinharness_replicate_cells_run": 4,
+    "cell_directory_count": 4,
+    "all_cell_names_are_replicate_thinharness": true,
+    "all_cells_scored": true,
+    "one_successful_query_attempt_per_cell": true,
+    "all_jsonl_search_probes_passed": true,
+    "all_cells_used_configured_rg": true,
+    "replicate_rg_unavailable_events": 0,
+    "original_evidence_sha256_expected": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e",
+    "original_evidence_sha256_actual": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e",
+    "original_evidence_preserved": true,
+    "secret_scan": {
+      "files_scanned": 1744,
+      "bytes_scanned": 1033579940,
+      "injected_secret_matches": 0
+    }
+  },
+  "cells": [
+    {
+      "cell": "replicate-01-f61a096f-thinharness",
+      "question_id": "f61a096f",
+      "harness": "thinharness",
+      "final_outcome": "scored",
+      "score": 1.0,
+      "query_attempt_count": 1,
+      "query_attempt_statuses": [
+        "finished"
+      ],
+      "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+      "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+      "jsonl_search_probe_status": "passed",
+      "artifact_manifest_sha256": "0f68b56e35e0e4ce6c2e4ff3ad4c746bb79eab91afb1de09743504adedc980b8"
+    },
+    {
+      "cell": "replicate-02-109b334c-thinharness",
+      "question_id": "109b334c",
+      "harness": "thinharness",
+      "final_outcome": "scored",
+      "score": 1.0,
+      "query_attempt_count": 1,
+      "query_attempt_statuses": [
+        "finished"
+      ],
+      "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+      "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+      "jsonl_search_probe_status": "passed",
+      "artifact_manifest_sha256": "70cfe85606399769b0de8619bdb17aefc28659d1a18b12ca919d7b4d80d1aa6f"
+    },
+    {
+      "cell": "replicate-03-b82d0dd6-thinharness",
+      "question_id": "b82d0dd6",
+      "harness": "thinharness",
+      "final_outcome": "scored",
+      "score": 0.0,
+      "query_attempt_count": 1,
+      "query_attempt_statuses": [
+        "finished"
+      ],
+      "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+      "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+      "jsonl_search_probe_status": "passed",
+      "artifact_manifest_sha256": "7fb3d82f73ce959968fda0c0c85bfc83649310cc5cf8600416b444b5d2960da6"
+    },
+    {
+      "cell": "replicate-04-18b91103-thinharness",
+      "question_id": "18b91103",
+      "harness": "thinharness",
+      "final_outcome": "scored",
+      "score": 1.0,
+      "query_attempt_count": 1,
+      "query_attempt_statuses": [
+        "finished"
+      ],
+      "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+      "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+      "jsonl_search_probe_status": "passed",
+      "artifact_manifest_sha256": "c05b3fb97da60d5f39bc279344eaaf50fd6e63b8722ea02e5340681e72b05a1c"
+    }
+  ]
+}

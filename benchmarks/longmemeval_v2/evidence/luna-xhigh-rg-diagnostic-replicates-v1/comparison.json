@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-25T21:05:40.243419+00:00",
+  "experiment_id": "luna-xhigh-rg-diagnostic-replicates-v1",
+  "interpretation": "New ThinHarness stochastic replicates compared with preserved original cells; not replacements or paired same-seed reruns.",
+  "rows": [
+    {
+      "question_id": "f61a096f",
+      "domain": "web",
+      "question_type": "static-environment",
+      "has_question_image": false,
+      "rationale": "Second-highest ThinHarness input, highest static-cell input, successful score, and four failed search calls.",
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 531836,
+        "cached_input_tokens": 463594,
+        "ordinary_input_tokens": 68242,
+        "output_tokens": 2860,
+        "reasoning_output_tokens": 1159,
+        "model_requests": 14,
+        "tool_calls": 13,
+        "latency_seconds": 45.662020249990746,
+        "query_cost_usd": 0.026352280000000002,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 3929999,
+        "cached_input_tokens": 3597475,
+        "ordinary_input_tokens": 332524,
+        "output_tokens": 9921,
+        "reasoning_output_tokens": 7614,
+        "model_requests": 25,
+        "tool_calls": 43,
+        "latency_seconds": 147.90432574995793,
+        "query_cost_usd": 0.1503595,
+        "search_calls": 8,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 3
+      },
+      "rg_replicate_thinharness": {
+        "score": 1.0,
+        "input_tokens": 331310,
+        "cached_input_tokens": 262702,
+        "ordinary_input_tokens": 68608,
+        "output_tokens": 2085,
+        "reasoning_output_tokens": 1043,
+        "model_requests": 12,
+        "tool_calls": 13,
+        "latency_seconds": 36.50710737507325,
+        "query_cost_usd": 0.02147764,
+        "search_calls": 6,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0
+      },
+      "replicate_vs_original_thinharness": {
+        "input_tokens_ratio": 0.08430282043328764,
+        "tool_calls_ratio": 0.3023255813953488,
+        "latency_seconds_ratio": 0.2468292065831187,
+        "query_cost_usd_ratio": 0.14284192219314376
+      },
+      "replicate_vs_original_native": {
+        "input_tokens_ratio": 0.6229551967147767,
+        "tool_calls_ratio": 1.0,
+        "latency_seconds_ratio": 0.7995070558683974,
+        "query_cost_usd_ratio": 0.8150201804170264
+      }
+    },
+    {
+      "question_id": "109b334c",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "has_question_image": false,
+      "rationale": "Highest ThinHarness input, tool-call count, and query cost; successful score and four failed search calls.",
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 362313,
+        "cached_input_tokens": 296125,
+        "ordinary_input_tokens": 66188,
+        "output_tokens": 2877,
+        "reasoning_output_tokens": 1510,
+        "model_requests": 10,
+        "tool_calls": 9,
+        "latency_seconds": 43.213478167017456,
+        "query_cost_usd": 0.0226125,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 4217890,
+        "cached_input_tokens": 3729119,
+        "ordinary_input_tokens": 488771,
+        "output_tokens": 10782,
+        "reasoning_output_tokens": 7669,
+        "model_requests": 17,
+        "tool_calls": 47,
+        "latency_seconds": 157.81654391699703,
+        "query_cost_usd": 0.18527498,
+        "search_calls": 14,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 4
+      },
+      "rg_replicate_thinharness": {
+        "score": 1.0,
+        "input_tokens": 1300709,
+        "cached_input_tokens": 1093442,
+        "ordinary_input_tokens": 207267,
+        "output_tokens": 5742,
+        "reasoning_output_tokens": 3219,
+        "model_requests": 11,
+        "tool_calls": 33,
+        "latency_seconds": 82.6753917079186,
+        "query_cost_usd": 0.07021263999999999,
+        "search_calls": 27,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0
+      },
+      "replicate_vs_original_thinharness": {
+        "input_tokens_ratio": 0.3083790710521137,
+        "tool_calls_ratio": 0.7021276595744681,
+        "latency_seconds_ratio": 0.5238702461473329,
+        "query_cost_usd_ratio": 0.37896449914608
+      },
+      "replicate_vs_original_native": {
+        "input_tokens_ratio": 3.590014711037142,
+        "tool_calls_ratio": 3.6666666666666665,
+        "latency_seconds_ratio": 1.913185311961774,
+        "query_cost_usd_ratio": 3.1050365948037584
+      }
+    },
+    {
+      "question_id": "b82d0dd6",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "has_question_image": false,
+      "rationale": "High-input successful procedure/abstention cell, retained to test a different retrieval shape.",
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 720375,
+        "cached_input_tokens": 627249,
+        "ordinary_input_tokens": 93126,
+        "output_tokens": 5963,
+        "reasoning_output_tokens": 4315,
+        "model_requests": 14,
+        "tool_calls": 13,
+        "latency_seconds": 72.63112858304521,
+        "query_cost_usd": 0.03832578,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 1002698,
+        "cached_input_tokens": 831692,
+        "ordinary_input_tokens": 171006,
+        "output_tokens": 8000,
+        "reasoning_output_tokens": 6751,
+        "model_requests": 11,
+        "tool_calls": 21,
+        "latency_seconds": 101.64260212500812,
+        "query_cost_usd": 0.06043504000000001,
+        "search_calls": 2,
+        "failed_search_calls": 2,
+        "rg_unavailable_events": 2
+      },
+      "rg_replicate_thinharness": {
+        "score": 0.0,
+        "input_tokens": 2306426,
+        "cached_input_tokens": 1956744,
+        "ordinary_input_tokens": 349682,
+        "output_tokens": 8191,
+        "reasoning_output_tokens": 5173,
+        "model_requests": 15,
+        "tool_calls": 42,
+        "latency_seconds": 133.46087254199665,
+        "query_cost_usd": 0.11890048,
+        "search_calls": 30,
+        "failed_search_calls": 2,
+        "rg_unavailable_events": 0
+      },
+      "replicate_vs_original_thinharness": {
+        "input_tokens_ratio": 2.3002200064226717,
+        "tool_calls_ratio": 2.0,
+        "latency_seconds_ratio": 1.3130406911253205,
+        "query_cost_usd_ratio": 1.9674096352050066
+      },
+      "replicate_vs_original_native": {
+        "input_tokens_ratio": 3.2017018913760196,
+        "tool_calls_ratio": 3.230769230769231,
+        "latency_seconds_ratio": 1.8375161607106205,
+        "query_cost_usd_ratio": 3.1023629525609135
+      }
+    },
+    {
+      "question_id": "18b91103",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "has_question_image": true,
+      "rationale": "Third-highest ThinHarness input, four failed search calls, and the selected image path; original score was incorrect.",
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 1005361,
+        "cached_input_tokens": 895991,
+        "ordinary_input_tokens": 109370,
+        "output_tokens": 8055,
+        "reasoning_output_tokens": 5774,
+        "model_requests": 19,
+        "tool_calls": 18,
+        "latency_seconds": 106.45417837495916,
+        "query_cost_usd": 0.04945982,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1
+      },
+      "original_thinharness": {
+        "score": 0.0,
+        "input_tokens": 1603048,
+        "cached_input_tokens": 1390101,
+        "ordinary_input_tokens": 212947,
+        "output_tokens": 6392,
+        "reasoning_output_tokens": 5140,
+        "model_requests": 16,
+        "tool_calls": 24,
+        "latency_seconds": 101.00987841701135,
+        "query_cost_usd": 0.07806181999999999,
+        "search_calls": 4,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 4
+      },
+      "rg_replicate_thinharness": {
+        "score": 1.0,
+        "input_tokens": 2078603,
+        "cached_input_tokens": 1910771,
+        "ordinary_input_tokens": 167832,
+        "output_tokens": 7408,
+        "reasoning_output_tokens": 4830,
+        "model_requests": 19,
+        "tool_calls": 33,
+        "latency_seconds": 92.80461370793637,
+        "query_cost_usd": 0.08067142000000001,
+        "search_calls": 21,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 0
+      },
+      "replicate_vs_original_thinharness": {
+        "input_tokens_ratio": 1.2966567439028651,
+        "tool_calls_ratio": 1.375,
+        "latency_seconds_ratio": 0.918767700370847,
+        "query_cost_usd_ratio": 1.0334299149059043
+      },
+      "replicate_vs_original_native": {
+        "input_tokens_ratio": 2.0675190304776097,
+        "tool_calls_ratio": 1.8333333333333333,
+        "latency_seconds_ratio": 0.8717799068539566,
+        "query_cost_usd_ratio": 1.6310496075400194
+      }
+    }
+  ],
+  "totals": {
+    "original_native": {
+      "input_tokens": 2619885.0,
+      "tool_calls": 53.0,
+      "latency_seconds": 267.96080537501257,
+      "query_cost_usd": 0.13675038,
+      "failed_search_calls": 4.0,
+      "correct": 4.0
+    },
+    "original_thinharness": {
+      "input_tokens": 10753635.0,
+      "tool_calls": 135.0,
+      "latency_seconds": 508.37335020897444,
+      "query_cost_usd": 0.47413134,
+      "failed_search_calls": 14.0,
+      "correct": 3.0
+    },
+    "rg_replicate_thinharness": {
+      "input_tokens": 6017048.0,
+      "tool_calls": 121.0,
+      "latency_seconds": 345.4479853329249,
+      "query_cost_usd": 0.29126218,
+      "failed_search_calls": 3.0,
+      "correct": 3.0
+    },
+    "replicate_vs_original_thinharness": {
+      "input_tokens_ratio": 0.5595361940404338,
+      "tool_calls_ratio": 0.8962962962962963,
+      "latency_seconds_ratio": 0.6795163145175162,
+      "query_cost_usd_ratio": 0.6143069555368349
+    },
+    "replicate_vs_original_native": {
+      "input_tokens_ratio": 2.296684014756373,
+      "tool_calls_ratio": 2.2830188679245285,
+      "latency_seconds_ratio": 1.2891735597281422,
+      "query_cost_usd_ratio": 2.1298820522473134
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "checked_at_utc": "2026-08-25T20:51:30.753952+00:00",
+  "experiment_id": "luna-xhigh-rg-diagnostic-replicates-v1",
+  "thinharness_revision": "7c3bf249350ccea1ea6eca1b0b2bf5d1a2bb0856",
+  "official_revision": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+  "official_patch_sha256": "574d881e78e71fbebcda1143fc9dd5e3bb710e76a9f60ab394efcf01c7e73fc2",
+  "selection_sha256": "9b40d23c506c623c11a131ddba12345d9639d7bd2cc23be2034c281f0862f8fb",
+  "original_cell_receipts_sha256": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e",
+  "prepared_data_manifest_sha256": "77298fae093f0223adb3fd00a6c04ed8d0c154867d0c93a1891071ec23d0838b",
+  "ripgrep_runtime": {
+    "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+    "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+    "path_contains_rg_parent": true,
+    "jsonl_search": {
+      "status": "passed",
+      "command": [
+        "rg",
+        "--json",
+        "--",
+        "runtime-ripgrep-needle",
+        "probe.jsonl"
+      ],
+      "returncode": 0,
+      "output_sha256": "519b9a0568c3f315aa05126100ea1329e6511d34e0479c75d77d632ac37acd9a",
+      "matched_rows": 1
+    }
+  },
+  "api_key_boundaries": {
+    "OPENAI_API_KEY": "present, value not read or persisted",
+    "OPENROUTER_API_KEY": "present, value not read or persisted"
+  },
+  "execution_scope": "four new ThinHarness-only replicates; no native cells"
+}
