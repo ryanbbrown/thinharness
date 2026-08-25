@@ -12,6 +12,7 @@ This benchmark compares the official AgentRunbook-C V2 query harness with native
 - Query model: `gpt-5.6-luna`, xhigh reasoning, direct OpenAI API
 - Official query method: `agentrunbook_c_v2`, online learning disabled
 - ThinHarness tools: `read`, `search`, `jsonl_search`, `list`, and `glob`
+- ThinHarness runtime requirement: `rg` must resolve on `PATH`; preflight executes a real `jsonl_search` probe and fails before model calls if it does not
 - Reader: `qwen/qwen3.5-9b`, temperature 0.6, top-p 0.95, top-k 20, thinking enabled, 200K memory-context limit, 20K output limit
 - Reader route: direct OpenRouter request pinned to Parasail, no fallback, required parameters, data collection denied
 - Evaluator: `gpt-5.2`, medium reasoning, direct OpenAI API, official evaluator specifications
@@ -29,5 +30,7 @@ The runner stops before launching another cell when an API response reports a ge
 ## Durable artifacts
 
 Raw results live under `.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/` and are excluded from Git because they include large memory workspaces and traces. Compact receipts, hashes, paired scores, and costs are written under `benchmarks/longmemeval_v2/evidence/luna-xhigh-wave1/` for local commit after the run.
+
+The ThinHarness-only ripgrep diagnostic uses [`rg_diagnostic_selection.json`](rg_diagnostic_selection.json) and [`run_rg_diagnostics.py`](run_rg_diagnostics.py). Its four cells are new stochastic replicates. They never replace the original paired-wave evidence and the runner cannot launch native cells.
 
 The terminal command injects `.env` through `uv`; scripts record only API-key variable names and presence checks. They do not print or persist secret values.

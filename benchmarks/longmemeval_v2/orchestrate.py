@@ -78,6 +78,8 @@ def normalize_patch_blank_context(patch: bytes) -> bytes:
 
 
 def preflight(args: argparse.Namespace, selection: dict[str, Any]) -> dict[str, Any]:
+    from benchmarks.longmemeval_v2.ripgrep_runtime import verify_ripgrep_runtime
+
     if len(selection["questions"]) != 14:
         raise RuntimeError("Frozen selection does not contain 14 questions")
     if not os.getenv("OPENAI_API_KEY") or not os.getenv("OPENROUTER_API_KEY"):
@@ -109,6 +111,7 @@ def preflight(args: argparse.Namespace, selection: dict[str, Any]) -> dict[str, 
         "thinharness_revision": command_output(["git", "rev-parse", "HEAD"], cwd=args.repo_root),
         "selection_sha256": sha256_file(args.selection),
         "prepared_data_manifest_sha256": sha256_file(args.prepared_root / "prepared_data_manifest.json"),
+        "ripgrep_runtime": verify_ripgrep_runtime(),
         "api_key_boundaries": {
             "OPENAI_API_KEY": "present, value not read or persisted",
             "OPENROUTER_API_KEY": "present, value not read or persisted",

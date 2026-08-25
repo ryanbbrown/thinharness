@@ -219,6 +219,11 @@ def main() -> None:
     args.output_dir = args.output_dir.resolve()
     if str(args.official_root) not in sys.path:
         sys.path.insert(0, str(args.official_root))
+    ripgrep_runtime = None
+    if args.harness == "thinharness":
+        from benchmarks.longmemeval_v2.ripgrep_runtime import verify_ripgrep_runtime
+
+        ripgrep_runtime = verify_ripgrep_runtime()
     ensure_direct_openai()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_json(
@@ -237,6 +242,7 @@ def main() -> None:
             "evaluator_model": "gpt-5.2",
             "evaluator_api": "https://api.openai.com/v1",
             "api_key_env_names": ["OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+            "ripgrep_runtime": ripgrep_runtime,
         },
     )
     if args.harness == "native":

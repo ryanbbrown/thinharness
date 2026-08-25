@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "experiment_id": "luna-xhigh-rg-diagnostic-replicates-v1",
+  "description": "Four new ThinHarness-only replicates selected from the completed paired wave to diagnose the effect of providing working ripgrep. These are new stochastic outcomes and do not replace the original cells.",
+  "query_model": "gpt-5.6-luna",
+  "query_reasoning_effort": "xhigh",
+  "dataset_revision": "f152293e235517d504809563c833d7190b8c713b",
+  "official_harness_revision": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+  "original_thinharness_revision": "1f0146f3b1bec31fec7939466d1d5b5d8ee042ae",
+  "original_selection_sha256": "f610aa8083d3cdfae9d3bee9180f6d1eb78bee8efc5be537326b56b50cdcf9ee",
+  "original_cell_receipts_sha256": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e",
+  "selection_rule": "Choose the two highest-input successful ThinHarness cells, the next high-input successful procedure/abstention cell, and the high-input image cell with four failed search calls.",
+  "questions": [
+    {
+      "order": 1,
+      "question_id": "f61a096f",
+      "domain": "web",
+      "question_type": "static-environment",
+      "environment": "webarena-cms",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 3929999,
+        "tool_calls": 43,
+        "failed_search_calls": 4,
+        "query_cost_usd": 0.1503595
+      },
+      "rationale": "Second-highest ThinHarness input, highest static-cell input, successful score, and four failed search calls."
+    },
+    {
+      "order": 2,
+      "question_id": "109b334c",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 4217890,
+        "tool_calls": 47,
+        "failed_search_calls": 4,
+        "query_cost_usd": 0.18527498
+      },
+      "rationale": "Highest ThinHarness input, tool-call count, and query cost; successful score and four failed search calls."
+    },
+    {
+      "order": 3,
+      "question_id": "b82d0dd6",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 1002698,
+        "tool_calls": 21,
+        "failed_search_calls": 2,
+        "query_cost_usd": 0.06043504
+      },
+      "rationale": "High-input successful procedure/abstention cell, retained to test a different retrieval shape."
+    },
+    {
+      "order": 4,
+      "question_id": "18b91103",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "environment": "workarena",
+      "has_question_image": true,
+      "eval_name": "llm_gotchas_checker",
+      "original_thinharness": {
+        "score": 0.0,
+        "input_tokens": 1603048,
+        "tool_calls": 24,
+        "failed_search_calls": 4,
+        "query_cost_usd": 0.07806182
+      },
+      "rationale": "Third-highest ThinHarness input, four failed search calls, and the selected image path; original score was incorrect."
+    }
+  ]
+}
