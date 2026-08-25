@@ -257,7 +257,6 @@ class SdkThinHarnessRunner:
         filesystem = FilesystemPlugin(
             tools=params["builtin_tools"],
             output_dir=_safe_trace_output_dir(root, trace_dir),
-            write_paths=[],
         )
         harness = Harness(config, plugins=[filesystem])
         model_prompt: Any = prompt
