@@ -19,6 +19,7 @@ from .corpus import (
     load_json,
     save_json,
 )
+from .prompt_alignment import build_aligned_query_prompt
 
 MAX_TOTAL_SPAN_STATES = 20
 DEFAULT_THINHARNESS_MODEL = "openai:gpt-5.6-luna"
@@ -29,69 +30,6 @@ DEFAULT_THINHARNESS_MAX_TOOL_CALLS = 200
 DEFAULT_THINHARNESS_OUTPUT_RETRIES = 1
 DEFAULT_THINHARNESS_TOOLS = ["read", "search", "jsonl_search", "list", "glob"]
 VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
-
-QUERY_PROMPT_TEMPLATE = """You are acting as a memory retrieval module, not as the final answering model.
-
-Question:
-{query}
-
-You have access to a text-only derived corpus rooted at `corpus/` for the current haystack. Inspect the corpus before returning.
-
-Important files (both summaries are sorted by start URL so similar surfaces cluster together):
-
-- `corpus/TRAJECTORY_SUMMARY_CONCISE.md`: orientation table with one row per trajectory (id, goal, outcome, state count, start URL). Start here to shortlist.
-- `corpus/TRAJECTORY_SUMMARY_FULL.md`: per-trajectory annotated action sequences for shortlist selection and exact verification.
-- `corpus/trajectory_manifest.jsonl`: one row per trajectory with goal, domain, environment, outcome, start URL, and counts.
-- `corpus/states.jsonl`: searchable state rows with trajectory metadata and AXTree text previews.
-- `corpus/actions.jsonl`: non-empty action rows for workflow/procedure search.
-- `corpus/trajectories/<trajectory_id>/trajectory.json`: full trajectory text for targeted follow-up.
-- `corpus/trajectories/<trajectory_id>/states.jsonl`: full per-trajectory state rows.
-- `corpus/trajectories/<trajectory_id>/actions.jsonl`: per-trajectory action rows.
-
-Action rows and state rows carry an `action_annotated` field: the raw action with the AXTree element it touches appended, e.g. `click('276')  # [276] button 'Delete Review'`. Prefer `action_annotated` over the raw `action` when reading actions, and search/project it with `jsonl_search` (for example, `fields={{"action_annotated": 0}}` or a `where` filter with `field=action_annotated`).
-
-Rules:
-
-- First classify the question before opening trajectories in detail: direct lookup, comparison, procedure, or flawed-premise/abstention.
-- Start from `corpus/TRAJECTORY_SUMMARY_CONCISE.md` to shortlist, then `corpus/TRAJECTORY_SUMMARY_FULL.md` and the global JSONL files to narrow candidates. Open full per-trajectory files only for exact verification.
-- Use filesystem tools such as read, search, and jsonl_search to inspect relevant corpus files before finalizing.
-- Do not answer the benchmark question directly.
-- Return evidence that helps the official reader answer the question.
-- Put the most important evidence first.
-- Avoid redundant trajectories when multiple trajectories support the same fact or procedure.
-- Return spans only from trajectories in this corpus.
-- The total number of states across all spans must be at most 20, counted inclusively. For example, states 3-5 count as 3 states.
-- Keep evidence small: usually one to three states per span is enough. For action-count questions, return only the states that show the required controls/options and the minimal action sequence.
-- Use zero-based inclusive state indices.
-- Use the attached question image when one is present. The trajectory corpus is text-searchable; selected trajectory spans send their screenshots to the official reader.
-- Prefer exact evidence over similar evidence. Do not replace the requested field, row, tab, header, button, substring, or state with a nearby or analogous one.
-- For comparison questions, verify both sides when possible and compare the same UI region on both sides. Do not call a control "additional" unless it is absent from the comparison target in the same region.
-- For procedure questions, stay within one workflow family unless the question explicitly asks for a shared pattern across workflows.
-- For duration/time-span questions, distinguish duration fields from priority/order fields. A field used to decide ordering is not a field used to decide duration length.
-- For form questions asking for a "field name", count only actual labeled form inputs/selects/textareas. Do not treat helper text, formatting help, disclosure toggles, or instructional text as fields.
-- For "between A and B" questions, verify immediate order. If A is immediately followed by B, the question's premise is wrong; do not answer with the next nearby column/control.
-- For "on the home page" or "directly enter" questions, do not use a field found only after navigating to a create/submit page unless you explicitly say the home-page/direct-entry premise is wrong.
-- For action-count questions with menu workflows, include all required clicked button/link/menu-option labels after the stated starting point. Do not stop at a high-level action if a submenu option or confirmation is required by the evidence.
-- For action-count questions about taking products down from website display, distinguish the mass-action button (`Actions`), the mass-action menu item (`Change status`), and the final status option (`Disable`/`Disabled`) if the evidence supports status enabled/disabled values.
-- For multiple-choice questions, include option-by-option elimination evidence when practical: identify fields/items that are present, absent, workflow-important, workflow-unimportant, read-only/derived, or merely nearby. This helps the reader choose without guessing.
-- For flawed-premise or absence questions, if the corpus evidence shows the requested item does not exist or the question premise is wrong, start `## Support Analysis` with "The question's premise is wrong: ...". Then state the exact flawed premise and the contradicting evidence. Do not merely say evidence is unavailable, and do not return a plausible nearby value. Make clear that the reader should answer with a boxed explanation of the flaw, not `UNKNOWN`.
-- For flawed-premise or absence questions, avoid extended "if the user meant nearby label X" procedures unless needed as contrast. If you mention a nearby label, immediately repeat that it is not the answer to the exact question.
-- If exact evidence is missing, incomplete, or contradictory, preserve the uncertainty for the reader instead of guessing from numeric progressions, nearby rows, similar buttons, or related workflows.
-
-Return final JSON with this exact shape:
-
-{{
-  "memory_markdown": "## Support Analysis\\n...\\n\\n## Relevant Procedure and Hint Notes\\n...",
-  "trajectory_spans": [
-    {{
-      "trajectory_id": "00332982",
-      "start_state_index": 0,
-      "end_state_index": 0
-    }}
-  ]
-}}
-"""
-
 
 class TrajectorySpanOutput(TypedDict):
     trajectory_id: str
@@ -691,9 +629,13 @@ class ThinHarnessMemory(Memory):
     ) -> dict[str, Any]:
         require(self.workspace_dir is not None, "thinharness workspace_dir is not configured")
         attempt_index, attempt_dir = self._next_attempt_dir(question_id)
-        prompt = QUERY_PROMPT_TEMPLATE.format(query=query)
-        if query_image is not None:
-            prompt += "\nThe benchmark question image is attached after this text. Inspect it before selecting evidence.\n"
+        from memory_modules.agentrunbook_c import DEFAULT_INSTRUCTION_TEMPLATE, DEFAULT_QUERY_PROMPT
+
+        prompt = build_aligned_query_prompt(
+            query,
+            native_query_prompt=DEFAULT_QUERY_PROMPT,
+            native_instruction=DEFAULT_INSTRUCTION_TEMPLATE.read_text(encoding="utf-8"),
+        )
         prompt_path = attempt_dir / "prompt.md"
         summary_path = attempt_dir / "summary.json"
         prompt_path.write_text(prompt, encoding="utf-8")

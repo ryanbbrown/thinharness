@@ -33,4 +33,6 @@ Raw results live under `.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/` and ar
 
 The ThinHarness-only ripgrep diagnostic uses [`rg_diagnostic_selection.json`](rg_diagnostic_selection.json) and [`run_rg_diagnostics.py`](run_rg_diagnostics.py). Its four cells are new stochastic replicates. They never replace the original paired-wave evidence and the runner cannot launch native cells.
 
+The prompt-alignment diagnostic uses [`prompt_alignment_selection.json`](prompt_alignment_selection.json) and [`run_prompt_alignment.py`](run_prompt_alignment.py). It runs five new ThinHarness-only replicates selected by the largest positive original ThinHarness-minus-native query-cost difference. [`prompt_alignment_diff.md`](prompt_alignment_diff.md) records every localized change from the current native prompt and instruction. The runner validates those native sources, the rendered prompts, the selection, ripgrep, routes, receipts, hashes, scoring evidence, accessed data forms, and secret boundaries.
+
 The terminal command injects `.env` through `uv`; scripts record only API-key variable names and presence checks. They do not print or persist secret values.
