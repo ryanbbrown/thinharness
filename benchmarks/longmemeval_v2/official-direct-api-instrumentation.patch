@@ -1,0 +1,168 @@
+diff --git a/evaluation/harness.py b/evaluation/harness.py
+index 6a71824..d24b488 100644
+--- a/evaluation/harness.py
++++ b/evaluation/harness.py
+@@ -155,6 +155,11 @@ def parse_args() -> argparse.Namespace:
+     parser.add_argument("--base-url", default=None)
+     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+     parser.add_argument("--api-key-file", default=None)
++    parser.add_argument(
++        "--reader-provider-json",
++        default=None,
++        help="Optional OpenAI extra_body provider routing object encoded as JSON.",
++    )
+     parser.add_argument("--max-completion-tokens", type=int, default=20000)
+     parser.add_argument("--memory-context-max-tokens", type=int, default=200000)
+     parser.add_argument("--prompt-build-max-workers", type=int, default=1)
+@@ -850,6 +855,10 @@ def extract_text_from_response_message(message: Any) -> str:
+ 
+ def build_extra_body(args: argparse.Namespace) -> dict[str, Any] | None:
+     extra_body: dict[str, Any] = {}
++    if args.reader_provider_json is not None:
++        provider = json.loads(args.reader_provider_json)
++        require(isinstance(provider, dict), "reader_provider_json must decode to an object")
++        extra_body["provider"] = provider
+     if args.top_k is not None:
+         extra_body["top_k"] = args.top_k
+     if args.repetition_penalty is not None:
+@@ -886,12 +895,19 @@ def build_reader_request(
+     return req
+ 
+ 
+-def extract_usage_dict(response: Any) -> dict[str, int]:
++def extract_usage_dict(response: Any) -> dict[str, Any]:
+     usage = getattr(response, "usage", None)
++    usage_payload = usage.model_dump() if hasattr(usage, "model_dump") else {}
++    if not isinstance(usage_payload, dict):
++        usage_payload = {}
++    usage_extra = getattr(usage, "model_extra", None)
++    if isinstance(usage_extra, dict):
++        usage_payload.update(usage_extra)
+     return {
+         "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+         "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+         "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
++        "details": usage_payload,
+     }
+ 
+ 
+@@ -899,11 +915,17 @@ async def call_reader_model_async(
+     client: AsyncOpenAI,
+     args: argparse.Namespace,
+     messages: list[dict[str, Any]],
+-) -> tuple[str, dict[str, int]]:
++) -> tuple[str, dict[str, Any], dict[str, Any]]:
+     response = await client.chat.completions.create(**build_reader_request(args, messages))
+     text = extract_text_from_response_message(response.choices[0].message)
+     require(text != "", "Model returned empty text")
+-    return text, extract_usage_dict(response)
++    response_extra = getattr(response, "model_extra", None)
++    metadata = {
++        "response_id": getattr(response, "id", None),
++        "response_model": getattr(response, "model", None),
++        "provider": response_extra.get("provider") if isinstance(response_extra, dict) else None,
++    }
++    return text, extract_usage_dict(response), metadata
+ 
+ 
+ async def generate_all_reader_outputs(
+@@ -920,7 +942,7 @@ async def generate_all_reader_outputs(
+     async def run_one(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+         async with semaphore:
+             try:
+-                response_raw, usage = await call_reader_model_async(client, args, row["messages"])
++                response_raw, usage, metadata = await call_reader_model_async(client, args, row["messages"])
+             except BadRequestError as exc:
+                 print(
+                     f"Reader request failed for question_id={row['question_id']}: {exc}. "
+@@ -929,13 +951,15 @@ async def generate_all_reader_outputs(
+                     flush=True,
+                 )
+                 response_raw = ""
+-                usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
++                usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "details": {}}
++                metadata = {"transport_error": str(exc)}
+         parsed_answer = extract_boxed_answer(response_raw)
+         return row["question_id"], {
+             "response_raw": response_raw,
+             "response_parsed_boxed": parsed_answer,
+             "is_unknown": is_unknown(parsed_answer),
+             "usage": usage,
++            "reader_metadata": metadata,
+         }
+ 
+     tasks = [asyncio.create_task(run_one(row)) for row in prompt_rows]
+@@ -1400,6 +1424,7 @@ def main() -> None:
+                 "response_parsed_boxed": output["response_parsed_boxed"],
+                 "is_unknown": output["is_unknown"],
+                 "usage": output["usage"],
++                "reader_metadata": output["reader_metadata"],
+             }
+             score_bool, _, _ = score_prediction(row, eval_config)
+ 
+@@ -1429,6 +1454,7 @@ def main() -> None:
+                 "score": 1.0 if score_bool else 0.0,
+                 "score_bool": score_bool,
+                 "usage": row["usage"],
++                "reader_metadata": row["reader_metadata"],
+                 "timestamp_utc": utc_now_iso(),
+             }
+             fp.write(json.dumps(record, ensure_ascii=True) + "\n")
+diff --git a/evaluation/qa_eval_metrics.py b/evaluation/qa_eval_metrics.py
+index 6197efa..e80fcf0 100644
+--- a/evaluation/qa_eval_metrics.py
++++ b/evaluation/qa_eval_metrics.py
+@@ -1,6 +1,8 @@
++import hashlib
+ import json
+ import os
+ import re
++from datetime import datetime, timezone
+ from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
+ 
+ 
+@@ -529,6 +531,23 @@ def _call_chat_completion(
+ 
+     response = client.chat.completions.create(**request)
+     message_content = response.choices[0].message.content
++    receipt_path = os.getenv("LME_EVALUATOR_RECEIPTS_PATH")
++    if receipt_path:
++        usage = getattr(response, "usage", None)
++        usage_payload = usage.model_dump() if hasattr(usage, "model_dump") else {}
++        if not isinstance(usage_payload, dict):
++            usage_payload = {}
++        content_text = _stringify_text(message_content)
++        receipt = {
++            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
++            "response_id": getattr(response, "id", None),
++            "response_model": getattr(response, "model", None),
++            "usage": usage_payload,
++            "judgement_sha256": hashlib.sha256(content_text.encode()).hexdigest(),
++            "judgement": content_text,
++        }
++        with open(receipt_path, "a", encoding="utf-8") as handle:
++            handle.write(json.dumps(receipt, ensure_ascii=True) + "\n")
+     if isinstance(message_content, str):
+         return message_content.strip()
+     if isinstance(message_content, list):
+diff --git a/evaluation/run_eval.py b/evaluation/run_eval.py
+index 12e44f6..40cec8a 100644
+--- a/evaluation/run_eval.py
++++ b/evaluation/run_eval.py
+@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
+     parser.add_argument("--reader-model", default=os.getenv("READER_MODEL", "Qwen/Qwen3.5-9B"))
+     parser.add_argument("--reader-base-url", default=os.getenv("READER_BASE_URL", "http://localhost:8023/v1"))
+     parser.add_argument("--reader-api-key-env", default="OPENAI_API_KEY")
++    parser.add_argument("--reader-provider-json", default=os.getenv("READER_PROVIDER_JSON"))
+     parser.add_argument("--reader-temperature", type=float, default=float(os.getenv("READER_TEMPERATURE", "0.6")))
+     parser.add_argument("--reader-top-p", type=float, default=float(os.getenv("READER_TOP_P", "0.95")))
+     parser.add_argument("--reader-top-k", type=int, default=int(os.getenv("READER_TOP_K", "20")))
+@@ -341,6 +342,8 @@ def main() -> None:
+         "--evaluator-max-completion-tokens",
+         str(args.evaluator_max_completion_tokens),
+     ]
++    if args.reader_provider_json is not None:
++        harness_argv.extend(["--reader-provider-json", args.reader_provider_json])
+     if not args.reader_enable_thinking:
+         harness_argv.append("--reader-disable-thinking")
+     if args.shuffle_questions_seed is not None:

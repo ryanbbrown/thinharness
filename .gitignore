@@ -12,6 +12,7 @@ build/
 .thinharness/
 *.egg-info/
 .env
+.benchmark-runs/
 experiments/
 .context/
 .reviews/
