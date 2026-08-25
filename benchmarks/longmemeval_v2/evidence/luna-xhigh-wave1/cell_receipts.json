@@ -1,0 +1,2674 @@
+[
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:31:04.438636+00:00",
+    "harness": "native",
+    "question_id": "f61a096f",
+    "domain": "web",
+    "question_type": "static-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "nine",
+    "response_parsed_boxed": "nine",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 45.662020249990746,
+    "memory_post_query_duration_seconds": 9.589712135493755e-07,
+    "memory_context_original_token_count": 3690,
+    "memory_context_token_count": 3690,
+    "query_usage": {
+      "requests": 14,
+      "input_tokens": 531836,
+      "cached_input_tokens": 463594,
+      "ordinary_input_tokens": 68242,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 2860,
+      "reasoning_output_tokens": 1159,
+      "tool_calls": 13
+    },
+    "reader_usage": {
+      "prompt_tokens": 3884,
+      "completion_tokens": 543,
+      "total_tokens": 4427,
+      "details": {
+        "completion_tokens": 543,
+        "prompt_tokens": 3884,
+        "total_tokens": 4427,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 449,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00052415,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00052415,
+          "upstream_inference_prompt_cost": 0.0003884,
+          "upstream_inference_completions_cost": 0.00013575
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787639456-54dAwONwDOp88BOrX6DX",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.026352280000000002,
+      "reader_provider_reported": 0.00052415,
+      "reader_api_equivalent": 0.0005241500000000001,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.026876430000000003
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/01-f61a096f-native.log",
+    "artifact_manifest_sha256": "63f61586a0129994545673b29fd05fb0a5a91a9e5a476bf7e5d5b747039cb3e5"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:39:05.668997+00:00",
+    "harness": "thinharness",
+    "question_id": "f61a096f",
+    "domain": "web",
+    "question_type": "static-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "nine",
+    "response_parsed_boxed": "nine",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 147.90432574995793,
+    "memory_post_query_duration_seconds": 3.500026650726795e-06,
+    "memory_context_original_token_count": 4619,
+    "memory_context_token_count": 4619,
+    "query_usage": {
+      "requests": 25,
+      "input_tokens": 3929999,
+      "cached_input_tokens": 3597475,
+      "ordinary_input_tokens": 332524,
+      "cache_write_input_tokens": 332449,
+      "output_tokens": 9921,
+      "reasoning_output_tokens": 7614,
+      "tool_calls": 43
+    },
+    "reader_usage": {
+      "prompt_tokens": 4813,
+      "completion_tokens": 1174,
+      "total_tokens": 5987,
+      "details": {
+        "completion_tokens": 1174,
+        "prompt_tokens": 4813,
+        "total_tokens": 5987,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 979,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0007748,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0007748,
+          "upstream_inference_prompt_cost": 0.0004813,
+          "upstream_inference_completions_cost": 0.0002935
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787639929-ZwB5bFu6cFlTbD3S4nW5",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.1503595,
+      "reader_provider_reported": 0.0007748,
+      "reader_api_equivalent": 0.0007748,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.1511343
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/01-f61a096f-thinharness.log",
+    "artifact_manifest_sha256": "1fdadfe67924de5ed23c5c68c756f5e6b8856beab5df667a0f2e50ae90139062"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:39:56.425849+00:00",
+    "harness": "native",
+    "question_id": "a45edf3e",
+    "domain": "enterprise",
+    "question_type": "static-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "false",
+    "response_parsed_boxed": "false",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 35.47101920802379,
+    "memory_post_query_duration_seconds": 2.5840126909315586e-06,
+    "memory_context_original_token_count": 4405,
+    "memory_context_token_count": 4405,
+    "query_usage": {
+      "requests": 12,
+      "input_tokens": 505874,
+      "cached_input_tokens": 428458,
+      "ordinary_input_tokens": 77416,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 2544,
+      "reasoning_output_tokens": 1254,
+      "tool_calls": 11
+    },
+    "reader_usage": {
+      "prompt_tokens": 4557,
+      "completion_tokens": 443,
+      "total_tokens": 5000,
+      "details": {
+        "completion_tokens": 443,
+        "prompt_tokens": 4557,
+        "total_tokens": 5000,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 473,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00056645,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00056645,
+          "upstream_inference_prompt_cost": 0.0004557,
+          "upstream_inference_completions_cost": 0.00011075
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787639988-2PsEp5kfSBVWFlVpJpqx",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.02710516,
+      "reader_provider_reported": 0.00056645,
+      "reader_api_equivalent": 0.00056645,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.02767161
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/02-a45edf3e-native.log",
+    "artifact_manifest_sha256": "48917cfc1a1ebcca341643b4af19eb01b16e2b8355eadccad4c098de4f4f0695"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:41:41.190682+00:00",
+    "harness": "thinharness",
+    "question_id": "a45edf3e",
+    "domain": "enterprise",
+    "question_type": "static-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "false",
+    "response_parsed_boxed": "The question is flawed because the catalog item is a Dell XPS 13, not a MacBook",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 48.83649895800045,
+    "memory_post_query_duration_seconds": 2.2500171326100826e-06,
+    "memory_context_original_token_count": 9824,
+    "memory_context_token_count": 9824,
+    "query_usage": {
+      "requests": 12,
+      "input_tokens": 644182,
+      "cached_input_tokens": 542411,
+      "ordinary_input_tokens": 101771,
+      "cache_write_input_tokens": 101735,
+      "output_tokens": 3082,
+      "reasoning_output_tokens": 2229,
+      "tool_calls": 13
+    },
+    "reader_usage": {
+      "prompt_tokens": 9976,
+      "completion_tokens": 2800,
+      "total_tokens": 12776,
+      "details": {
+        "completion_tokens": 2800,
+        "prompt_tokens": 9976,
+        "total_tokens": 12776,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 2861,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0016976,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0016976,
+          "upstream_inference_prompt_cost": 0.0009976,
+          "upstream_inference_completions_cost": 0.0007
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640053-HY77Y2gEdwZaAeMZxmNl",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.03490082,
+      "reader_provider_reported": 0.0016976,
+      "reader_api_equivalent": 0.0016975999999999998,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.03659842
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/02-a45edf3e-thinharness.log",
+    "artifact_manifest_sha256": "61eeb566b3dbd0dc89fab2a9afcd5718769069ecfe2a83017b97d949d203c015"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:48:55.315952+00:00",
+    "harness": "native",
+    "question_id": "ee75b921",
+    "domain": "web",
+    "question_type": "static-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There is no second print-related link below `Print receipt` on that page.",
+    "response_parsed_boxed": "000000192",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 47.28255491598975,
+    "memory_post_query_duration_seconds": 2.4170149117708206e-06,
+    "memory_context_original_token_count": 2879,
+    "memory_context_token_count": 2879,
+    "query_usage": {
+      "requests": 15,
+      "input_tokens": 275701,
+      "cached_input_tokens": 247876,
+      "ordinary_input_tokens": 27825,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 3372,
+      "reasoning_output_tokens": 2086,
+      "tool_calls": 14
+    },
+    "reader_usage": {
+      "prompt_tokens": 3056,
+      "completion_tokens": 1716,
+      "total_tokens": 4772,
+      "details": {
+        "completion_tokens": 1716,
+        "prompt_tokens": 3056,
+        "total_tokens": 4772,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 1536,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0007346,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0007346,
+          "upstream_inference_prompt_cost": 0.0003056,
+          "upstream_inference_completions_cost": 0.000429
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640486-fDjlNnKA472wJyELIoF4",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:48:35.287159+00:00",
+        "response_id": "chatcmpl-EGfFR8JF4yPMYWqC3Qs2lmhjxHPNL",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 81,
+          "prompt_tokens": 482,
+          "total_tokens": 563,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 16,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "5c299bd721f6aa41d2a6a284957c6c1135464fd9aeebfaf7fa725fa624283cf9",
+        "judgement": "{\"label\":0,\"reason\":\"The reference says the premise is flawed because there is no second print-related link below \u201cPrint receipt.\u201d The model instead assumes such a link exists and provides a concrete answer (the order number link), so it did not identify the flawed premise.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.01456892,
+      "reader_provider_reported": 0.0007346,
+      "reader_api_equivalent": 0.0007346000000000001,
+      "evaluator_api_equivalent": 0.0019775,
+      "total_api_equivalent": 0.01728102
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/03-ee75b921-native-recovery.log",
+    "artifact_manifest_sha256": "485fe8121d23e0897fba42f1ecd5bb2cc74fffac93b7510407c9c4c95a19787e"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:51:02.362751+00:00",
+    "harness": "thinharness",
+    "question_id": "ee75b921",
+    "domain": "web",
+    "question_type": "static-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There is no second print-related link below `Print receipt` on that page.",
+    "response_parsed_boxed": "The question's premise is wrong: the confirmation page does not contain a second print-related link directly below `Print receipt`. After `Place Order`, the success page shows `Thank you for your purchase!`, then `Print receipt`, followed by the order number and `Continue Shopping`. No `Print Order` link appears on this confirmation page.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 95.63086683402071,
+    "memory_post_query_duration_seconds": 3.374996595084667e-06,
+    "memory_context_original_token_count": 8475,
+    "memory_context_token_count": 8475,
+    "query_usage": {
+      "requests": 14,
+      "input_tokens": 898559,
+      "cached_input_tokens": 738149,
+      "ordinary_input_tokens": 160410,
+      "cache_write_input_tokens": 160368,
+      "output_tokens": 7266,
+      "reasoning_output_tokens": 5643,
+      "tool_calls": 22
+    },
+    "reader_usage": {
+      "prompt_tokens": 8652,
+      "completion_tokens": 428,
+      "total_tokens": 9080,
+      "details": {
+        "completion_tokens": 428,
+        "prompt_tokens": 8652,
+        "total_tokens": 9080,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 313,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0009722,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0009722,
+          "upstream_inference_prompt_cost": 0.0008652,
+          "upstream_inference_completions_cost": 0.000107
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640651-xNbDbIRO4wmWWxv0Vg9j",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:51:01.674909+00:00",
+        "response_id": "chatcmpl-EGfHopxuWEfen9wtsOxiaDotck0Mm",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 68,
+          "prompt_tokens": 597,
+          "total_tokens": 665,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 20,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "71845c917eee44463bd70d41bad00fa644c974e62fc11da856860b9fa26836ce",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise, stating there is no second print-related link below `Print receipt` on the confirmation page, which matches the reference conclusion.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.05556417999999999,
+      "reader_provider_reported": 0.0009722,
+      "reader_api_equivalent": 0.0009722,
+      "evaluator_api_equivalent": 0.00199675,
+      "total_api_equivalent": 0.05853312999999999
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/03-ee75b921-thinharness.log",
+    "artifact_manifest_sha256": "7753d63d00ac32cb33b2c8d23d060641135ef2932c5ebadefa2379f03991f2c7"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:52:17.368467+00:00",
+    "harness": "native",
+    "question_id": "19935d2d",
+    "domain": "enterprise",
+    "question_type": "static-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "No column header sits between `Class` and `Delivery time` in that list view.",
+    "response_parsed_boxed": "The question's premise is incorrect; there is no column header between 'Class' and 'Delivery time' in the Catalog Items list view.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 55.42525766702602,
+    "memory_post_query_duration_seconds": 6.749993190169334e-06,
+    "memory_context_original_token_count": 13647,
+    "memory_context_token_count": 13647,
+    "query_usage": {
+      "requests": 16,
+      "input_tokens": 561427,
+      "cached_input_tokens": 503593,
+      "ordinary_input_tokens": 57834,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 3783,
+      "reasoning_output_tokens": 2405,
+      "tool_calls": 15
+    },
+    "reader_usage": {
+      "prompt_tokens": 13798,
+      "completion_tokens": 563,
+      "total_tokens": 14361,
+      "details": {
+        "completion_tokens": 563,
+        "prompt_tokens": 13798,
+        "total_tokens": 14361,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 460,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00152055,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00152055,
+          "upstream_inference_prompt_cost": 0.0013798,
+          "upstream_inference_completions_cost": 0.00014075
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640725-NbXhl6oRh6iPzbFat56O",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:52:16.491793+00:00",
+        "response_id": "chatcmpl-EGfJ13tlBzov50nDUaRleuAFxMoHj",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 60,
+          "prompt_tokens": 507,
+          "total_tokens": 567,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 16,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "386fc3a99dad851e37800c2e5e86d55357cac7315f2ea63e74739a091e37ff4c",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise and concludes that no column header sits between 'Class' and 'Delivery time', matching the reference answer.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.026178260000000002,
+      "reader_provider_reported": 0.00152055,
+      "reader_api_equivalent": 0.0015205500000000003,
+      "evaluator_api_equivalent": 0.00172725,
+      "total_api_equivalent": 0.02942606
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/04-19935d2d-native.log",
+    "artifact_manifest_sha256": "25d3039ebcfac96b3e4d32f49c964bd26e6f651430305510156830e12c3dda57"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:53:45.897160+00:00",
+    "harness": "thinharness",
+    "question_id": "19935d2d",
+    "domain": "enterprise",
+    "question_type": "static-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "No column header sits between `Class` and `Delivery time` in that list view.",
+    "response_parsed_boxed": "The question's premise is flawed because in the Catalog Items grid, the 'Class' column is immediately followed by the 'Delivery time' column, with no column header between them.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 32.90486387501005,
+    "memory_post_query_duration_seconds": 1.8330174498260021e-06,
+    "memory_context_original_token_count": 15546,
+    "memory_context_token_count": 15546,
+    "query_usage": {
+      "requests": 8,
+      "input_tokens": 302772,
+      "cached_input_tokens": 209016,
+      "ordinary_input_tokens": 93756,
+      "cache_write_input_tokens": 93732,
+      "output_tokens": 1817,
+      "reasoning_output_tokens": 991,
+      "tool_calls": 13
+    },
+    "reader_usage": {
+      "prompt_tokens": 15697,
+      "completion_tokens": 2731,
+      "total_tokens": 18428,
+      "details": {
+        "completion_tokens": 2731,
+        "prompt_tokens": 15697,
+        "total_tokens": 18428,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 2863,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00225245,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00225245,
+          "upstream_inference_prompt_cost": 0.0015697,
+          "upstream_inference_completions_cost": 0.00068275
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640781-UQm9CmAvcAOubbTXpCPa",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:53:45.037730+00:00",
+        "response_id": "chatcmpl-EGfKRMFFW6o7PZ9HYaOfmH6Jr4BKs",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 72,
+          "prompt_tokens": 508,
+          "total_tokens": 580,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 27,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "739e0088001b525770b04026569ca7a6184d04bf813b0bd8756842f6b0b872d6",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly identifies the flawed premise and concludes that no column header sits between `Class` and `Delivery time`, matching the reference answer.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.025111920000000003,
+      "reader_provider_reported": 0.00225245,
+      "reader_api_equivalent": 0.00225245,
+      "evaluator_api_equivalent": 0.001897,
+      "total_api_equivalent": 0.029261370000000002
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/04-19935d2d-thinharness.log",
+    "artifact_manifest_sha256": "39635a43971a882e1a0a50a6edd4ec6e8c214d850ffca500b0b1f33b794e6574"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:54:22.654817+00:00",
+    "harness": "native",
+    "question_id": "edea0219",
+    "domain": "web",
+    "question_type": "dynamic-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Nested, Linear",
+    "response_parsed_boxed": "Nested, Linear",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 19.903572291019373,
+    "memory_post_query_duration_seconds": 7.500057108700275e-07,
+    "memory_context_original_token_count": 9040,
+    "memory_context_token_count": 9040,
+    "query_usage": {
+      "requests": 9,
+      "input_tokens": 93284,
+      "cached_input_tokens": 75603,
+      "ordinary_input_tokens": 17681,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 1243,
+      "reasoning_output_tokens": 588,
+      "tool_calls": 8
+    },
+    "reader_usage": {
+      "prompt_tokens": 9215,
+      "completion_tokens": 507,
+      "total_tokens": 9722,
+      "details": {
+        "completion_tokens": 507,
+        "prompt_tokens": 9215,
+        "total_tokens": 9722,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 469,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00104825,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00104825,
+          "upstream_inference_prompt_cost": 0.0009215,
+          "upstream_inference_completions_cost": 0.00012675
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640852-AsAOlCyRsFWX6IjuNH0w",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.006539860000000001,
+      "reader_provider_reported": 0.00104825,
+      "reader_api_equivalent": 0.00104825,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.00758811
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/05-edea0219-native.log",
+    "artifact_manifest_sha256": "565a8cab9a304f19644b320f37765da77323738f76c7213dd733f666532f4ff4"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:55:05.571259+00:00",
+    "harness": "thinharness",
+    "question_id": "edea0219",
+    "domain": "web",
+    "question_type": "dynamic-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Nested, Linear",
+    "response_parsed_boxed": "Nested, Linear",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 28.265466666023713,
+    "memory_post_query_duration_seconds": 2.1249870769679546e-06,
+    "memory_context_original_token_count": 9376,
+    "memory_context_token_count": 9376,
+    "query_usage": {
+      "requests": 8,
+      "input_tokens": 259197,
+      "cached_input_tokens": 168841,
+      "ordinary_input_tokens": 90356,
+      "cache_write_input_tokens": 90332,
+      "output_tokens": 1695,
+      "reasoning_output_tokens": 905,
+      "tool_calls": 11
+    },
+    "reader_usage": {
+      "prompt_tokens": 9551,
+      "completion_tokens": 271,
+      "total_tokens": 9822,
+      "details": {
+        "completion_tokens": 271,
+        "prompt_tokens": 9551,
+        "total_tokens": 9822,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 263,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00102285,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00102285,
+          "upstream_inference_prompt_cost": 0.0009551,
+          "upstream_inference_completions_cost": 6.775e-05
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640897-6oHFZeZlRlQWKrXp8tVL",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.02348202,
+      "reader_provider_reported": 0.00102285,
+      "reader_api_equivalent": 0.00102285,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.024504869999999998
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/05-edea0219-thinharness.log",
+    "artifact_manifest_sha256": "b3ef192612c09d8ba195af3127e8b4a006086031deaa13605191df6295ef51f2"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:56:23.856502+00:00",
+    "harness": "native",
+    "question_id": "3fd81278",
+    "domain": "enterprise",
+    "question_type": "dynamic-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "100",
+    "response_parsed_boxed": "100",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 49.3793195419712,
+    "memory_post_query_duration_seconds": 7.500057108700275e-07,
+    "memory_context_original_token_count": 4631,
+    "memory_context_token_count": 4631,
+    "query_usage": {
+      "requests": 15,
+      "input_tokens": 382441,
+      "cached_input_tokens": 333775,
+      "ordinary_input_tokens": 48666,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 2203,
+      "reasoning_output_tokens": 862,
+      "tool_calls": 14
+    },
+    "reader_usage": {
+      "prompt_tokens": 4801,
+      "completion_tokens": 785,
+      "total_tokens": 5586,
+      "details": {
+        "completion_tokens": 785,
+        "prompt_tokens": 4801,
+        "total_tokens": 5586,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 643,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00067635,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00067635,
+          "upstream_inference_prompt_cost": 0.0004801,
+          "upstream_inference_completions_cost": 0.00019625
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787640961-pi2H3thyV0L8XafsWaLM",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.019052299999999998,
+      "reader_provider_reported": 0.00067635,
+      "reader_api_equivalent": 0.00067635,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.019728649999999997
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/06-3fd81278-native.log",
+    "artifact_manifest_sha256": "300a222e45e0fa0e433173ec33009abf2128cfa6a7e15d21cd23a0d6cfbee778"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:57:38.721537+00:00",
+    "harness": "thinharness",
+    "question_id": "3fd81278",
+    "domain": "enterprise",
+    "question_type": "dynamic-environment",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "100",
+    "response_parsed_boxed": "100",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 41.05443945800653,
+    "memory_post_query_duration_seconds": 3.374996595084667e-06,
+    "memory_context_original_token_count": 9461,
+    "memory_context_token_count": 9461,
+    "query_usage": {
+      "requests": 9,
+      "input_tokens": 321856,
+      "cached_input_tokens": 230631,
+      "ordinary_input_tokens": 91225,
+      "cache_write_input_tokens": 91198,
+      "output_tokens": 2368,
+      "reasoning_output_tokens": 1254,
+      "tool_calls": 18
+    },
+    "reader_usage": {
+      "prompt_tokens": 9631,
+      "completion_tokens": 1188,
+      "total_tokens": 10819,
+      "details": {
+        "completion_tokens": 1188,
+        "prompt_tokens": 9631,
+        "total_tokens": 10819,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 913,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0012601,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0012601,
+          "upstream_inference_prompt_cost": 0.0009631,
+          "upstream_inference_completions_cost": 0.000297
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641037-J2klgzvAMA70zErEGej1",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.02569922,
+      "reader_provider_reported": 0.0012601,
+      "reader_api_equivalent": 0.0012601,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.02695932
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/06-3fd81278-thinharness.log",
+    "artifact_manifest_sha256": "f522aeb32d3e2af3877d03721fc1202a546ff1de83140d0b27a4ab455aa2b437"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:58:17.784397+00:00",
+    "harness": "native",
+    "question_id": "6feb33d4",
+    "domain": "web",
+    "question_type": "dynamic-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There is no separate downvote count shown there.",
+    "response_parsed_boxed": "0",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 22.560430124984123,
+    "memory_post_query_duration_seconds": 2.0830193534493446e-06,
+    "memory_context_original_token_count": 2884,
+    "memory_context_token_count": 2884,
+    "query_usage": {
+      "requests": 10,
+      "input_tokens": 147478,
+      "cached_input_tokens": 122656,
+      "ordinary_input_tokens": 24822,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 1722,
+      "reasoning_output_tokens": 659,
+      "tool_calls": 9
+    },
+    "reader_usage": {
+      "prompt_tokens": 3069,
+      "completion_tokens": 452,
+      "total_tokens": 3521,
+      "details": {
+        "completion_tokens": 452,
+        "prompt_tokens": 3069,
+        "total_tokens": 3521,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 359,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0004199,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0004199,
+          "upstream_inference_prompt_cost": 0.0003069,
+          "upstream_inference_completions_cost": 0.000113
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641088-PTsLXlvcBI9FVqGdOf8l",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:58:17.125209+00:00",
+        "response_id": "chatcmpl-EGfOp2BLw29ey43MH6zDRc1kBWEbT",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 96,
+          "prompt_tokens": 434,
+          "total_tokens": 530,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 35,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "0e07f91bb3b9991cb93bd0cba7dd51be58a623a135da71bfc7e92021084b6c5a",
+        "judgement": "{\"label\":0,\"reason\":\"The reference says there is no separate downvote count shown. The model instead follows the premise and provides a concrete downvote count (0) from a (+1, \u22120) display, without identifying the flawed premise.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.00948392,
+      "reader_provider_reported": 0.0004199,
+      "reader_api_equivalent": 0.0004199,
+      "evaluator_api_equivalent": 0.0021035,
+      "total_api_equivalent": 0.01200732
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/07-6feb33d4-native.log",
+    "artifact_manifest_sha256": "644deddb98a4b88e538e7ed2a417bbf375ee75b7e212c820aa35916d6621cf20"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T06:58:54.403745+00:00",
+    "harness": "thinharness",
+    "question_id": "6feb33d4",
+    "domain": "web",
+    "question_type": "dynamic-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There is no separate downvote count shown there.",
+    "response_parsed_boxed": "0",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 20.67757416598033,
+    "memory_post_query_duration_seconds": 2.1249870769679546e-06,
+    "memory_context_original_token_count": 3075,
+    "memory_context_token_count": 3075,
+    "query_usage": {
+      "requests": 6,
+      "input_tokens": 77413,
+      "cached_input_tokens": 45112,
+      "ordinary_input_tokens": 32301,
+      "cache_write_input_tokens": 32283,
+      "output_tokens": 1188,
+      "reasoning_output_tokens": 574,
+      "tool_calls": 8
+    },
+    "reader_usage": {
+      "prompt_tokens": 3260,
+      "completion_tokens": 329,
+      "total_tokens": 3589,
+      "details": {
+        "completion_tokens": 329,
+        "prompt_tokens": 3260,
+        "total_tokens": 3589,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 339,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00040825,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00040825,
+          "upstream_inference_prompt_cost": 0.000326,
+          "upstream_inference_completions_cost": 8.225e-05
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641126-8SAwlnwDVHykmXgIbGYP",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T06:58:53.762279+00:00",
+        "response_id": "chatcmpl-EGfPQ3evZDfYLeOIVeBNRBlm7SAdb",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 78,
+          "prompt_tokens": 376,
+          "total_tokens": 454,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 30,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "86c5fd9ff0dc073d63dec27a7ba1a5dc1785bf46236a01f6d2ad937a27e85373",
+        "judgement": "{\"label\":0,\"reason\":\"The reference says there is no separate downvote count shown; the model instead gives a concrete numeric downvote count (0) without identifying the flawed premise.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.00878804,
+      "reader_provider_reported": 0.00040825,
+      "reader_api_equivalent": 0.00040825,
+      "evaluator_api_equivalent": 0.00175,
+      "total_api_equivalent": 0.010946290000000001
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/07-6feb33d4-thinharness.log",
+    "artifact_manifest_sha256": "6df7f1580195b2edff0b6a1134a88559a9674d504f2e1092734ef3de0b0a061d"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:01:04.999130+00:00",
+    "harness": "native",
+    "question_id": "109b334c",
+    "domain": "enterprise",
+    "question_type": "dynamic-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There are no checkbox labels containing Amortiz in that Personalize Form dialog.",
+    "response_parsed_boxed": "The question's premise is flawed because there are no checkbox labels containing the substring \"Amortiz\" in the visible \"Form Fields\" list.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 43.213478167017456,
+    "memory_post_query_duration_seconds": 1.7919810488820076e-06,
+    "memory_context_original_token_count": 8836,
+    "memory_context_token_count": 8836,
+    "query_usage": {
+      "requests": 10,
+      "input_tokens": 362313,
+      "cached_input_tokens": 296125,
+      "ordinary_input_tokens": 66188,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 2877,
+      "reasoning_output_tokens": 1510,
+      "tool_calls": 9
+    },
+    "reader_usage": {
+      "prompt_tokens": 9008,
+      "completion_tokens": 3521,
+      "total_tokens": 12529,
+      "details": {
+        "completion_tokens": 3521,
+        "prompt_tokens": 9008,
+        "total_tokens": 12529,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 3342,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00178105,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00178105,
+          "upstream_inference_prompt_cost": 0.0009008,
+          "upstream_inference_completions_cost": 0.00088025
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641184-VH56rMWuqEK2jppJjDMC",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:01:04.301849+00:00",
+        "response_id": "chatcmpl-EGfRWOUWyAtA96vSR07D8xoW7HW8N",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 75,
+          "prompt_tokens": 550,
+          "total_tokens": 625,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 30,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "00795c680ea355fe87b0ae654e00d101dad85f7c965d5af85b4ef325938772bb",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise, stating that none of the checkbox labels contain the substring 'Amortiz', which matches the reference conclusion.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.0226125,
+      "reader_provider_reported": 0.00178105,
+      "reader_api_equivalent": 0.0017810500000000002,
+      "evaluator_api_equivalent": 0.0020125,
+      "total_api_equivalent": 0.02640605
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/08-109b334c-native.log",
+    "artifact_manifest_sha256": "39a4fc4b2f31d1c68cee60c23e22843d86311e1dbb8d2b698bd12a6fed1ad1f1"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:04:38.776967+00:00",
+    "harness": "thinharness",
+    "question_id": "109b334c",
+    "domain": "enterprise",
+    "question_type": "dynamic-environment-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There are no checkbox labels containing Amortiz in that Personalize Form dialog.",
+    "response_parsed_boxed": "The premise is incorrect: the Hardware `Personalize Form` dialog contains no checkbox label with the literal substring `Amortiz`. The available financial labels are `Depreciated amount`, `Depreciation`, and `Depreciation effective date`, but no amortization-related fields are present in the form field list.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 157.81654391699703,
+    "memory_post_query_duration_seconds": 4.166970029473305e-06,
+    "memory_context_original_token_count": 10384,
+    "memory_context_token_count": 10384,
+    "query_usage": {
+      "requests": 17,
+      "input_tokens": 4217890,
+      "cached_input_tokens": 3729119,
+      "ordinary_input_tokens": 488771,
+      "cache_write_input_tokens": 488720,
+      "output_tokens": 10782,
+      "reasoning_output_tokens": 7669,
+      "tool_calls": 47
+    },
+    "reader_usage": {
+      "prompt_tokens": 10556,
+      "completion_tokens": 1892,
+      "total_tokens": 12448,
+      "details": {
+        "completion_tokens": 1892,
+        "prompt_tokens": 10556,
+        "total_tokens": 12448,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 1813,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0015286,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0015286,
+          "upstream_inference_prompt_cost": 0.0010556,
+          "upstream_inference_completions_cost": 0.000473
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641435-yVvyCo08NwQMlXJfcNIk",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:04:38.126657+00:00",
+        "response_id": "chatcmpl-EGfUyr6kwAWyKPwIRFhiDh5GWyjaj",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 96,
+          "prompt_tokens": 524,
+          "total_tokens": 620,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 42,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "3f571cb43d628e07ce29ff28d6ee92de54b6086a7d0fdb49ff659b90c8ee70c7",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise and concludes there are no checkbox labels containing the substring \\\"Amortiz,\\\" matching the reference answer. It does not provide any amortization-related checkbox labels.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.18527498,
+      "reader_provider_reported": 0.0015286,
+      "reader_api_equivalent": 0.0015286000000000002,
+      "evaluator_api_equivalent": 0.002261,
+      "total_api_equivalent": 0.18906458
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/08-109b334c-thinharness.log",
+    "artifact_manifest_sha256": "426e6139181bea72d999e24caf518fd92f6b52df18a2075b52759095b455719a"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:05:45.238026+00:00",
+    "harness": "native",
+    "question_id": "3269a3c5",
+    "domain": "web",
+    "question_type": "procedure",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match_ordered",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "submit, create submission",
+    "response_parsed_boxed": "Submit, Create submission",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 36.5232931660139,
+    "memory_post_query_duration_seconds": 7.909839041531086e-07,
+    "memory_context_original_token_count": 12478,
+    "memory_context_token_count": 12478,
+    "query_usage": {
+      "requests": 10,
+      "input_tokens": 248440,
+      "cached_input_tokens": 201116,
+      "ordinary_input_tokens": 47324,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 2559,
+      "reasoning_output_tokens": 1601,
+      "tool_calls": 9
+    },
+    "reader_usage": {
+      "prompt_tokens": 12676,
+      "completion_tokens": 742,
+      "total_tokens": 13418,
+      "details": {
+        "completion_tokens": 742,
+        "prompt_tokens": 12676,
+        "total_tokens": 13418,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 727,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0014531,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0014531,
+          "upstream_inference_prompt_cost": 0.0012676,
+          "upstream_inference_completions_cost": 0.0001855
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641521-WWKYanHxn2jmd0suPtS0",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.01655792,
+      "reader_provider_reported": 0.0014531,
+      "reader_api_equivalent": 0.0014531000000000001,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.01801102
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/09-3269a3c5-native.log",
+    "artifact_manifest_sha256": "d584aff560f329264b34da09d8452ff5d6fe4daa6926eff7deee96dcfaf78470"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:07:22.728963+00:00",
+    "harness": "thinharness",
+    "question_id": "3269a3c5",
+    "domain": "web",
+    "question_type": "procedure",
+    "has_question_image": false,
+    "eval_name": "norm_phrase_set_match_ordered",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "submit, create submission",
+    "response_parsed_boxed": "Submit, Create submission",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 73.22619462496368,
+    "memory_post_query_duration_seconds": 2.2500171326100826e-06,
+    "memory_context_original_token_count": 18891,
+    "memory_context_token_count": 18891,
+    "query_usage": {
+      "requests": 11,
+      "input_tokens": 316405,
+      "cached_input_tokens": 263463,
+      "ordinary_input_tokens": 52942,
+      "cache_write_input_tokens": 52909,
+      "output_tokens": 5052,
+      "reasoning_output_tokens": 3781,
+      "tool_calls": 14
+    },
+    "reader_usage": {
+      "prompt_tokens": 19089,
+      "completion_tokens": 450,
+      "total_tokens": 19539,
+      "details": {
+        "completion_tokens": 450,
+        "prompt_tokens": 19089,
+        "total_tokens": 19539,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 440,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0020214,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0020214,
+          "upstream_inference_prompt_cost": 0.0019089,
+          "upstream_inference_completions_cost": 0.0001125
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641625-W4tzj7QKP21LtcmSxvtF",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.02192006,
+      "reader_provider_reported": 0.0020214,
+      "reader_api_equivalent": 0.0020214,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.02394146
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/09-3269a3c5-thinharness.log",
+    "artifact_manifest_sha256": "ef95f80a3495d7524a91799db855115d4de6661f36874809e1aa929152b41288"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:08:40.929845+00:00",
+    "harness": "native",
+    "question_id": "100ff132",
+    "domain": "enterprise",
+    "question_type": "procedure",
+    "has_question_image": false,
+    "eval_name": "mc_choice_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "D",
+    "response_parsed_boxed": "D",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 31.67411770898616,
+    "memory_post_query_duration_seconds": 8.329516276717186e-07,
+    "memory_context_original_token_count": 19781,
+    "memory_context_token_count": 19781,
+    "query_usage": {
+      "requests": 9,
+      "input_tokens": 204048,
+      "cached_input_tokens": 159249,
+      "ordinary_input_tokens": 44799,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 1838,
+      "reasoning_output_tokens": 983,
+      "tool_calls": 8
+    },
+    "reader_usage": {
+      "prompt_tokens": 20301,
+      "completion_tokens": 1412,
+      "total_tokens": 21713,
+      "details": {
+        "completion_tokens": 1412,
+        "prompt_tokens": 20301,
+        "total_tokens": 21713,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 1185,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0023831,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0023831,
+          "upstream_inference_prompt_cost": 0.0020301,
+          "upstream_inference_completions_cost": 0.000353
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641680-RKE1p50fpJJcZkJ7BQNZ",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.014350380000000001,
+      "reader_provider_reported": 0.0023831,
+      "reader_api_equivalent": 0.0023831000000000004,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.016733480000000002
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/10-100ff132-native.log",
+    "artifact_manifest_sha256": "4fd667781c6f5a3870f14d41a031811445523405248f7eb3cede5b5071cf5c02"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:10:10.298291+00:00",
+    "harness": "thinharness",
+    "question_id": "100ff132",
+    "domain": "enterprise",
+    "question_type": "procedure",
+    "has_question_image": false,
+    "eval_name": "mc_choice_match",
+    "scoring_path": "deterministic",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "D",
+    "response_parsed_boxed": "D",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 40.89727758301888,
+    "memory_post_query_duration_seconds": 1.9589788280427456e-06,
+    "memory_context_original_token_count": 21287,
+    "memory_context_token_count": 21287,
+    "query_usage": {
+      "requests": 8,
+      "input_tokens": 270559,
+      "cached_input_tokens": 192733,
+      "ordinary_input_tokens": 77826,
+      "cache_write_input_tokens": 77802,
+      "output_tokens": 2345,
+      "reasoning_output_tokens": 1427,
+      "tool_calls": 11
+    },
+    "reader_usage": {
+      "prompt_tokens": 21807,
+      "completion_tokens": 1444,
+      "total_tokens": 23251,
+      "details": {
+        "completion_tokens": 1444,
+        "prompt_tokens": 21807,
+        "total_tokens": 23251,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 1559,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0025417,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0025417,
+          "upstream_inference_prompt_cost": 0.0021807,
+          "upstream_inference_completions_cost": 0.000361
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641769-2xU62ysd72S60ivSjRPK",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [],
+    "costs_usd": {
+      "query_api_equivalent": 0.02223386,
+      "reader_provider_reported": 0.0025417,
+      "reader_api_equivalent": 0.0025417000000000005,
+      "evaluator_api_equivalent": 0.0,
+      "total_api_equivalent": 0.024775560000000002
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/10-100ff132-thinharness.log",
+    "artifact_manifest_sha256": "3cf900c65952e1d8f04f83b9d48d1402a21fcd46bb3aeffd1b0d60f62b3a301e"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:14:08.787330+00:00",
+    "harness": "native",
+    "question_id": "9ed5a14d",
+    "domain": "web",
+    "question_type": "procedure-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "It is impossible to determine from this interface whether a given order is marked as a resolved fraud suspect order.",
+    "response_parsed_boxed": "The question's premise is flawed because the memory context explicitly states that the system uses the status label 'Suspected Fraud' and provides no evidence of a separate 'resolved fraud suspect' status. Additionally, the observed order view status dropdown does not include 'Resolved' or 'Resolved Fraud Suspect', making it impossible to check for this specific status.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 80.44810604199301,
+    "memory_post_query_duration_seconds": 1.00000761449337e-06,
+    "memory_context_original_token_count": 212838,
+    "memory_context_token_count": 118091,
+    "query_usage": {
+      "requests": 12,
+      "input_tokens": 260449,
+      "cached_input_tokens": 221126,
+      "ordinary_input_tokens": 39323,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 6469,
+      "reasoning_output_tokens": 5169,
+      "tool_calls": 11
+    },
+    "reader_usage": {
+      "prompt_tokens": 118394,
+      "completion_tokens": 3547,
+      "total_tokens": 121941,
+      "details": {
+        "completion_tokens": 3547,
+        "prompt_tokens": 118394,
+        "total_tokens": 121941,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 3556,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.01272615,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.01272615,
+          "upstream_inference_prompt_cost": 0.0118394,
+          "upstream_inference_completions_cost": 0.00088675
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787641899-2lNKZOuLfJnQaK7BiM0P",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:14:08.036514+00:00",
+        "response_id": "chatcmpl-EGfe9XyERALoIwluZtsnTAlDXQIGm",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 126,
+          "prompt_tokens": 762,
+          "total_tokens": 888,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 72,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "c63446d1c6a3935d31084d7bc40ac22ac9daf37a68055db3c48901a455f8af09",
+        "judgement": "{\"label\":1,\"reason\":\"The model correctly flags the premise as flawed (no \u2018resolved fraud suspect\u2019 status shown/available) and concludes it\u2019s impossible to check for that specific marking, matching the reference conclusion.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.02004992,
+      "reader_provider_reported": 0.01272615,
+      "reader_api_equivalent": 0.012726150000000002,
+      "evaluator_api_equivalent": 0.0030975,
+      "total_api_equivalent": 0.03587357000000001
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/11-9ed5a14d-native.log",
+    "artifact_manifest_sha256": "c6b24737509bb9463a5e17f1abf01c0e0b1b0a5911679d9a36edff3c0415c904"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:17:54.162644+00:00",
+    "harness": "thinharness",
+    "question_id": "9ed5a14d",
+    "domain": "web",
+    "question_type": "procedure-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "It is impossible to determine from this interface whether a given order is marked as a resolved fraud suspect order.",
+    "response_parsed_boxed": "The question's premise is flawed because the UI does not show a 'Resolved Fraud' status; it only shows 'Suspected Fraud'.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 129.71818545897258,
+    "memory_post_query_duration_seconds": 2.249958924949169e-06,
+    "memory_context_original_token_count": 103570,
+    "memory_context_token_count": 103570,
+    "query_usage": {
+      "requests": 12,
+      "input_tokens": 371207,
+      "cached_input_tokens": 296026,
+      "ordinary_input_tokens": 75181,
+      "cache_write_input_tokens": 75145,
+      "output_tokens": 8926,
+      "reasoning_output_tokens": 7456,
+      "tool_calls": 15
+    },
+    "reader_usage": {
+      "prompt_tokens": 103873,
+      "completion_tokens": 3931,
+      "total_tokens": 107804,
+      "details": {
+        "completion_tokens": 3931,
+        "prompt_tokens": 103873,
+        "total_tokens": 107804,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 3935,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.01137005,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.01137005,
+          "upstream_inference_prompt_cost": 0.0103873,
+          "upstream_inference_completions_cost": 0.00098275
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642186-O32OqhirqKpZE5NkvxBG",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:17:53.525032+00:00",
+        "response_id": "chatcmpl-EGfhmnsqol1S20gFFXOtec07UZ9wD",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 148,
+          "prompt_tokens": 649,
+          "total_tokens": 797,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 69,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "5258501a0898e0fa6d51552dc5a4b88b8c76283c2f11192ffb21cd0256424b04",
+        "judgement": "{\"label\":1,\"reason\":\"The model rejects the premise by explaining that the UI lacks any 'Resolved Fraud' (or equivalent) status\u2014only 'Suspected Fraud' exists\u2014so the user cannot determine whether an order is marked as a resolved fraud suspect from this interface. This aligns with the reference conclusion that it\u2019s impossible to determine.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.031667919999999995,
+      "reader_provider_reported": 0.01137005,
+      "reader_api_equivalent": 0.011370050000000001,
+      "evaluator_api_equivalent": 0.00320775,
+      "total_api_equivalent": 0.04624572
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/11-9ed5a14d-thinharness.log",
+    "artifact_manifest_sha256": "0dd972a48b0f07cd3a1d2c206cc872f1d359f1d382d3d8b0ef67ad431293518b"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:20:32.455729+00:00",
+    "harness": "native",
+    "question_id": "b82d0dd6",
+    "domain": "enterprise",
+    "question_type": "procedure-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "That incident-assignment workflow does not open a separate category-to-priority lookup page before editing the incidents.",
+    "response_parsed_boxed": "The provided memory context for the observed workflow (trajectory be7dbdb2) explicitly states that 'No separate category-to-priority lookup-table page is shown in the haystack.' The workflow begins by navigating to the Self-Service > Incidents list page. Therefore, there is no page to open for reviewing a category-to-priority lookup table in this specific environment, making the premise of the question flawed.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 72.63112858304521,
+    "memory_post_query_duration_seconds": 8.750357665121555e-07,
+    "memory_context_original_token_count": 16813,
+    "memory_context_token_count": 16813,
+    "query_usage": {
+      "requests": 14,
+      "input_tokens": 720375,
+      "cached_input_tokens": 627249,
+      "ordinary_input_tokens": 93126,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5963,
+      "reasoning_output_tokens": 4315,
+      "tool_calls": 13
+    },
+    "reader_usage": {
+      "prompt_tokens": 16977,
+      "completion_tokens": 5399,
+      "total_tokens": 22376,
+      "details": {
+        "completion_tokens": 5399,
+        "prompt_tokens": 16977,
+        "total_tokens": 22376,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 5703,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00304745,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00304745,
+          "upstream_inference_prompt_cost": 0.0016977,
+          "upstream_inference_completions_cost": 0.00134975
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642353-hWd28rlyqgwpm1OZ7znm",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:20:31.697901+00:00",
+        "response_id": "chatcmpl-EGfkL5AfimqwzkPy1vomLK06SIi42",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 103,
+          "prompt_tokens": 657,
+          "total_tokens": 760,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 50,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "f21d577a4b807bee9481c3f83d793e5b36670f486b71fcb78f7d9055e4130db5",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly flags the premise as flawed, stating that the workflow does not involve opening a separate category-to-priority lookup-table page before assigning incidents, which matches the reference conclusion.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.03832578,
+      "reader_provider_reported": 0.00304745,
+      "reader_api_equivalent": 0.0030474499999999997,
+      "evaluator_api_equivalent": 0.00259175,
+      "total_api_equivalent": 0.043964979999999994
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/12-b82d0dd6-native.log",
+    "artifact_manifest_sha256": "239df2ee93e3b36117c3b622c82de4d1cbd6fa56cd7f679c7b3fd845067060c5"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:23:38.311726+00:00",
+    "harness": "thinharness",
+    "question_id": "b82d0dd6",
+    "domain": "enterprise",
+    "question_type": "procedure-abs",
+    "has_question_image": false,
+    "eval_name": "llm_abstention_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "That incident-assignment workflow does not open a separate category-to-priority lookup page before editing the incidents.",
+    "response_parsed_boxed": "The question's premise is flawed because the provided memory context explicitly states that 'The corpus does not show a separate lookup-table page'. The observed workflow starts at the Incidents list, but there is no page to review a category-to-priority lookup table.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 101.64260212500812,
+    "memory_post_query_duration_seconds": 3.875000402331352e-06,
+    "memory_context_original_token_count": 17538,
+    "memory_context_token_count": 17538,
+    "query_usage": {
+      "requests": 11,
+      "input_tokens": 1002698,
+      "cached_input_tokens": 831692,
+      "ordinary_input_tokens": 171006,
+      "cache_write_input_tokens": 170973,
+      "output_tokens": 8000,
+      "reasoning_output_tokens": 6751,
+      "tool_calls": 21
+    },
+    "reader_usage": {
+      "prompt_tokens": 17702,
+      "completion_tokens": 5590,
+      "total_tokens": 23292,
+      "details": {
+        "completion_tokens": 5590,
+        "prompt_tokens": 17702,
+        "total_tokens": 23292,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 5772,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0031677,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0031677,
+          "upstream_inference_prompt_cost": 0.0017702,
+          "upstream_inference_completions_cost": 0.0013975
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642541-be0OPwwRGZDiVgev0iNA",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:23:37.657266+00:00",
+        "response_id": "chatcmpl-EGfnMSH4BFQNeoIdH0q3nEWJiXraV",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 100,
+          "prompt_tokens": 572,
+          "total_tokens": 672,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 54,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "c633ee8e8ad74d9451cf8ba638d4e5b70cbd41d1fadd8f2a1cfaf05145a082ca",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise, stating there is no separate category-to-priority lookup page in the described workflow, which matches the reference conclusion.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.06043504000000001,
+      "reader_provider_reported": 0.0031677,
+      "reader_api_equivalent": 0.0031677,
+      "evaluator_api_equivalent": 0.002401,
+      "total_api_equivalent": 0.06600374
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/12-b82d0dd6-thinharness.log",
+    "artifact_manifest_sha256": "435073e3c811ff02d36a62c25cda60da0fe43a4aa7fed9814d16f72f5827780a"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:24:53.624966+00:00",
+    "harness": "native",
+    "question_id": "1e77eb4b",
+    "domain": "web",
+    "question_type": "errors-gotchas",
+    "has_question_image": true,
+    "eval_name": "llm_gotchas_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Correct answers must explicitly say that you cannot enter a tracking number for this order because its Order Status is `Canceled`, and canceled orders cannot be shipped. Answers that send the user to `Shipments` or any shipment-entry flow are wrong.",
+    "response_parsed_boxed": "Based on the environment, to add a tracking number for a **shippable** order, follow this path:\n\n1.  Go to **Sales > Orders**.\n2.  Click **View** on the desired order.\n3.  Click the **Ship** button.\n4.  On the New Shipment page, click **Add Tracking Number**.\n\n**Note:** The order shown in your current screenshot (**Order #000000301**) has a status of **Canceled**, so a shipment or tracking number cannot be added to it.",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 48.90219941700343,
+    "memory_post_query_duration_seconds": 8.33999365568161e-07,
+    "memory_context_original_token_count": 23793,
+    "memory_context_token_count": 23793,
+    "query_usage": {
+      "requests": 11,
+      "input_tokens": 219963,
+      "cached_input_tokens": 181499,
+      "ordinary_input_tokens": 38464,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 3452,
+      "reasoning_output_tokens": 2122,
+      "tool_calls": 10
+    },
+    "reader_usage": {
+      "prompt_tokens": 24846,
+      "completion_tokens": 890,
+      "total_tokens": 25736,
+      "details": {
+        "completion_tokens": 890,
+        "prompt_tokens": 24846,
+        "total_tokens": 25736,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 797,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0027071,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0027071,
+          "upstream_inference_prompt_cost": 0.0024846,
+          "upstream_inference_completions_cost": 0.0002225
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642673-lIAn7kEAbAZVVxaMduBC",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:24:52.819786+00:00",
+        "response_id": "chatcmpl-EGfoYhbhWIH2GkiqKxTexLPJjad6F",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 103,
+          "prompt_tokens": 570,
+          "total_tokens": 673,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 39,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "464584e8e8505664d80c8b6a83baa34d8e8e62bd857942ded9d99bfa2b9af554",
+        "judgement": "{\"label\":0,\"reason\":\"Although it correctly notes the order is Canceled and cannot have a tracking number added, it also directs the user to the shipment/tracking entry flow (Ship > New Shipment > Add Tracking Number), which the reference explicitly marks as wrong.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.01546518,
+      "reader_provider_reported": 0.0027071,
+      "reader_api_equivalent": 0.0027071000000000005,
+      "evaluator_api_equivalent": 0.0024395,
+      "total_api_equivalent": 0.02061178
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/13-1e77eb4b-native.log",
+    "artifact_manifest_sha256": "f77b2368ad2a4eac4707c2203ff9e78a2f57483f6438d3b73dc0db538bbdaa9f"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:26:35.646074+00:00",
+    "harness": "thinharness",
+    "question_id": "1e77eb4b",
+    "domain": "web",
+    "question_type": "errors-gotchas",
+    "has_question_image": true,
+    "eval_name": "llm_gotchas_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Correct answers must explicitly say that you cannot enter a tracking number for this order because its Order Status is `Canceled`, and canceled orders cannot be shipped. Answers that send the user to `Shipments` or any shipment-entry flow are wrong.",
+    "response_parsed_boxed": "The question's premise is wrong: the shown order #000000301 is Canceled. Its order view still shows a Shipments tab, but the top actions include Reorder rather than Ship, so a new tracking entry is not available for this canceled order.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 80.984246542037,
+    "memory_post_query_duration_seconds": 2.207991201430559e-06,
+    "memory_context_original_token_count": 36182,
+    "memory_context_token_count": 36182,
+    "query_usage": {
+      "requests": 12,
+      "input_tokens": 525779,
+      "cached_input_tokens": 444233,
+      "ordinary_input_tokens": 81546,
+      "cache_write_input_tokens": 81510,
+      "output_tokens": 6759,
+      "reasoning_output_tokens": 4536,
+      "tool_calls": 21
+    },
+    "reader_usage": {
+      "prompt_tokens": 37235,
+      "completion_tokens": 242,
+      "total_tokens": 37477,
+      "details": {
+        "completion_tokens": 242,
+        "prompt_tokens": 37235,
+        "total_tokens": 37477,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 192,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.003784,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.003784,
+          "upstream_inference_prompt_cost": 0.0037235,
+          "upstream_inference_completions_cost": 6.05e-05
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642781-PVratdgRpcKs47l93w23",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:26:35.003293+00:00",
+        "response_id": "chatcmpl-EGfqD2JwWGl99Bkc9y6OMZFLjc2OR",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 76,
+          "prompt_tokens": 462,
+          "total_tokens": 538,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 21,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "ecad142a8ee25dc8877ffd4ae095d8c446bddcde2f37aa03d6dac06e8eacd832",
+        "judgement": "{\"label\":1,\"reason\":\"Model correctly identifies the order is Canceled and explains that a new tracking entry/shipping action isn\u2019t available for canceled orders, without directing the user to Shipments or a shipment-entry flow.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.03330466000000001,
+      "reader_provider_reported": 0.003784,
+      "reader_api_equivalent": 0.003784,
+      "evaluator_api_equivalent": 0.0018725,
+      "total_api_equivalent": 0.03896116000000001
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/13-1e77eb4b-thinharness.log",
+    "artifact_manifest_sha256": "cca453297ce46f4690c3f31f112e07c58af16dfee10c1b2f5cb312457b8af377"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:28:45.685372+00:00",
+    "harness": "native",
+    "question_id": "18b91103",
+    "domain": "enterprise",
+    "question_type": "errors-gotchas",
+    "has_question_image": true,
+    "eval_name": "llm_gotchas_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "you should not order the Adobe Creative Cloud bundle here. instead, you should proceed ordering the hardware and in the configuration page, select the Adobe Photoshop there to add to the hardware.",
+    "response_parsed_boxed": "The most likely issue is that you opened the wrong catalog item; the Adobe Photoshop option is a checkbox on the Standard Laptop item, not the Adobe Creative Cloud item.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 106.45417837495916,
+    "memory_post_query_duration_seconds": 9.579816833138466e-07,
+    "memory_context_original_token_count": 54120,
+    "memory_context_token_count": 54120,
+    "query_usage": {
+      "requests": 19,
+      "input_tokens": 1005361,
+      "cached_input_tokens": 895991,
+      "ordinary_input_tokens": 109370,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 8055,
+      "reasoning_output_tokens": 5774,
+      "tool_calls": 18
+    },
+    "reader_usage": {
+      "prompt_tokens": 55189,
+      "completion_tokens": 473,
+      "total_tokens": 55662,
+      "details": {
+        "completion_tokens": 473,
+        "prompt_tokens": 55189,
+        "total_tokens": 55662,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 461,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00563715,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00563715,
+          "upstream_inference_prompt_cost": 0.0055189,
+          "upstream_inference_completions_cost": 0.00011825
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787642909-TAUgfrbZ2x1WvzPXadbu",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:28:44.833868+00:00",
+        "response_id": "chatcmpl-EGfsItW8WqSJ3WzVL7PhCvp0gP7Ci",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 119,
+          "prompt_tokens": 516,
+          "total_tokens": 635,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 52,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "ba89343ca9e3571eb3646d0c0216aefe4016ad5d3bfad164ef16b5900b8699c9",
+        "judgement": "{\"label\":1,\"reason\":\"The model captures the key insight: don\u2019t order the Adobe Creative Cloud catalog item; instead, order the hardware (e.g., laptop) and select Adobe Photoshop as an add-on option during that hardware item\u2019s configuration. No contradiction with the reference.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.04945982,
+      "reader_provider_reported": 0.00563715,
+      "reader_api_equivalent": 0.0056371500000000005,
+      "evaluator_api_equivalent": 0.002569,
+      "total_api_equivalent": 0.057665970000000004
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/14-18b91103-native.log",
+    "artifact_manifest_sha256": "de8f24d3d8878f53815f6e3638a124279464a930992e1e187044b3bc1bba70d2"
+  },
+  {
+    "schema_version": 1,
+    "completed_at_utc": "2026-08-25T07:30:55.950426+00:00",
+    "harness": "thinharness",
+    "question_id": "18b91103",
+    "domain": "enterprise",
+    "question_type": "errors-gotchas",
+    "has_question_image": true,
+    "eval_name": "llm_gotchas_checker",
+    "scoring_path": "llm_judged",
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "you should not order the Adobe Creative Cloud bundle here. instead, you should proceed ordering the hardware and in the configuration page, select the Adobe Photoshop there to add to the hardware.",
+    "response_parsed_boxed": "Search for \"Standard Laptop\" in the Service Catalog.",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 101.00987841701135,
+    "memory_post_query_duration_seconds": 4.249974153935909e-06,
+    "memory_context_original_token_count": 9727,
+    "memory_context_token_count": 9727,
+    "query_usage": {
+      "requests": 16,
+      "input_tokens": 1603048,
+      "cached_input_tokens": 1390101,
+      "ordinary_input_tokens": 212947,
+      "cache_write_input_tokens": 212899,
+      "output_tokens": 6392,
+      "reasoning_output_tokens": 5140,
+      "tool_calls": 24
+    },
+    "reader_usage": {
+      "prompt_tokens": 10796,
+      "completion_tokens": 1120,
+      "total_tokens": 11916,
+      "details": {
+        "completion_tokens": 1120,
+        "prompt_tokens": 10796,
+        "total_tokens": 11916,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 1297,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0013596,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0013596,
+          "upstream_inference_prompt_cost": 0.0010796,
+          "upstream_inference_completions_cost": 0.00028
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1787643034-8QA3YFDEeCuejXkXs9HN",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail"
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-08-25T07:30:55.314590+00:00",
+        "response_id": "chatcmpl-EGfuPAIM8BaDlFGpRDqWhNeN0wqro",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 122,
+          "prompt_tokens": 433,
+          "total_tokens": 555,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 49,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "3f4c7fc38cc21c54dea738ac2212b4d827f568a143ba7417bb943403919fd676",
+        "judgement": "{\"label\":0,\"reason\":\"The reference insight is to order the hardware and add Photoshop on the hardware configuration page (not order the Creative Cloud bundle). The model instead suggests searching for a different catalog item (Standard Laptop) and does not mention adding Photoshop during hardware configuration, so it misses the key gotcha.\"}"
+      }
+    ],
+    "costs_usd": {
+      "query_api_equivalent": 0.07806181999999999,
+      "reader_provider_reported": 0.0013596,
+      "reader_api_equivalent": 0.0013596,
+      "evaluator_api_equivalent": 0.00246575,
+      "total_api_equivalent": 0.08188717
+    },
+    "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-wave1/logs/14-18b91103-thinharness.log",
+    "artifact_manifest_sha256": "b03334bddfa93a6e645ce61388f2775cd18729cc9cb389c79366ab48aa323688"
+  }
+]

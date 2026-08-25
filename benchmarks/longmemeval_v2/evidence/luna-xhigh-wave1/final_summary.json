@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-25T07:30:56.190308+00:00",
+  "status": "completed",
+  "completed_cells": 28,
+  "target_cells": 28,
+  "native_cells": 14,
+  "thinharness_cells": 14,
+  "cost_totals_usd": {
+    "query_api_equivalent": 1.06290624,
+    "reader_provider_reported": 0.06938665,
+    "reader_api_equivalent": 0.06938665000000001,
+    "evaluator_api_equivalent": 0.03637025,
+    "total_api_equivalent": 1.16866314
+  },
+  "pairs": [
+    {
+      "question_id": "f61a096f",
+      "domain": "web",
+      "question_type": "static-environment",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "a45edf3e",
+      "domain": "enterprise",
+      "question_type": "static-environment",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 0.0,
+      "paired_difference": -1.0
+    },
+    {
+      "question_id": "ee75b921",
+      "domain": "web",
+      "question_type": "static-environment-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 0.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 1.0
+    },
+    {
+      "question_id": "19935d2d",
+      "domain": "enterprise",
+      "question_type": "static-environment-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "edea0219",
+      "domain": "web",
+      "question_type": "dynamic-environment",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "3fd81278",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "6feb33d4",
+      "domain": "web",
+      "question_type": "dynamic-environment-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 0.0,
+      "thinharness_score": 0.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "109b334c",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "3269a3c5",
+      "domain": "web",
+      "question_type": "procedure",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "100ff132",
+      "domain": "enterprise",
+      "question_type": "procedure",
+      "scoring_path": "deterministic",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "9ed5a14d",
+      "domain": "web",
+      "question_type": "procedure-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "b82d0dd6",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "scoring_path": "llm_judged",
+      "native_score": 1.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
+    },
+    {
+      "question_id": "1e77eb4b",
+      "domain": "web",
+      "question_type": "errors-gotchas",
+      "scoring_path": "llm_judged",
+      "native_score": 0.0,
+      "thinharness_score": 1.0,
+      "paired_difference": 1.0
+    },
+    {
+      "question_id": "18b91103",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "scoring_path": "llm_judged",
+      "native_score": 1.0,
+      "thinharness_score": 0.0,
+      "paired_difference": -1.0
+    }
+  ],
+  "summaries": {
+    "all": {
+      "pair_count": 14,
+      "native_correct": 11.0,
+      "thinharness_correct": 11.0,
+      "mean_paired_difference": 0.0,
+      "thin_win_native_loss": 2,
+      "native_win_thin_loss": 2
+    },
+    "deterministic": {
+      "pair_count": 6,
+      "native_correct": 6.0,
+      "thinharness_correct": 5.0,
+      "mean_paired_difference": -0.16666666666666666,
+      "thin_win_native_loss": 0,
+      "native_win_thin_loss": 1
+    },
+    "llm_judged": {
+      "pair_count": 8,
+      "native_correct": 5.0,
+      "thinharness_correct": 6.0,
+      "mean_paired_difference": 0.125,
+      "thin_win_native_loss": 2,
+      "native_win_thin_loss": 1
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "status": "preserved_and_excluded_from_final_28_cells",
+  "incidents": [
+    {
+      "cell": "01-f61a096f-thinharness",
+      "attempt": 1,
+      "failure": "The custom memory workspace path was absent before trajectory insertion.",
+      "query_model_requests": 0,
+      "reader_requests": 0,
+      "evaluator_requests": 0,
+      "preserved_at": ".benchmark-runs/longmemeval-v2-luna-xhigh-wave1/setup_failures/01-f61a096f-thinharness-attempt-001"
+    },
+    {
+      "cell": "01-f61a096f-thinharness",
+      "attempt": 2,
+      "failure": "The current FilesystemPlugin rejected the inherited empty write-path policy before retrieval.",
+      "query_model_requests": 0,
+      "reader_requests": 1,
+      "reader_provider_reported_cost_usd": 0.00050585,
+      "evaluator_requests": 0,
+      "preserved_at": ".benchmark-runs/longmemeval-v2-luna-xhigh-wave1/setup_failures/01-f61a096f-thinharness-attempt-002"
+    },
+    {
+      "cell": "02-a45edf3e-native",
+      "attempt": 1,
+      "failure": "The terminal was stopped during the first query attempt to prevent more invalid ThinHarness cells while setup was repaired.",
+      "query_request_may_have_started": true,
+      "query_response_preserved": false,
+      "reader_requests": 0,
+      "evaluator_requests": 0,
+      "cost_usd": null,
+      "preserved_at": ".benchmark-runs/longmemeval-v2-luna-xhigh-wave1/setup_failures/02-a45edf3e-native-interrupted-attempt-001"
+    },
+    {
+      "cell": "03-ee75b921-native",
+      "attempt": 1,
+      "failure": "Evaluator receipt persistence failed after the query, reader, and evaluator returned. The query prompt row and trace were retained, but the first reader and evaluator outputs were not retained.",
+      "query_rerun": false,
+      "reader_rerun": true,
+      "evaluator_rerun": true,
+      "first_reader_and_evaluator_cost_usd": null,
+      "recovery_record": ".benchmark-runs/longmemeval-v2-luna-xhigh-wave1/cells/03-ee75b921-native/scoring_recovery.json",
+      "preserved_at": ".benchmark-runs/longmemeval-v2-luna-xhigh-wave1/setup_failures/03-ee75b921-native-scoring-attempt-001"
+    }
+  ],
+  "known_setup_overhead_usd": 0.00050585,
+  "unknown_setup_overhead": [
+    "One interrupted native query request may have incurred a direct OpenAI charge.",
+    "The first reader and evaluator responses for cell 03 returned but their usage receipts were lost before persistence."
+  ]
+}

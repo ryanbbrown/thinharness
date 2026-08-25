@@ -1,0 +1,21 @@
+{
+  "checked_at_utc": "2026-08-25T06:49:08.335044+00:00",
+  "official_revision": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+  "official_patch_sha256": "574d881e78e71fbebcda1143fc9dd5e3bb710e76a9f60ab394efcf01c7e73fc2",
+  "thinharness_revision": "b730c20e5035c0165095cb997b94830f8cc74618",
+  "selection_sha256": "f610aa8083d3cdfae9d3bee9180f6d1eb78bee8efc5be537326b56b50cdcf9ee",
+  "prepared_data_manifest_sha256": "77298fae093f0223adb3fd00a6c04ed8d0c154867d0c93a1891071ec23d0838b",
+  "api_key_boundaries": {
+    "OPENAI_API_KEY": "present, value not read or persisted",
+    "OPENROUTER_API_KEY": "present, value not read or persisted"
+  },
+  "retry_policy": {
+    "query_attempts_per_cell": 3,
+    "native_query_http_retries_per_attempt": 0,
+    "thinharness_query_http_retries_per_attempt": 0,
+    "reader_openai_client_max_retries": 10,
+    "evaluator_openai_client_max_retries": 10,
+    "whole_cell_retries": 0,
+    "rule": "No rerun after a cell receipt exists; retries are transport/protocol only."
+  }
+}

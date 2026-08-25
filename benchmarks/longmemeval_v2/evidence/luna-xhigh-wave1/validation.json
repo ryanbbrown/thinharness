@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "validated_at_utc": "2026-08-25T07:37:01.928047+00:00",
+  "status": "passed",
+  "coverage": {
+    "question_ids": 14,
+    "cells": 28,
+    "native_cells": 14,
+    "thinharness_cells": 14,
+    "domain_type_cells": 14,
+    "question_image_cells": 4
+  },
+  "scoring": {
+    "deterministic_cells_recomputed": 12,
+    "llm_judged_cells_matched_to_receipts": 16
+  },
+  "artifacts": {
+    "cell_artifact_files_verified": 43453,
+    "cell_artifact_bytes_verified": 8305550062,
+    "raw_manifest_files_verified": 44086,
+    "raw_manifest_sha256": "7f5ada71273484738a31914db0740c199a4472799f40070b08e699f67e35ab11"
+  },
+  "secret_boundary": {
+    "files_scanned": 8381,
+    "bytes_scanned": 4953919171,
+    "injected_secret_values_found": 0,
+    "secret_values_persisted": false
+  },
+  "harness_totals": {
+    "native": {
+      "cells": 14,
+      "correct": 11.0,
+      "query_usage": {
+        "requests": 176,
+        "input_tokens": 5518990,
+        "cached_input_tokens": 4757910,
+        "ordinary_input_tokens": 761080,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 48940,
+        "reasoning_output_tokens": 30487,
+        "tool_calls": 162
+      },
+      "query_latency_seconds": {
+        "total": 695.5306754580233,
+        "mean": 49.68076253271595,
+        "median": 46.47228758299025
+      },
+      "costs_usd": {
+        "query_api_equivalent": 0.3061022,
+        "reader_provider_reported": 0.03522535,
+        "evaluator_api_equivalent": 0.0185185
+      }
+    },
+    "thinharness": {
+      "cells": 14,
+      "correct": 11.0,
+      "query_usage": {
+        "requests": 169,
+        "input_tokens": 14741564,
+        "cached_input_tokens": 12679002,
+        "ordinary_input_tokens": 2062562,
+        "cache_write_input_tokens": 2062055,
+        "output_tokens": 75593,
+        "reasoning_output_tokens": 55970,
+        "tool_calls": 281
+      },
+      "query_latency_seconds": {
+        "total": 1100.5689643750084,
+        "mean": 78.61206888392917,
+        "median": 77.10522058350034
+      },
+      "costs_usd": {
+        "query_api_equivalent": 0.75680404,
+        "reader_provider_reported": 0.0341613,
+        "evaluator_api_equivalent": 0.01785175
+      }
+    }
+  },
+  "efficiency_ratios_thinharness_over_native": {
+    "input_tokens": 2.671061915314215,
+    "output_tokens": 1.5446056395586432,
+    "tool_calls": 1.7345679012345678,
+    "mean_latency": 1.5823442490875874,
+    "query_api_equivalent": 2.472390071028565
+  }
+}
