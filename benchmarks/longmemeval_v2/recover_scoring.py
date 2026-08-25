@@ -46,7 +46,7 @@ def main() -> None:
     )
 
     per_question_path = args.cell_output / "per_question.jsonl"
-    if per_question_path.exists():
+    if per_question_path.exists() and per_question_path.stat().st_size > 0:
         raise RuntimeError(f"Refusing to overwrite scored output: {per_question_path}")
     run_args = argparse.Namespace(**json.loads((args.cell_output / "run_args.json").read_text(encoding="utf-8")))
     prompt_rows = load_jsonl(args.cell_output / "prompt_rows.jsonl")
