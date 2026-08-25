@@ -348,7 +348,7 @@ def _format_state_text(state: dict[str, Any]) -> str:
 def _safe_trace_output_dir(root: Path, trace_dir: Path) -> str:
     question_part = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in trace_dir.parent.name)
     attempt_part = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in trace_dir.name)
-    return str(root / ".thinharness" / "outputs" / question_part / attempt_part)
+    return str(Path(".thinharness") / "outputs" / question_part / attempt_part)
 
 
 @register_memory
