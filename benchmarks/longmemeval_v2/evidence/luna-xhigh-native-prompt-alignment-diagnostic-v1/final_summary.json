@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-25T21:58:06.066070+00:00",
+  "experiment_id": "luna-xhigh-native-prompt-alignment-diagnostic-v1",
+  "status": "completed",
+  "completed_cells": 5,
+  "target_cells": 5,
+  "native_cells_run": 0,
+  "thinharness_prompt_alignment_cells_run": 5,
+  "reader_cells_run": 5,
+  "reader_necessity": "Required to convert retrieved memory context into the benchmark answer for scoring.",
+  "cost_totals_usd": {
+    "query_api_equivalent": 0.1141964,
+    "reader_provider_reported": 0.00717595,
+    "reader_api_equivalent": 0.00717595,
+    "evaluator_api_equivalent": 0.0086135,
+    "total_api_equivalent": 0.12998585000000001
+  }
+}

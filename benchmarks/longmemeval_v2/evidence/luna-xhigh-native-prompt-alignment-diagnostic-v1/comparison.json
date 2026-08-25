@@ -1,0 +1,1899 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-25T22:00:12.368352+00:00",
+  "experiment_id": "luna-xhigh-native-prompt-alignment-diagnostic-v1",
+  "interpretation": "Five new ThinHarness stochastic replicates with only the query prompt aligned; not replacements or same-seed reruns.",
+  "rows": [
+    {
+      "question_id": "109b334c",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "has_question_image": false,
+      "selection_query_cost_delta_usd": 0.16266248,
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 362313,
+        "cached_input_tokens": 296125,
+        "ordinary_input_tokens": 66188,
+        "output_tokens": 2877,
+        "reasoning_output_tokens": 1510,
+        "model_requests": 10,
+        "tool_calls": 9,
+        "latency_seconds": 43.213478167017456,
+        "query_cost_usd": 0.0226125,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1,
+        "reader_context_tokens": 8836,
+        "final_request_input_tokens": 66161
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 4217890,
+        "cached_input_tokens": 3729119,
+        "ordinary_input_tokens": 488771,
+        "output_tokens": 10782,
+        "reasoning_output_tokens": 7669,
+        "model_requests": 17,
+        "tool_calls": 47,
+        "latency_seconds": 157.81654391699703,
+        "query_cost_usd": 0.18527498,
+        "search_calls": 14,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 4,
+        "reader_context_tokens": 10384,
+        "final_request_input_tokens": 488723
+      },
+      "aligned_prompt_thinharness": {
+        "score": 1.0,
+        "input_tokens": 664239,
+        "cached_input_tokens": 588636,
+        "ordinary_input_tokens": 75603,
+        "output_tokens": 5179,
+        "reasoning_output_tokens": 3045,
+        "model_requests": 14,
+        "tool_calls": 21,
+        "latency_seconds": 66.0388185409829,
+        "query_cost_usd": 0.033108120000000005,
+        "search_calls": 16,
+        "failed_search_calls": 2,
+        "rg_unavailable_events": 0,
+        "reader_context_tokens": 10302,
+        "final_request_input_tokens": 75564
+      },
+      "aligned_vs_original_thinharness": {
+        "input_tokens_ratio": 0.15748134730872546,
+        "tool_calls_ratio": 0.44680851063829785,
+        "latency_seconds_ratio": 0.41845307787069363,
+        "query_cost_usd_ratio": 0.17869719915770604
+      },
+      "aligned_vs_original_native": {
+        "input_tokens_ratio": 1.8333291932665954,
+        "tool_calls_ratio": 2.3333333333333335,
+        "latency_seconds_ratio": 1.528199565092791,
+        "query_cost_usd_ratio": 1.4641512437810946
+      },
+      "data_access": {
+        "definitions": {
+          "direct_target_calls": "Calls whose path names this form directly, including rejected calls.",
+          "successful_direct_target_calls": "Successful calls whose path names this form directly.",
+          "broad_scope_scan_calls": "Completed or timed-out search/jsonl_search calls whose path recursively covers this form.",
+          "model_visible_result_mentions": "Tool results returned to the model that name a file in this form."
+        },
+        "forms": {
+          "global_jsonl": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "per_trajectory_jsonl": {
+            "direct_target_calls": 8,
+            "successful_direct_target_calls": 6,
+            "broad_scope_scan_calls": 2,
+            "model_visible_result_mentions": 8,
+            "accessed": true,
+            "model_visible": true
+          },
+          "raw_trajectory_json": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 2,
+            "model_visible_result_mentions": 1,
+            "accessed": true,
+            "model_visible": true
+          },
+          "summaries": {
+            "direct_target_calls": 8,
+            "successful_direct_target_calls": 8,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 8,
+            "accessed": true,
+            "model_visible": true
+          },
+          "spill_artifacts": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          }
+        },
+        "spill_artifacts_created": [
+          ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694577299-b6cc3fd0.txt",
+          ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694577302-da3cebd3.txt",
+          ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694586463-e985b08f.txt",
+          ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694586465-347a1909.txt",
+          ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/read-1787694565545-9e9b1be1.txt"
+        ],
+        "spill_artifacts_read": [],
+        "failed_tool_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null,
+            "arguments": {
+              "path": "corpus/trajectories/42b931a1/states.jsonl",
+              "where": [
+                {
+                  "field": "state_index",
+                  "op": "in",
+                  "values": [
+                    "30",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50"
+                  ],
+                  "type": "number"
+                }
+              ],
+              "fields": {
+                "state_index": 0,
+                "url": 500,
+                "screenshot": 500,
+                "thought": 2000,
+                "action": 500,
+                "action_annotated": 1000,
+                "accessibility_tree": 0
+              },
+              "field_searches": [
+                {
+                  "field": "accessibility_tree",
+                  "query": "Amortiz",
+                  "regex": false,
+                  "case_sensitive": false,
+                  "context_lines": 5,
+                  "max_matches": 20,
+                  "max_line_chars": 2000
+                }
+              ],
+              "max_chars": 30000
+            },
+            "error": "invalid where filter: op 'in' does not accept 'type'"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null,
+            "arguments": {
+              "path": "corpus/trajectories/42b931a1/states.jsonl",
+              "where": [
+                {
+                  "field": "state_index",
+                  "op": "in",
+                  "values": [
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "36",
+                    "37",
+                    "38",
+                    "39",
+                    "40",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "45",
+                    "46",
+                    "47",
+                    "48",
+                    "49",
+                    "50"
+                  ],
+                  "type": "number"
+                }
+              ],
+              "fields": {
+                "state_index": 0,
+                "url": 500,
+                "screenshot": 500,
+                "thought": 1000,
+                "action": 500,
+                "action_annotated": 1000,
+                "accessibility_tree": 18000
+              },
+              "max_chars": 30000
+            },
+            "error": "invalid where filter: op 'in' does not accept 'type'"
+          }
+        ],
+        "path_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 1,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/read-1787694565545-9e9b1be1.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 2,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 3,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 4,
+            "tool": "glob",
+            "path": "corpus",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 5,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 6,
+            "tool": "list",
+            "path": "corpus/trajectories/42b931a1",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/actions.jsonl",
+              "corpus/trajectories/42b931a1/states.jsonl",
+              "corpus/trajectories/42b931a1/trajectory.json"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694577299-b6cc3fd0.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 8,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694577302-da3cebd3.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 11,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694586465-347a1909.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 12,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/5e6e371bee01430187518eae4a8d1a47/attempt_001/jsonl_search-1787694586463-e985b08f.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 13,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 14,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 15,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 16,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 17,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/42b931a1/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/42b931a1/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 18,
+            "tool": "glob",
+            "path": ".",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 19,
+            "tool": "search",
+            "path": "corpus/trajectories/42b931a1",
+            "path_form": null,
+            "broad_scope_forms": [
+              "per_trajectory_jsonl",
+              "raw_trajectory_json"
+            ],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 20,
+            "tool": "search",
+            "path": "corpus/trajectories/42b931a1",
+            "path_form": null,
+            "broad_scope_forms": [
+              "per_trajectory_jsonl",
+              "raw_trajectory_json"
+            ],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/5e6e371bee01430187518eae4a8d1a47/attempt_001/tool_calls.json",
+            "call_index": 21,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          }
+        ]
+      }
+    },
+    {
+      "question_id": "f61a096f",
+      "domain": "web",
+      "question_type": "static-environment",
+      "has_question_image": false,
+      "selection_query_cost_delta_usd": 0.12400722,
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 531836,
+        "cached_input_tokens": 463594,
+        "ordinary_input_tokens": 68242,
+        "output_tokens": 2860,
+        "reasoning_output_tokens": 1159,
+        "model_requests": 14,
+        "tool_calls": 13,
+        "latency_seconds": 45.662020249990746,
+        "query_cost_usd": 0.026352280000000002,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1,
+        "reader_context_tokens": 3690,
+        "final_request_input_tokens": 68203
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 3929999,
+        "cached_input_tokens": 3597475,
+        "ordinary_input_tokens": 332524,
+        "output_tokens": 9921,
+        "reasoning_output_tokens": 7614,
+        "model_requests": 25,
+        "tool_calls": 43,
+        "latency_seconds": 147.90432574995793,
+        "query_cost_usd": 0.1503595,
+        "search_calls": 8,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 3,
+        "reader_context_tokens": 4619,
+        "final_request_input_tokens": 332452
+      },
+      "aligned_prompt_thinharness": {
+        "score": 0.0,
+        "input_tokens": 180877,
+        "cached_input_tokens": 111509,
+        "ordinary_input_tokens": 69368,
+        "output_tokens": 4293,
+        "reasoning_output_tokens": 3232,
+        "model_requests": 7,
+        "tool_calls": 14,
+        "latency_seconds": 50.404282375006005,
+        "query_cost_usd": 0.02125538,
+        "search_calls": 7,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0,
+        "reader_context_tokens": 79,
+        "final_request_input_tokens": 69350
+      },
+      "aligned_vs_original_thinharness": {
+        "input_tokens_ratio": 0.046024693644960216,
+        "tool_calls_ratio": 0.32558139534883723,
+        "latency_seconds_ratio": 0.3407897782531242,
+        "query_cost_usd_ratio": 0.14136373158995608
+      },
+      "aligned_vs_original_native": {
+        "input_tokens_ratio": 0.3400992035138652,
+        "tool_calls_ratio": 1.0769230769230769,
+        "latency_seconds_ratio": 1.103855722963029,
+        "query_cost_usd_ratio": 0.806585995595068
+      },
+      "data_access": {
+        "definitions": {
+          "direct_target_calls": "Calls whose path names this form directly, including rejected calls.",
+          "successful_direct_target_calls": "Successful calls whose path names this form directly.",
+          "broad_scope_scan_calls": "Completed or timed-out search/jsonl_search calls whose path recursively covers this form.",
+          "model_visible_result_mentions": "Tool results returned to the model that name a file in this form."
+        },
+        "forms": {
+          "global_jsonl": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "per_trajectory_jsonl": {
+            "direct_target_calls": 3,
+            "successful_direct_target_calls": 3,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 3,
+            "accessed": true,
+            "model_visible": true
+          },
+          "raw_trajectory_json": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "summaries": {
+            "direct_target_calls": 9,
+            "successful_direct_target_calls": 9,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 9,
+            "accessed": true,
+            "model_visible": true
+          },
+          "spill_artifacts": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          }
+        },
+        "spill_artifacts_created": [
+          ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691304-ed15cd6c.txt",
+          ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691305-853e7316.txt",
+          ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691341-5a9e2291.txt"
+        ],
+        "spill_artifacts_read": [],
+        "failed_tool_calls": [],
+        "path_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 1,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 2,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 3,
+            "tool": "list",
+            "path": "corpus",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 4,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 5,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 6,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 8,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 11,
+            "tool": "list",
+            "path": "corpus/trajectories",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 12,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/49886eee/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/49886eee/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691305-853e7316.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 13,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/c605a94c/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/c605a94c/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691341-5a9e2291.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/af5f7a2531c947ff938f079080dc7af5/attempt_001/tool_calls.json",
+            "call_index": 14,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/909f8b7e/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/909f8b7e/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/af5f7a2531c947ff938f079080dc7af5/attempt_001/jsonl_search-1787694691304-ed15cd6c.txt"
+          }
+        ]
+      }
+    },
+    {
+      "question_id": "ee75b921",
+      "domain": "web",
+      "question_type": "static-environment-abs",
+      "has_question_image": false,
+      "selection_query_cost_delta_usd": 0.04099525999999999,
+      "original_native": {
+        "score": 0.0,
+        "input_tokens": 275701,
+        "cached_input_tokens": 247876,
+        "ordinary_input_tokens": 27825,
+        "output_tokens": 3372,
+        "reasoning_output_tokens": 2086,
+        "model_requests": 15,
+        "tool_calls": 14,
+        "latency_seconds": 47.28255491598975,
+        "query_cost_usd": 0.01456892,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1,
+        "reader_context_tokens": 2879,
+        "final_request_input_tokens": 27783
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 898559,
+        "cached_input_tokens": 738149,
+        "ordinary_input_tokens": 160410,
+        "output_tokens": 7266,
+        "reasoning_output_tokens": 5643,
+        "model_requests": 14,
+        "tool_calls": 22,
+        "latency_seconds": 95.63086683402071,
+        "query_cost_usd": 0.05556417999999999,
+        "search_calls": 10,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 4,
+        "reader_context_tokens": 8475,
+        "final_request_input_tokens": 160371
+      },
+      "aligned_prompt_thinharness": {
+        "score": 0.0,
+        "input_tokens": 111384,
+        "cached_input_tokens": 87065,
+        "ordinary_input_tokens": 24319,
+        "output_tokens": 2641,
+        "reasoning_output_tokens": 1850,
+        "model_requests": 7,
+        "tool_calls": 10,
+        "latency_seconds": 32.581995374988765,
+        "query_cost_usd": 0.0097743,
+        "search_calls": 5,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0,
+        "reader_context_tokens": 3286,
+        "final_request_input_tokens": 24301
+      },
+      "aligned_vs_original_thinharness": {
+        "input_tokens_ratio": 0.12395847128569187,
+        "tool_calls_ratio": 0.45454545454545453,
+        "latency_seconds_ratio": 0.3407058458597775,
+        "query_cost_usd_ratio": 0.17591009171736183
+      },
+      "aligned_vs_original_native": {
+        "input_tokens_ratio": 0.4040028871857556,
+        "tool_calls_ratio": 0.7142857142857143,
+        "latency_seconds_ratio": 0.689091260674883,
+        "query_cost_usd_ratio": 0.6709007942936058
+      },
+      "data_access": {
+        "definitions": {
+          "direct_target_calls": "Calls whose path names this form directly, including rejected calls.",
+          "successful_direct_target_calls": "Successful calls whose path names this form directly.",
+          "broad_scope_scan_calls": "Completed or timed-out search/jsonl_search calls whose path recursively covers this form.",
+          "model_visible_result_mentions": "Tool results returned to the model that name a file in this form."
+        },
+        "forms": {
+          "global_jsonl": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "per_trajectory_jsonl": {
+            "direct_target_calls": 2,
+            "successful_direct_target_calls": 2,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 2,
+            "accessed": true,
+            "model_visible": true
+          },
+          "raw_trajectory_json": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "summaries": {
+            "direct_target_calls": 6,
+            "successful_direct_target_calls": 6,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 6,
+            "accessed": true,
+            "model_visible": true
+          },
+          "spill_artifacts": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          }
+        },
+        "spill_artifacts_created": [],
+        "spill_artifacts_read": [],
+        "failed_tool_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "list",
+            "path": "corpus/procedure_notes",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null,
+            "arguments": {
+              "path": "corpus/procedure_notes",
+              "glob": "",
+              "recursive": true,
+              "max_results": 50
+            },
+            "error": "path not found: corpus/procedure_notes"
+          }
+        ],
+        "path_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 1,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 2,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 3,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 4,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 5,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 6,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/1e58cea9/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/1e58cea9/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "list",
+            "path": "corpus/procedure_notes",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": false,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 8,
+            "tool": "glob",
+            "path": "corpus",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/192fcd63c04d461994f19c03ff0940da/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/1e58cea9/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/1e58cea9/states.jsonl"
+            ],
+            "spill_saved_to": null
+          }
+        ]
+      }
+    },
+    {
+      "question_id": "18b91103",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "has_question_image": true,
+      "selection_query_cost_delta_usd": 0.02860199999999999,
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 1005361,
+        "cached_input_tokens": 895991,
+        "ordinary_input_tokens": 109370,
+        "output_tokens": 8055,
+        "reasoning_output_tokens": 5774,
+        "model_requests": 19,
+        "tool_calls": 18,
+        "latency_seconds": 106.45417837495916,
+        "query_cost_usd": 0.04945982,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1,
+        "reader_context_tokens": 54120,
+        "final_request_input_tokens": 109316
+      },
+      "original_thinharness": {
+        "score": 0.0,
+        "input_tokens": 1603048,
+        "cached_input_tokens": 1390101,
+        "ordinary_input_tokens": 212947,
+        "output_tokens": 6392,
+        "reasoning_output_tokens": 5140,
+        "model_requests": 16,
+        "tool_calls": 24,
+        "latency_seconds": 101.00987841701135,
+        "query_cost_usd": 0.07806181999999999,
+        "search_calls": 4,
+        "failed_search_calls": 4,
+        "rg_unavailable_events": 4,
+        "reader_context_tokens": 9727,
+        "final_request_input_tokens": 212902
+      },
+      "aligned_prompt_thinharness": {
+        "score": 1.0,
+        "input_tokens": 190584,
+        "cached_input_tokens": 126251,
+        "ordinary_input_tokens": 64333,
+        "output_tokens": 2480,
+        "reasoning_output_tokens": 1608,
+        "model_requests": 6,
+        "tool_calls": 11,
+        "latency_seconds": 31.163306707981974,
+        "query_cost_usd": 0.01836762,
+        "search_calls": 5,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0,
+        "reader_context_tokens": 7472,
+        "final_request_input_tokens": 64318
+      },
+      "aligned_vs_original_thinharness": {
+        "input_tokens_ratio": 0.11888851737440176,
+        "tool_calls_ratio": 0.4583333333333333,
+        "latency_seconds_ratio": 0.3085174162800861,
+        "query_cost_usd_ratio": 0.23529582067136026
+      },
+      "aligned_vs_original_native": {
+        "input_tokens_ratio": 0.1895677274133371,
+        "tool_calls_ratio": 0.6111111111111112,
+        "latency_seconds_ratio": 0.29273915954916063,
+        "query_cost_usd_ratio": 0.37136447322291105
+      },
+      "data_access": {
+        "definitions": {
+          "direct_target_calls": "Calls whose path names this form directly, including rejected calls.",
+          "successful_direct_target_calls": "Successful calls whose path names this form directly.",
+          "broad_scope_scan_calls": "Completed or timed-out search/jsonl_search calls whose path recursively covers this form.",
+          "model_visible_result_mentions": "Tool results returned to the model that name a file in this form."
+        },
+        "forms": {
+          "global_jsonl": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          },
+          "per_trajectory_jsonl": {
+            "direct_target_calls": 3,
+            "successful_direct_target_calls": 3,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 5,
+            "accessed": true,
+            "model_visible": true
+          },
+          "raw_trajectory_json": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 1,
+            "accessed": false,
+            "model_visible": true
+          },
+          "summaries": {
+            "direct_target_calls": 6,
+            "successful_direct_target_calls": 6,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 6,
+            "accessed": true,
+            "model_visible": true
+          },
+          "spill_artifacts": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          }
+        },
+        "spill_artifacts_created": [
+          ".thinharness/outputs/d361e756594b4dc2ad703f9f51b5b143/attempt_001/jsonl_search-1787694891691-db84a722.txt",
+          ".thinharness/outputs/d361e756594b4dc2ad703f9f51b5b143/attempt_001/read-1787694876407-af45cfd4.txt"
+        ],
+        "spill_artifacts_read": [],
+        "failed_tool_calls": [],
+        "path_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 1,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": ".thinharness/outputs/d361e756594b4dc2ad703f9f51b5b143/attempt_001/read-1787694876407-af45cfd4.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 2,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 3,
+            "tool": "list",
+            "path": "corpus",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 4,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 5,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 6,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 8,
+            "tool": "list",
+            "path": "corpus/trajectories/2083b6e5",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/2083b6e5/actions.jsonl",
+              "corpus/trajectories/2083b6e5/states.jsonl",
+              "corpus/trajectories/2083b6e5/trajectory.json"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/2083b6e5/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/2083b6e5/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/2083b6e5/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/2083b6e5/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/d361e756594b4dc2ad703f9f51b5b143/attempt_001/tool_calls.json",
+            "call_index": 11,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/2083b6e5/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/2083b6e5/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/d361e756594b4dc2ad703f9f51b5b143/attempt_001/jsonl_search-1787694891691-db84a722.txt"
+          }
+        ]
+      }
+    },
+    {
+      "question_id": "b82d0dd6",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "has_question_image": false,
+      "selection_query_cost_delta_usd": 0.022109260000000013,
+      "original_native": {
+        "score": 1.0,
+        "input_tokens": 720375,
+        "cached_input_tokens": 627249,
+        "ordinary_input_tokens": 93126,
+        "output_tokens": 5963,
+        "reasoning_output_tokens": 4315,
+        "model_requests": 14,
+        "tool_calls": 13,
+        "latency_seconds": 72.63112858304521,
+        "query_cost_usd": 0.03832578,
+        "search_calls": 1,
+        "failed_search_calls": 1,
+        "rg_unavailable_events": 1,
+        "reader_context_tokens": 16813,
+        "final_request_input_tokens": 93087
+      },
+      "original_thinharness": {
+        "score": 1.0,
+        "input_tokens": 1002698,
+        "cached_input_tokens": 831692,
+        "ordinary_input_tokens": 171006,
+        "output_tokens": 8000,
+        "reasoning_output_tokens": 6751,
+        "model_requests": 11,
+        "tool_calls": 21,
+        "latency_seconds": 101.64260212500812,
+        "query_cost_usd": 0.06043504000000001,
+        "search_calls": 2,
+        "failed_search_calls": 2,
+        "rg_unavailable_events": 2,
+        "reader_context_tokens": 17538,
+        "final_request_input_tokens": 170976
+      },
+      "aligned_prompt_thinharness": {
+        "score": 0.0,
+        "input_tokens": 412488,
+        "cached_input_tokens": 317899,
+        "ordinary_input_tokens": 94589,
+        "output_tokens": 5346,
+        "reasoning_output_tokens": 4099,
+        "model_requests": 9,
+        "tool_calls": 14,
+        "latency_seconds": 70.09080516698305,
+        "query_cost_usd": 0.03169098,
+        "search_calls": 7,
+        "failed_search_calls": 0,
+        "rg_unavailable_events": 0,
+        "reader_context_tokens": 12052,
+        "final_request_input_tokens": 94565
+      },
+      "aligned_vs_original_thinharness": {
+        "input_tokens_ratio": 0.4113781018811247,
+        "tool_calls_ratio": 0.6666666666666666,
+        "latency_seconds_ratio": 0.6895809798413053,
+        "query_cost_usd_ratio": 0.5243808889677246
+      },
+      "aligned_vs_original_native": {
+        "input_tokens_ratio": 0.5726017699115045,
+        "tool_calls_ratio": 1.0769230769230769,
+        "latency_seconds_ratio": 0.9650243158047915,
+        "query_cost_usd_ratio": 0.8268841495202447
+      },
+      "data_access": {
+        "definitions": {
+          "direct_target_calls": "Calls whose path names this form directly, including rejected calls.",
+          "successful_direct_target_calls": "Successful calls whose path names this form directly.",
+          "broad_scope_scan_calls": "Completed or timed-out search/jsonl_search calls whose path recursively covers this form.",
+          "model_visible_result_mentions": "Tool results returned to the model that name a file in this form."
+        },
+        "forms": {
+          "global_jsonl": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 3,
+            "accessed": false,
+            "model_visible": true
+          },
+          "per_trajectory_jsonl": {
+            "direct_target_calls": 4,
+            "successful_direct_target_calls": 4,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 151,
+            "accessed": true,
+            "model_visible": true
+          },
+          "raw_trajectory_json": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 24,
+            "accessed": false,
+            "model_visible": true
+          },
+          "summaries": {
+            "direct_target_calls": 7,
+            "successful_direct_target_calls": 7,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 9,
+            "accessed": true,
+            "model_visible": true
+          },
+          "spill_artifacts": {
+            "direct_target_calls": 0,
+            "successful_direct_target_calls": 0,
+            "broad_scope_scan_calls": 0,
+            "model_visible_result_mentions": 0,
+            "accessed": false,
+            "model_visible": false
+          }
+        },
+        "spill_artifacts_created": [
+          ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694942337-bc32e2ed.txt",
+          ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694942348-d0a36ec7.txt",
+          ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694955053-5bc9ab29.txt",
+          ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/read-1787694928779-83f5235f.txt"
+        ],
+        "spill_artifacts_read": [],
+        "failed_tool_calls": [],
+        "path_calls": [
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 1,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 2,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md"
+            ],
+            "spill_saved_to": ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/read-1787694928779-83f5235f.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 3,
+            "tool": "list",
+            "path": "corpus/procedure_notes",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 4,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 5,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 6,
+            "tool": "glob",
+            "path": ".",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/013696c4/states.jsonl",
+              "corpus/trajectories/02dad10c/states.jsonl",
+              "corpus/trajectories/054c4ed2/states.jsonl",
+              "corpus/trajectories/096432bf/states.jsonl",
+              "corpus/trajectories/0ab99e0c/states.jsonl",
+              "corpus/trajectories/0b072635/states.jsonl",
+              "corpus/trajectories/0c80a9e1/states.jsonl",
+              "corpus/trajectories/102263ff/states.jsonl",
+              "corpus/trajectories/1046053f/states.jsonl",
+              "corpus/trajectories/110d48d3/states.jsonl",
+              "corpus/trajectories/11c0fff6/states.jsonl",
+              "corpus/trajectories/12457787/states.jsonl",
+              "corpus/trajectories/12c22166/states.jsonl",
+              "corpus/trajectories/13083bae/states.jsonl",
+              "corpus/trajectories/132da65a/states.jsonl",
+              "corpus/trajectories/13c89395/states.jsonl",
+              "corpus/trajectories/140c90d8/states.jsonl",
+              "corpus/trajectories/14825d3a/states.jsonl",
+              "corpus/trajectories/1485f2f8/states.jsonl",
+              "corpus/trajectories/16143664/states.jsonl",
+              "corpus/trajectories/16eb5333/states.jsonl",
+              "corpus/trajectories/170f5570/states.jsonl",
+              "corpus/trajectories/18deaf75/states.jsonl",
+              "corpus/trajectories/1a755059/states.jsonl",
+              "corpus/trajectories/1c29cf20/states.jsonl",
+              "corpus/trajectories/1cf3ac18/states.jsonl",
+              "corpus/trajectories/1d03b25f/states.jsonl",
+              "corpus/trajectories/1d1cac57/states.jsonl",
+              "corpus/trajectories/1d56a4d6/states.jsonl",
+              "corpus/trajectories/1dd9a032/states.jsonl",
+              "corpus/trajectories/1f2793bd/states.jsonl",
+              "corpus/trajectories/2010814f/states.jsonl",
+              "corpus/trajectories/2083b6e5/states.jsonl",
+              "corpus/trajectories/22743fb5/states.jsonl",
+              "corpus/trajectories/247282e9/states.jsonl",
+              "corpus/trajectories/25a8b10b/states.jsonl",
+              "corpus/trajectories/2621b470/states.jsonl",
+              "corpus/trajectories/276f9dff/states.jsonl",
+              "corpus/trajectories/28151f9c/states.jsonl",
+              "corpus/trajectories/2ae5ac35/states.jsonl",
+              "corpus/trajectories/2ebe08f4/states.jsonl",
+              "corpus/trajectories/2f191311/states.jsonl",
+              "corpus/trajectories/352226dd/states.jsonl",
+              "corpus/trajectories/36041ba0/states.jsonl",
+              "corpus/trajectories/38b757f1/states.jsonl",
+              "corpus/trajectories/3c588c61/states.jsonl",
+              "corpus/trajectories/3fafa5c3/states.jsonl",
+              "corpus/trajectories/42b931a1/states.jsonl",
+              "corpus/trajectories/433cea49/states.jsonl",
+              "corpus/trajectories/435237ce/states.jsonl",
+              "corpus/trajectories/454485ca/states.jsonl",
+              "corpus/trajectories/45a55aa7/states.jsonl",
+              "corpus/trajectories/4919aae9/states.jsonl",
+              "corpus/trajectories/49f98e9e/states.jsonl",
+              "corpus/trajectories/4b3a3363/states.jsonl",
+              "corpus/trajectories/4c36a575/states.jsonl",
+              "corpus/trajectories/4c9eaae0/states.jsonl",
+              "corpus/trajectories/4db02b16/states.jsonl",
+              "corpus/trajectories/52836f8d/states.jsonl",
+              "corpus/trajectories/55f7abe9/states.jsonl",
+              "corpus/trajectories/5c4a3809/states.jsonl",
+              "corpus/trajectories/6022defe/states.jsonl",
+              "corpus/trajectories/658d12db/states.jsonl",
+              "corpus/trajectories/683720a4/states.jsonl",
+              "corpus/trajectories/6a84271c/states.jsonl",
+              "corpus/trajectories/6c4a4684/states.jsonl",
+              "corpus/trajectories/6cd3cdc4/states.jsonl",
+              "corpus/trajectories/6dedfb73/states.jsonl",
+              "corpus/trajectories/72e456ca/states.jsonl",
+              "corpus/trajectories/77502b3f/states.jsonl",
+              "corpus/trajectories/785aa5fe/states.jsonl",
+              "corpus/trajectories/787ceaeb/states.jsonl",
+              "corpus/trajectories/8362568d/states.jsonl",
+              "corpus/trajectories/857659bd/states.jsonl",
+              "corpus/trajectories/885de7d3/states.jsonl",
+              "corpus/trajectories/89cf6e06/states.jsonl",
+              "corpus/trajectories/8b74ffaa/states.jsonl",
+              "corpus/trajectories/911969c3/states.jsonl",
+              "corpus/trajectories/91870469/states.jsonl",
+              "corpus/trajectories/933a1321/states.jsonl",
+              "corpus/trajectories/96131e7b/states.jsonl",
+              "corpus/trajectories/9c420e86/states.jsonl",
+              "corpus/trajectories/afa62eac/states.jsonl",
+              "corpus/trajectories/afc7df70/states.jsonl",
+              "corpus/trajectories/b1ba591c/states.jsonl",
+              "corpus/trajectories/bd6eb5c4/states.jsonl",
+              "corpus/trajectories/be7dbdb2/states.jsonl",
+              "corpus/trajectories/c10b0c43/states.jsonl",
+              "corpus/trajectories/cfd9c5e9/states.jsonl",
+              "corpus/trajectories/dc083cd0/states.jsonl",
+              "corpus/trajectories/e012183c/states.jsonl",
+              "corpus/trajectories/e72dc073/states.jsonl",
+              "corpus/trajectories/e9f683bd/states.jsonl",
+              "corpus/trajectories/ee081745/states.jsonl",
+              "corpus/trajectories/f224a4eb/states.jsonl",
+              "corpus/trajectories/f2bbf553/states.jsonl",
+              "corpus/trajectories/f92c1020/states.jsonl",
+              "corpus/trajectories/fa42acc1/states.jsonl",
+              "corpus/trajectories/fc0e8ec3/states.jsonl",
+              "corpus/trajectories/fd4c97b1/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 7,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 8,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/be7dbdb2/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/be7dbdb2/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694942337-bc32e2ed.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 9,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/be7dbdb2/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/be7dbdb2/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694942348-d0a36ec7.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 10,
+            "tool": "search",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 11,
+            "tool": "read",
+            "path": "corpus/TRAJECTORY_SUMMARY_FULL.md",
+            "path_form": "summaries",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_FULL.md"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 12,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/12457787/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/12457787/states.jsonl"
+            ],
+            "spill_saved_to": null
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 13,
+            "tool": "jsonl_search",
+            "path": "corpus/trajectories/12457787/states.jsonl",
+            "path_form": "per_trajectory_jsonl",
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/trajectories/12457787/states.jsonl"
+            ],
+            "spill_saved_to": ".thinharness/outputs/8cf399ed204a42478c6990c92e09af9a/attempt_001/jsonl_search-1787694955053-5bc9ab29.txt"
+          },
+          {
+            "attempt_tool_calls_path": "query_traces/8cf399ed204a42478c6990c92e09af9a/attempt_001/tool_calls.json",
+            "call_index": 14,
+            "tool": "list",
+            "path": "corpus",
+            "path_form": null,
+            "broad_scope_forms": [],
+            "ok": true,
+            "visible_paths": [
+              "corpus/TRAJECTORY_SUMMARY_CONCISE.md",
+              "corpus/TRAJECTORY_SUMMARY_FULL.md",
+              "corpus/actions.jsonl",
+              "corpus/states.jsonl",
+              "corpus/trajectories/096432bf/actions.jsonl",
+              "corpus/trajectories/096432bf/states.jsonl",
+              "corpus/trajectories/096432bf/trajectory.json",
+              "corpus/trajectories/0c80a9e1/actions.jsonl",
+              "corpus/trajectories/0c80a9e1/states.jsonl",
+              "corpus/trajectories/0c80a9e1/trajectory.json",
+              "corpus/trajectories/102263ff/actions.jsonl",
+              "corpus/trajectories/102263ff/states.jsonl",
+              "corpus/trajectories/102263ff/trajectory.json",
+              "corpus/trajectories/11c0fff6/actions.jsonl",
+              "corpus/trajectories/11c0fff6/states.jsonl",
+              "corpus/trajectories/11c0fff6/trajectory.json",
+              "corpus/trajectories/12c22166/actions.jsonl",
+              "corpus/trajectories/12c22166/states.jsonl",
+              "corpus/trajectories/12c22166/trajectory.json",
+              "corpus/trajectories/140c90d8/actions.jsonl",
+              "corpus/trajectories/140c90d8/states.jsonl",
+              "corpus/trajectories/140c90d8/trajectory.json",
+              "corpus/trajectories/1a755059/actions.jsonl",
+              "corpus/trajectories/1a755059/states.jsonl",
+              "corpus/trajectories/1a755059/trajectory.json",
+              "corpus/trajectories/1f2793bd/actions.jsonl",
+              "corpus/trajectories/1f2793bd/states.jsonl",
+              "corpus/trajectories/1f2793bd/trajectory.json",
+              "corpus/trajectories/22743fb5/actions.jsonl",
+              "corpus/trajectories/22743fb5/states.jsonl",
+              "corpus/trajectories/22743fb5/trajectory.json",
+              "corpus/trajectories/2621b470/actions.jsonl",
+              "corpus/trajectories/2621b470/states.jsonl",
+              "corpus/trajectories/2621b470/trajectory.json",
+              "corpus/trajectories/433cea49/actions.jsonl",
+              "corpus/trajectories/433cea49/states.jsonl",
+              "corpus/trajectories/433cea49/trajectory.json",
+              "corpus/trajectories/45a55aa7/actions.jsonl",
+              "corpus/trajectories/45a55aa7/states.jsonl",
+              "corpus/trajectories/45a55aa7/trajectory.json",
+              "corpus/trajectories/55f7abe9/actions.jsonl",
+              "corpus/trajectories/55f7abe9/states.jsonl",
+              "corpus/trajectories/55f7abe9/trajectory.json",
+              "corpus/trajectories/787ceaeb/actions.jsonl",
+              "corpus/trajectories/787ceaeb/states.jsonl",
+              "corpus/trajectories/787ceaeb/trajectory.json",
+              "corpus/trajectories/8362568d/actions.jsonl",
+              "corpus/trajectories/8362568d/states.jsonl",
+              "corpus/trajectories/8362568d/trajectory.json",
+              "corpus/trajectories/857659bd/actions.jsonl",
+              "corpus/trajectories/857659bd/states.jsonl",
+              "corpus/trajectories/857659bd/trajectory.json",
+              "corpus/trajectories/885de7d3/actions.jsonl",
+              "corpus/trajectories/885de7d3/states.jsonl",
+              "corpus/trajectories/885de7d3/trajectory.json",
+              "corpus/trajectories/911969c3/actions.jsonl",
+              "corpus/trajectories/911969c3/states.jsonl",
+              "corpus/trajectories/911969c3/trajectory.json",
+              "corpus/trajectories/91870469/actions.jsonl",
+              "corpus/trajectories/91870469/states.jsonl",
+              "corpus/trajectories/91870469/trajectory.json",
+              "corpus/trajectories/9c420e86/actions.jsonl",
+              "corpus/trajectories/9c420e86/states.jsonl",
+              "corpus/trajectories/9c420e86/trajectory.json",
+              "corpus/trajectories/e72dc073/actions.jsonl",
+              "corpus/trajectories/e72dc073/states.jsonl",
+              "corpus/trajectories/e72dc073/trajectory.json",
+              "corpus/trajectories/f224a4eb/actions.jsonl",
+              "corpus/trajectories/f224a4eb/states.jsonl",
+              "corpus/trajectories/f224a4eb/trajectory.json",
+              "corpus/trajectories/fc0e8ec3/states.jsonl",
+              "corpus/trajectories/fc0e8ec3/trajectory.json",
+              "corpus/trajectories/fd4c97b1/actions.jsonl",
+              "corpus/trajectories/fd4c97b1/states.jsonl",
+              "corpus/trajectories/fd4c97b1/trajectory.json",
+              "corpus/trajectory_manifest.jsonl"
+            ],
+            "spill_saved_to": null
+          }
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "original_native": {
+      "input_tokens": 2895586.0,
+      "tool_calls": 67.0,
+      "latency_seconds": 315.2433602910023,
+      "query_cost_usd": 0.1513193,
+      "failed_search_calls": 5.0,
+      "correct": 4.0
+    },
+    "original_thinharness": {
+      "input_tokens": 11652194.0,
+      "tool_calls": 157.0,
+      "latency_seconds": 604.0042170429952,
+      "query_cost_usd": 0.52969552,
+      "failed_search_calls": 18.0,
+      "correct": 4.0
+    },
+    "aligned_prompt_thinharness": {
+      "input_tokens": 1559572.0,
+      "tool_calls": 70.0,
+      "latency_seconds": 250.2792081659427,
+      "query_cost_usd": 0.1141964,
+      "failed_search_calls": 2.0,
+      "correct": 2.0
+    },
+    "aligned_vs_original_thinharness": {
+      "input_tokens_ratio": 0.13384363494119647,
+      "tool_calls_ratio": 0.445859872611465,
+      "latency_seconds_ratio": 0.4143666568939318,
+      "query_cost_usd_ratio": 0.21558875936877853
+    },
+    "aligned_vs_original_native": {
+      "input_tokens_ratio": 0.5386032395515105,
+      "tool_calls_ratio": 1.044776119402985,
+      "latency_seconds_ratio": 0.7939238051989708,
+      "query_cost_usd_ratio": 0.7546717437894572
+    }
+  }
+}

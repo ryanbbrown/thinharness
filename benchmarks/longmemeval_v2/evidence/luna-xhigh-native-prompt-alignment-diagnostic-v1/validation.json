@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "validated_at_utc": "2026-08-25T22:00:14.071867+00:00",
+  "status": "passed",
+  "coverage": {
+    "question_ids": 5,
+    "cells": 5,
+    "native_cells_run": 0,
+    "thinharness_prompt_alignment_replicates": 5,
+    "question_image_cells": 1
+  },
+  "selection": {
+    "selection_sha256": "bb5937d8b8489fa4b000883daefaa9e7aa5159b9a5a19156fa96eaf6ba836d14",
+    "top_five_positive_cost_deltas_recomputed": true,
+    "original_receipts_sha256": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e"
+  },
+  "prompt_equivalence": {
+    "prompt_diff_sha256": "35b113abbd45d88fd25433576ee5b8c288c77dbf09afc56c86d9b907dba55dcd",
+    "native_query_prompt_sha256": "a0a70c0fb9df19ebe6861812bfb3bed647e403299aaeee870e2e198773ee7adb",
+    "native_instruction_sha256": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
+    "rendered_prompts_checked": 5,
+    "rendered_prompt_sha256_by_question": {
+      "109b334c": "8ea3456702e785fd2f59b247288c4751de31421c686f8617b4db2fa6d764e294",
+      "f61a096f": "d989209fd3326e8316aed5744879f06427f3498da010a53333509b6c222f3a18",
+      "ee75b921": "f0f11f5bbc746c6547f24ee935395a013f4a7320e467b0991e979c8fd2f25032",
+      "18b91103": "3b047ab341bfb71b91b62c40a928c5209008df93bed84072d3be7afc2ec1395f",
+      "b82d0dd6": "fb816b8a1c40878e41da85b3e705fc578ab2b13c2546224a129a87984f3b97d8"
+    },
+    "localized_replacement_count": 15
+  },
+  "scoring": {
+    "deterministic_cells": 1,
+    "llm_judged_cells_with_receipts": 4,
+    "official_reader_required_cells": 5
+  },
+  "artifacts": {
+    "cell_artifact_files_verified": 2124,
+    "cell_artifact_bytes_verified": 1186611830,
+    "raw_manifest_files_verified": 2142,
+    "raw_manifest_sha256": "3b665082110768b2e7578941c571b45609616b6160e3f416042935ccc61dfbe7"
+  },
+  "secret_boundary": {
+    "files_scanned": 2150,
+    "bytes_scanned": 1187512509,
+    "injected_secret_values_found": 0,
+    "secret_values_persisted": false
+  },
+  "ripgrep_runtime": {
+    "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+    "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+    "path_contains_rg_parent": true,
+    "jsonl_search": {
+      "status": "passed",
+      "command": [
+        "rg",
+        "--json",
+        "--",
+        "runtime-ripgrep-needle",
+        "probe.jsonl"
+      ],
+      "returncode": 0,
+      "output_sha256": "519b9a0568c3f315aa05126100ea1329e6511d34e0479c75d77d632ac37acd9a",
+      "matched_rows": 1
+    }
+  }
+}

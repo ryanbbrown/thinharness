@@ -231,7 +231,7 @@ def broad_scope_forms(path: str) -> list[str]:
     normalized = path.rstrip("/")
     if normalized in {".", "corpus"}:
         return ["global_jsonl", "per_trajectory_jsonl", "raw_trajectory_json", "summaries"]
-    if normalized == "corpus/trajectories":
+    if normalized == "corpus/trajectories" or re.fullmatch(r"corpus/trajectories/[^/]+", normalized):
         return ["per_trajectory_jsonl", "raw_trajectory_json"]
     return []
 
@@ -469,7 +469,7 @@ def validate_completed(
         metadata = read_json(cell_root / "cell_metadata.json")
         if metadata["harness"] != "thinharness" or metadata["query_api"] != "https://api.openai.com/v1":
             raise RuntimeError(f"Query route differs: {cell_name}")
-        if metadata["ripgrep_runtime"]["status"] != "passed":
+        if metadata["ripgrep_runtime"]["jsonl_search"]["status"] != "passed":
             raise RuntimeError(f"Ripgrep preflight differs: {cell_name}")
         reader_metadata = receipt.get("reader_metadata") or {}
         if reader_metadata.get("provider") != "Parasail" or reader_metadata.get("response_model") != "qwen/qwen3.5-9b":
@@ -570,9 +570,38 @@ def write_results(path: Path, comparison: dict[str, Any], costs: dict[str, float
                 f"{value['failed_search_calls']} | {value['latency_seconds']:.2f}s | "
                 f"${value['query_cost_usd']:.8f} | {value['score']:.0f} |"
             )
+    lines.extend(
+        [
+            "",
+            "## Data forms actually accessed",
+            "",
+            "Access means a successful direct tool call or a completed/timed-out recursive search scope. "
+            "Visible-only file names from listings do not count as file access.",
+            "",
+            "| Question | Global JSONL | Per-trajectory JSONL | Raw trajectory JSON | Summaries | Full spills read |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in comparison["rows"]:
+        forms = row["data_access"]["forms"]
+        lines.append(
+            f"| {row['question_id']} | {'yes' if forms['global_jsonl']['accessed'] else 'no'} | "
+            f"{'yes' if forms['per_trajectory_jsonl']['accessed'] else 'no'} | "
+            f"{'yes' if forms['raw_trajectory_json']['accessed'] else 'no'} | "
+            f"{'yes' if forms['summaries']['accessed'] else 'no'} | "
+            f"{len(row['data_access']['spill_artifacts_read'])} |"
+        )
+    total_spills_created = sum(len(row["data_access"]["spill_artifacts_created"]) for row in comparison["rows"])
+    total_spills_read = sum(len(row["data_access"]["spill_artifacts_read"]) for row in comparison["rows"])
+    total_failed_tools = sum(len(row["data_access"]["failed_tool_calls"]) for row in comparison["rows"])
     totals = comparison["totals"]
     lines.extend(
         [
+            "",
+            f"- Full spill artifacts: {total_spills_created} created, {total_spills_read} read.",
+            f"- Failed tool calls: {total_failed_tools}; failed search/jsonl_search calls: "
+            f"{totals['aligned_prompt_thinharness']['failed_search_calls']:.0f}.",
+            "- No aligned cell used global JSONL. All five used summaries and targeted per-trajectory JSONL.",
             "",
             "## Totals",
             "",
