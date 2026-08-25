@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "seed": "thinharness-lmev2-luna-xhigh-wave1-v1",
+  "selection_algorithm": "minimum SHA-256(seed + ':' + question_id) within each ordered stratum",
+  "dataset_revision": "f152293e235517d504809563c833d7190b8c713b",
+  "tier": "small",
+  "source_hashes": {
+    "questions.jsonl": "0a3ae5ebea938c24d7800e1e0b0828e08ae1646f939a53853b2b8cdc08e292b7",
+    "haystacks/lme_v2_small.json": "9b5301defb23a088a5f06e45ff8d5f35e569d78305a66d492046a9fff9b46593"
+  },
+  "stratum_order": {
+    "question_types": [
+      "static-environment",
+      "static-environment-abs",
+      "dynamic-environment",
+      "dynamic-environment-abs",
+      "procedure",
+      "procedure-abs",
+      "errors-gotchas"
+    ],
+    "domains_within_type": [
+      "web",
+      "enterprise"
+    ]
+  },
+  "questions": [
+    {
+      "order": 1,
+      "question_id": "f61a096f",
+      "domain": "web",
+      "question_type": "static-environment",
+      "environment": "webarena-cms",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "07f0bd288429b787c453ac80451d486587ef8d28b1ad666af4536e2ac92011b1"
+    },
+    {
+      "order": 2,
+      "question_id": "a45edf3e",
+      "domain": "enterprise",
+      "question_type": "static-environment",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "016513ade1d13567f7c8526f30b8b9a4118d50c3f711c844a9ee034f829f21db"
+    },
+    {
+      "order": 3,
+      "question_id": "ee75b921",
+      "domain": "web",
+      "question_type": "static-environment-abs",
+      "environment": "webarena-onestopshop",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "0840728f9c5bdf64c80d2a78b0a1943715bae6ba89566bc8c3d7efa14f4a04ad"
+    },
+    {
+      "order": 4,
+      "question_id": "19935d2d",
+      "domain": "enterprise",
+      "question_type": "static-environment-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "155370804a44cb2b5dbf2bd1b6bd537a9a7034119f2caaaa89a3c62685c12acc"
+    },
+    {
+      "order": 5,
+      "question_id": "edea0219",
+      "domain": "web",
+      "question_type": "dynamic-environment",
+      "environment": "webarena-reddit",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "01fb35cb6f909b2b6755ba3d099c8d91f47bef43fb09a70fbd2c76d4b01cd419"
+    },
+    {
+      "order": 6,
+      "question_id": "3fd81278",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "026016e8498d3f0bd6049e7efa8974c57fa1c357466aa0dc871a1b601f12839c"
+    },
+    {
+      "order": 7,
+      "question_id": "6feb33d4",
+      "domain": "web",
+      "question_type": "dynamic-environment-abs",
+      "environment": "webarena-reddit",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "0420ab227917d7d49c1195218513d5e830b50d0ef2a6d2e6b940d05840be67e8"
+    },
+    {
+      "order": 8,
+      "question_id": "109b334c",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "0808c41b47f7f415a5f8d5113e04b45b6b46d8c946841cf0efc81f7f67a5672f"
+    },
+    {
+      "order": 9,
+      "question_id": "3269a3c5",
+      "domain": "web",
+      "question_type": "procedure",
+      "environment": "webarena-reddit",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match_ordered",
+      "selection_rank_sha256": "037c7ffa89aa7760f95abd4300ea5a04a96c771f83f23c41d1cafa5321eb450a"
+    },
+    {
+      "order": 10,
+      "question_id": "100ff132",
+      "domain": "enterprise",
+      "question_type": "procedure",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "mc_choice_match",
+      "selection_rank_sha256": "044cb7f1a3f58e814ddbc1aba425f75c40ab2fb0567a95d757ba0512e91119dd"
+    },
+    {
+      "order": 11,
+      "question_id": "9ed5a14d",
+      "domain": "web",
+      "question_type": "procedure-abs",
+      "environment": "webarena-cms",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "114311ca0dc42c292c706be2a45d3a72d2ab4d2b8db7ea350ec7cdce2ed06c65"
+    },
+    {
+      "order": 12,
+      "question_id": "b82d0dd6",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "0a433b86f640cdfbba96362fdc9ece722a321ffdc429b5a7d360c3b85c8738d8"
+    },
+    {
+      "order": 13,
+      "question_id": "1e77eb4b",
+      "domain": "web",
+      "question_type": "errors-gotchas",
+      "environment": "webarena-cms",
+      "has_question_image": true,
+      "eval_name": "llm_gotchas_checker",
+      "selection_rank_sha256": "09456745db380d95ae95edc219d0e577c764f4373b3af3148f73acadff4dc0e1"
+    },
+    {
+      "order": 14,
+      "question_id": "18b91103",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "environment": "workarena",
+      "has_question_image": true,
+      "eval_name": "llm_gotchas_checker",
+      "selection_rank_sha256": "3c704c427fdc74c0bf39d033a5b04b17232b2058e076acb114dc7d47d5f2bffc"
+    }
+  ]
+}
