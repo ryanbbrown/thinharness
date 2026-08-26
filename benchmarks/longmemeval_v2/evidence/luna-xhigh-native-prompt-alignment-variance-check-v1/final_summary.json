@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-08-26T22:12:15.171149+00:00",
+  "experiment_id": "luna-xhigh-native-prompt-alignment-variance-check-v1",
+  "status": "completed",
+  "completed_cells": 2,
+  "target_cells": 2,
+  "native_cells_run": 0,
+  "recovered": 1,
+  "cost_totals_usd": {
+    "query_api_equivalent": 0.1054887,
+    "reader_provider_reported": 0.0019875,
+    "reader_api_equivalent": 0.0019875,
+    "evaluator_api_equivalent": 0.00225575,
+    "total_api_equivalent": 0.10973195
+  }
+}

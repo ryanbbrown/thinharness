@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "checked_at_utc": "2026-08-26T22:07:05.566122+00:00",
+  "experiment_id": "luna-xhigh-native-prompt-alignment-variance-check-v1",
+  "selection_sha256": "40808a24da3aa068b2b85cb8876e81cd0b66aab9df46fae46fccaabcdb346f95",
+  "launch_selection_sha256": "40808a24da3aa068b2b85cb8876e81cd0b66aab9df46fae46fccaabcdb346f95",
+  "thinharness_revision": "555ed4495bf0dfe5a312cf83a714f282b2e789b3",
+  "frozen_source_commit": "57013717f0c8343cd3f626153df5bd26c4aa0b93",
+  "frozen_source_sha256": {
+    "benchmarks/longmemeval_v2/memory.py": "e9e068f5e9fafdb5b79c825c2e1dbb1653a592961e93c61db18c9fd91026b512",
+    "benchmarks/longmemeval_v2/prompt_alignment.py": "24faffefb7d6474ffb0266fad9ad3657f36086ebfd9320f4fa836d4d423703f6",
+    "benchmarks/longmemeval_v2/ripgrep_runtime.py": "59965049f2db748e965ed96a675444bf1cd114201052e9595b289541e67da7b1",
+    "benchmarks/longmemeval_v2/run_cell.py": "7af3d862156829c96b470069b1e6f88dbc8c9d50ae03d94b5731c6298b048ef9",
+    "benchmarks/longmemeval_v2/orchestrate.py": "4d2fc4b822d7c1b15d15d6672b98a7ce0de37227403a4e87543aed7ca2a7e2d1",
+    "benchmarks/longmemeval_v2/official-direct-api-instrumentation.patch": "574d881e78e71fbebcda1143fc9dd5e3bb710e76a9f60ab394efcf01c7e73fc2",
+    "benchmarks/longmemeval_v2/prompt_alignment_diff.md": "35b113abbd45d88fd25433576ee5b8c288c77dbf09afc56c86d9b907dba55dcd",
+    "benchmarks/longmemeval_v2/prompt_alignment_selection.json": "bb5937d8b8489fa4b000883daefaa9e7aa5159b9a5a19156fa96eaf6ba836d14",
+    "benchmarks/longmemeval_v2/run_prompt_alignment.py": "21fc71f1a7e25e16ddd230b2e3f5f15a2d64a90c4d0b5aaf82ab73b3b02ef862",
+    "thinharness/": "20d36af573c75984f6954aba4a0fd6250372be226e6cdde1f44fd92f9fc94c0b"
+  },
+  "official_revision": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+  "official_patch_sha256": "574d881e78e71fbebcda1143fc9dd5e3bb710e76a9f60ab394efcf01c7e73fc2",
+  "prepared_data_manifest_sha256": "77298fae093f0223adb3fd00a6c04ed8d0c154867d0c93a1891071ec23d0838b",
+  "prompt_identity": {
+    "native_query_prompt_sha256": "a0a70c0fb9df19ebe6861812bfb3bed647e403299aaeee870e2e198773ee7adb",
+    "native_instruction_sha256": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
+    "aligned_prompt_template_sha256": "066d8ee76fa9aedcaf3c8d2418eb21dfc1c0f5b80c21235808307a83344faef1",
+    "prompt_diff_sha256": "35b113abbd45d88fd25433576ee5b8c288c77dbf09afc56c86d9b907dba55dcd"
+  },
+  "runtime_config": {
+    "memory_type": "thinharness",
+    "memory_params": {
+      "model": "openai:gpt-5.6-luna",
+      "base_url": null,
+      "api_key_env": "OPENAI_API_KEY",
+      "timeout_seconds": 1200.0,
+      "max_retries": 3,
+      "max_model_requests": 30,
+      "max_tool_calls": 128,
+      "output_retries": 1,
+      "builtin_tools": [
+        "read",
+        "search",
+        "jsonl_search",
+        "list",
+        "glob"
+      ],
+      "output_mode": "native",
+      "reasoning_effort": "xhigh",
+      "extra_body": {},
+      "workspace_dir": "<workspace_dir>",
+      "trajectories_root_dir": "<trajectories_root_dir>",
+      "query_trace_dir": "<query_trace_dir>"
+    }
+  },
+  "retry_policy": {
+    "whole_cell_retries": 0,
+    "query_http_retries": 0,
+    "required_observed_query_attempts_per_cell": 1,
+    "required_observed_output_retries_per_cell": 0,
+    "frozen_max_attempts_guardrail": 3,
+    "frozen_output_retries_guardrail": 1,
+    "rule": "Never relaunch a question after output starts; fail validation unless exactly one query attempt completed."
+  },
+  "concurrency": 1,
+  "ripgrep_runtime": {
+    "rg_path": "/Users/ryanbrown/.pi/agent/bin/rg",
+    "rg_version": "ripgrep 15.2.0 (rev e89fff89ac)",
+    "path_contains_rg_parent": true,
+    "jsonl_search": {
+      "status": "passed",
+      "command": [
+        "rg",
+        "--json",
+        "--",
+        "runtime-ripgrep-needle",
+        "probe.jsonl"
+      ],
+      "returncode": 0,
+      "output_sha256": "519b9a0568c3f315aa05126100ea1329e6511d34e0479c75d77d632ac37acd9a",
+      "matched_rows": 1
+    }
+  },
+  "api_key_boundaries": {
+    "OPENAI_API_KEY": "present; value not read or persisted",
+    "OPENROUTER_API_KEY": "present; value not read or persisted"
+  }
+}

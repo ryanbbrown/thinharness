@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "raw_manifest_files_rehashed": 868,
+  "raw_manifest_bytes_rehashed": 461886185,
+  "frozen_baselines_reconciled": true,
+  "full_query_attempts": 2,
+  "query_response_receipts": 36,
+  "whole_cell_retries": 0,
+  "output_retries": 0,
+  "tool_retries": 0,
+  "post_query_scoring_recovery": {
+    "question_id": "f61a096f",
+    "query_rerun": false,
+    "reader_run_once": true
+  },
+  "setup_failures_before_model_calls": [
+    {
+      "path": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-native-prompt-alignment-variance-check-v1-setup-failure-001",
+      "query_trace_files": 0
+    },
+    {
+      "path": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-native-prompt-alignment-variance-check-v1-setup-failure-002",
+      "query_trace_files": 0
+    }
+  ],
+  "terminal_log": {
+    "path": "/Users/ryanbrown/code/thinharness/.benchmark-runs/terminal-logs/longmemeval-v2-luna-xhigh-native-prompt-alignment-variance-check-v1.log",
+    "sha256": "da5749e487b2ca5800e1e60d0c3d0aadd7807ba8fb7c0c45dc274c34a3da829c",
+    "bytes": 9997,
+    "injected_secret_matches": 0
+  }
+}
