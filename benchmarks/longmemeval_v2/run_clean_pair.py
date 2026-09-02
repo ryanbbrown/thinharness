@@ -357,6 +357,14 @@ def trace_metrics(run_root: Path, cell_name: str, harness: str) -> dict[str, Any
     }
 
 
+def question_text(question_payload: Any) -> str:
+    if isinstance(question_payload, str):
+        return question_payload
+    if isinstance(question_payload, dict) and isinstance(question_payload.get("text"), str):
+        return question_payload["text"]
+    raise RuntimeError("Runtime question has no text")
+
+
 def wilson(successes: float, total: int) -> list[float]:
     if total == 0:
         return [0.0, 1.0]
@@ -439,12 +447,16 @@ def compile_results(
             "reasoning_output_tokens",
             "tool_calls",
         )
-        score = sum(float(value["score"] or 0) for value in values)
+        scored_values = [value for value in values if value["score"] is not None]
+        score = sum(float(value["score"]) for value in scored_values)
         harness_totals[harness] = {
             "cells": len(values),
+            "scored_cells": len(scored_values),
+            "unscored_cells": len(values) - len(scored_values),
             "correct": score,
-            "accuracy": score / len(values) if values else None,
-            "accuracy_wilson_95": wilson(score, len(values)),
+            "accuracy_on_scored": score / len(scored_values) if scored_values else None,
+            "accuracy_on_scored_wilson_95": wilson(score, len(scored_values)),
+            "end_to_end_scored_success_rate": score / len(values) if values else None,
             "query_usage": {
                 field: sum(int(value["query_usage"][field]) for value in values) for field in usage_fields
             },
@@ -504,11 +516,9 @@ def validate_completed(
             artifact_bytes += path.stat().st_size
         if receipt["harness"] == "thinharness":
             runtime_questions = read_json(cell_root / "runtime_inputs/questions.json")
-            question_text = runtime_questions[0]["question"]
-            if isinstance(question_text, list):
-                question_text = " ".join(str(item) for item in question_text)
+            runtime_question_text = question_text(runtime_questions[0]["question"])
             expected = build_aligned_query_prompt(
-                str(question_text),
+                runtime_question_text,
                 native_query_prompt=native_prompt,
                 native_instruction=native_instruction,
             )
@@ -572,7 +582,9 @@ def write_results(path: Path, results: dict[str, Any], final: dict[str, Any]) ->
     lines = [
         "# LongMemEval clean paired comparison",
         "",
-        f"Fresh paired accuracy: native {native['correct']:.0f}/10; ThinHarness {thin['correct']:.0f}/10.",
+        f"Scored outcomes: native {native['correct']:.0f}/{native['scored_cells']}; "
+        f"ThinHarness {thin['correct']:.0f}/{thin['scored_cells']}. "
+        f"Unscored reader failures: native {native['unscored_cells']}; ThinHarness {thin['unscored_cells']}.",
         f"Fresh query API-equivalent cost: native {native['query_cost_usd']:.8f} USD; "
         f"ThinHarness {thin['query_cost_usd']:.8f} USD; {ratio_text}.",
         "",
@@ -780,6 +792,8 @@ def main() -> None:
         "evaluator_api_equivalent": sum(float(row["costs_usd"]["evaluator_api_equivalent"]) for row in receipts),
         "total_api_equivalent": sum(float(row["costs_usd"]["total_api_equivalent"]) for row in receipts),
     }
+    if status == "completed" and any(row["final_outcome"] != "scored" for row in receipts):
+        status = "completed_with_unscored_outcomes"
     final = {
         "schema_version": 1,
         "completed_at_utc": utc_now(),
@@ -802,7 +816,7 @@ def main() -> None:
     )
     marker = "COMPLETED.json" if status == "completed" else f"{status.upper()}.json"
     write_json(args.run_root / marker, final)
-    if status == "completed" and len(receipts) == TARGET_CELLS:
+    if status in {"completed", "completed_with_unscored_outcomes"} and len(receipts) == TARGET_CELLS:
         results = compile_results(args.run_root, selection, receipts)
         write_json(args.evidence_root / "comparison.json", results)
         write_results(args.evidence_root / "RESULTS.md", results, final)
