@@ -125,6 +125,9 @@
   "official_runtime": {
     "python": "3.12.11",
     "uv_lock_sha256": "513c0c4953f84cba9a12bff8f29a41c78de82ced946ccd79b2cf922b9b1c64dc",
-    "dependency_source": "official pyproject.toml and generated uv.lock; ThinHarness is installed as the frozen local editable source"
+    "dependency_source": "official pyproject.toml and generated uv.lock; ThinHarness is installed as the frozen local editable source",
+    "extras": [
+      "torch"
+    ]
   }
 }

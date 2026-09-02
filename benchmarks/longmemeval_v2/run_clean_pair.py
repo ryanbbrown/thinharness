@@ -151,6 +151,8 @@ def preflight(
         "openai",
         "agents",
         "PIL",
+        "torch",
+        "torchvision",
         "transformers",
         "evaluation.harness",
         "evaluation.run_eval",
