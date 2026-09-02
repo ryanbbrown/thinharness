@@ -588,14 +588,25 @@ def write_results(path: Path, results: dict[str, Any], final: dict[str, Any]) ->
             f"(paired bootstrap 95% interval {ratio['interval_95'][0]:.3f}x to {ratio['interval_95'][1]:.3f}x)"
         )
     paired_scored = results["paired_scores"]["summaries"]["all"]
+    if native["unscored_cells"] or thin["unscored_cells"]:
+        paired_accuracy_text = (
+            f"Only {paired_scored['pair_count']} pairs received scores on both sides. "
+            "Unscored reader outcomes prevent a full ten-pair accuracy comparison."
+        )
+    else:
+        paired_accuracy_text = (
+            f"All {paired_scored['pair_count']} pairs received scores: native "
+            f"{paired_scored['native_correct']:.0f}/{paired_scored['pair_count']}; ThinHarness "
+            f"{paired_scored['thinharness_correct']:.0f}/{paired_scored['pair_count']}; mean paired difference "
+            f"{paired_scored['mean_paired_difference']:.3f}."
+        )
     lines = [
         "# LongMemEval clean paired comparison",
         "",
         f"Scored outcomes: native {native['correct']:.0f}/{native['scored_cells']}; "
         f"ThinHarness {thin['correct']:.0f}/{thin['scored_cells']}. "
         f"Unscored reader failures: native {native['unscored_cells']}; ThinHarness {thin['unscored_cells']}.",
-        f"Only {paired_scored['pair_count']} pairs received scores on both sides; both harnesses were correct on all "
-        f"{paired_scored['pair_count']}. The four unscored reader outcomes prevent a full ten-pair accuracy comparison.",
+        paired_accuracy_text,
         f"Fresh query API-equivalent cost: native {native['query_cost_usd']:.8f} USD; "
         f"ThinHarness {thin['query_cost_usd']:.8f} USD; {ratio_text}.",
         "",

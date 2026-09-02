@@ -12,6 +12,11 @@ from benchmarks.longmemeval_v2.freeze_clean_pair_selection import (  # noqa: E40
     SELECTION_SLOTS,
     build_selection,
 )
+from benchmarks.longmemeval_v2.resume_clean_pair_readers import (  # noqa: E402
+    fallback_delay,
+    parse_retry_after,
+    write_jsonl_record,
+)
 from benchmarks.longmemeval_v2.run_clean_pair import projected_total  # noqa: E402
 
 
@@ -81,3 +86,19 @@ def test_cost_projection_replaces_completed_reserves_with_receipted_cost() -> No
     projected = projected_total(receipts, pending, {"native": 0.08, "thinharness": 0.10})
 
     assert projected == 0.22
+
+
+def test_reader_recovery_honors_retry_after_milliseconds_before_seconds() -> None:
+    assert parse_retry_after({"retry-after-ms": "2500", "retry-after": "9"}) == 2.5
+
+
+def test_reader_recovery_uses_capped_deterministic_backoff_without_header() -> None:
+    assert [fallback_delay(attempt) for attempt in range(1, 8)] == [5, 10, 20, 40, 80, 120, 120]
+
+
+def test_reader_recovery_writes_one_valid_jsonl_record(tmp_path: Path) -> None:
+    path = tmp_path / "record.jsonl"
+
+    write_jsonl_record(path, {"question_id": "q1", "score": 1.0})
+
+    assert path.read_text(encoding="utf-8").splitlines() == ['{"question_id": "q1", "score": 1.0}']

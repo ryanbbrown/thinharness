@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "checked_at_utc": "2026-09-02T21:34:32.282088+00:00",
+  "purpose": "Resume only reader and required evaluator stages; do not execute query harnesses.",
+  "source_hashes": {
+    "recovery_runner": "3fa10756c1200946572dd9d28c91b05fc1ada7cea2391fa6dc3b20863c017ad1",
+    "official_harness": "be6b832e0380241c33ac4683e2ab278a93d2bc5867488c747049704340db3bc4",
+    "official_evaluator": "1b009a18b76e7e927f2806954249acdaaf568b60233d9e0d78cc29441fd09c5f"
+  },
+  "cells": [
+    {
+      "cell": "03-eaba5c44-native",
+      "prompt_rows_sha256": "de4cf8cef0fa2db29c1a464252c332a5bf67419420cd736b263597769eaf05aa",
+      "query_summary": "cells/03-eaba5c44-native/query_traces/18977d8ac62046499cc2200d07d08e90/attempt_001/summary.json",
+      "query_summary_sha256": "06f8d9c3a5a7ed6bf2efd0c07b9e25e38958640e546b4d43ffb6a648254d17c7",
+      "original_failure_receipt_sha256": "0d4aa66125184877315c4ec07642e5541f780bea8416beb5051c92c8238f10b5"
+    },
+    {
+      "cell": "05-b54161f8-thinharness",
+      "prompt_rows_sha256": "28c869f9cfeee1def191df8fe7b0015a93c823f45ee1d589a212c6201755f1e7",
+      "query_summary": "cells/05-b54161f8-thinharness/query_traces/214c9c4763314e37abf059e5260e9676/attempt_001/summary.json",
+      "query_summary_sha256": "42b6e799d7602d2c4c346ce1fdc9174047a213d03873bb9d845a2852fb6bd52e",
+      "original_failure_receipt_sha256": "c6a5bf966fa5a0a1c4f7f9c37b0dae9c75a3832acf8e1bd46d7fb3ff981ad952"
+    },
+    {
+      "cell": "06-11cc7ac2-native",
+      "prompt_rows_sha256": "5570df65ca2be13c9341eaa9fc54499b74784b04b636436e202dd813a343be27",
+      "query_summary": "cells/06-11cc7ac2-native/query_traces/17b6c62b0ae04bc1b03b4f572857974d/attempt_001/summary.json",
+      "query_summary_sha256": "a437d0473f362ff06b2a33c74e6dbf17695d6f7194850c0ab048ea6a34768f4d",
+      "original_failure_receipt_sha256": "d0ead8d2a9e3ee191fe7a60a7814fd675c134808ed6cf283fcad6cfabf38f572"
+    },
+    {
+      "cell": "10-af2ebaed-thinharness",
+      "prompt_rows_sha256": "249919bea506e626b859faa489713c72372cdf108633d0264e645d675e47b441",
+      "query_summary": "cells/10-af2ebaed-thinharness/query_traces/87f0ff28e4634224bf372cb5867e8de3/attempt_001/summary.json",
+      "query_summary_sha256": "d7586e7adbaefa6d1b626bed737a9ad7e1d85706aaef097f1109c6bd02fa6f9c",
+      "original_failure_receipt_sha256": "cf977092fbe204125acdfefb3ebdda32fa7a290ce6b89ccaf1fcd5309683f3ad"
+    }
+  ],
+  "reader_request": {
+    "model": "qwen/qwen3.5-9b",
+    "messages": "preserved prompt_rows.jsonl messages",
+    "timeout": 43200.0,
+    "max_tokens": 20000,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "extra_body": {
+      "provider": {
+        "order": [
+          "Parasail"
+        ],
+        "allow_fallbacks": false,
+        "require_parameters": true,
+        "data_collection": "deny"
+      },
+      "top_k": 20
+    }
+  },
+  "reader_request_sha256": "3e766618eca9057fe00dc195d5770a970b63c2d12715a0bcc00ee89d481b42ff",
+  "reader_transport": {
+    "sdk_internal_retries": 0,
+    "concurrency": 1,
+    "retry_after": "honor any positive Retry-After or retry-after-ms value",
+    "fallback_delays_seconds": [
+      5.0,
+      10.0,
+      20.0,
+      40.0,
+      80.0,
+      120.0
+    ],
+    "fallback_cap_seconds": 120.0,
+    "temporary_errors": "retry without a fixed attempt limit; preserve each attempt",
+    "permanent_errors": "fail closed without changing route or model"
+  },
+  "evaluator": {
+    "model": "gpt-5.2",
+    "api": "https://api.openai.com/v1",
+    "reasoning_effort": "medium",
+    "max_completion_tokens": 4096
+  },
+  "original_reader_failures": {
+    "sdk": "openai 3.7.0",
+    "client_max_retries": 10,
+    "http_attempts_per_failed_reader": 11,
+    "reader_requests_concurrent": 1,
+    "cell_processes_concurrent": 1,
+    "route": {
+      "order": [
+        "Parasail"
+      ],
+      "allow_fallbacks": false,
+      "require_parameters": true,
+      "data_collection": "deny"
+    },
+    "fallback_delay_policy_seconds": {
+      "base_before_jitter": [
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "jitter_multiplier": "0.75 <= multiplier <= 1.0",
+      "total_if_no_retry_after": "41.625 <= seconds <= 55.5"
+    },
+    "retry_after_policy": "Honor retry-after-ms or Retry-After when greater than zero and at most 120 seconds.",
+    "observed_headers": "The original runner did not persist response headers, so actual Retry-After and provider headers are unavailable.",
+    "observed_body": {
+      "provider_name": "Parasail",
+      "is_byok": false,
+      "limit_source": "upstream_provider_shared_pool",
+      "message": "qwen/qwen3.5-9b is temporarily rate-limited upstream"
+    },
+    "origin": "OpenRouter returned the HTTP response and identified Parasail as the rate-limited upstream provider.",
+    "errors": [
+      {
+        "cell": "03-eaba5c44-native",
+        "log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/03-eaba5c44-native.log",
+        "log_sha256": "b683a4ea73ef286e737af7def66226c2b8a12b0f16f27feade9b9a5b52ebb326",
+        "final_error": "openai.RateLimitError: Error code: 429 - {'error': {'message': 'Provider returned error', 'code': 429, 'metadata': {'raw': 'qwen/qwen3.5-9b is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations', 'provider_name': 'Parasail', 'is_byok': False, 'limit_source': 'upstream_provider_shared_pool', 'remedy_hint': 'Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing'}}, 'user_id': 'user_3Bh4wqXFeFT3ZgrBcUYdlibMJNg'}"
+      },
+      {
+        "cell": "05-b54161f8-thinharness",
+        "log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/05-b54161f8-thinharness.log",
+        "log_sha256": "1e582de2c62f4cef6ae4804c31012ee0c240fd321f8978558f957637fc90b292",
+        "final_error": "openai.RateLimitError: Error code: 429 - {'error': {'message': 'Provider returned error', 'code': 429, 'metadata': {'raw': 'qwen/qwen3.5-9b is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations', 'provider_name': 'Parasail', 'is_byok': False, 'limit_source': 'upstream_provider_shared_pool', 'remedy_hint': 'Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing'}}, 'user_id': 'user_3Bh4wqXFeFT3ZgrBcUYdlibMJNg'}"
+      },
+      {
+        "cell": "06-11cc7ac2-native",
+        "log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/06-11cc7ac2-native.log",
+        "log_sha256": "07a1f14b0d78f0e3f28fa41561f356c21f0540d58227bc1a8543b919412ffd31",
+        "final_error": "openai.RateLimitError: Error code: 429 - {'error': {'message': 'Provider returned error', 'code': 429, 'metadata': {'raw': 'qwen/qwen3.5-9b is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations', 'provider_name': 'Parasail', 'is_byok': False, 'limit_source': 'upstream_provider_shared_pool', 'remedy_hint': 'Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing'}}, 'user_id': 'user_3Bh4wqXFeFT3ZgrBcUYdlibMJNg'}"
+      },
+      {
+        "cell": "10-af2ebaed-thinharness",
+        "log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/10-af2ebaed-thinharness.log",
+        "log_sha256": "38fcf14b20420bfad07edbe81f170e691ec917dadea94ebcc2f13bfe223de2e9",
+        "final_error": "openai.RateLimitError: Error code: 429 - {'error': {'message': 'Provider returned error', 'code': 429, 'metadata': {'raw': 'qwen/qwen3.5-9b is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations', 'provider_name': 'Parasail', 'is_byok': False, 'limit_source': 'upstream_provider_shared_pool', 'remedy_hint': 'Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing'}}, 'user_id': 'user_3Bh4wqXFeFT3ZgrBcUYdlibMJNg'}"
+      }
+    ]
+  },
+  "secret_boundary": "API-key values are read by clients from injected environment variables and are not persisted."
+}

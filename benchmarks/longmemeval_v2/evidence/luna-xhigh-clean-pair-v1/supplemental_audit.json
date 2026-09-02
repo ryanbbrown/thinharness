@@ -1,15 +1,23 @@
 {
   "evidence_files": {
-    "REPORT.md": "4a4e76a5f6a8c988f79b1cde338a50ed2c0a5a6897dacdae318183fa7a0ba968",
-    "RESULTS.md": "004f1cc584c18766a4b4b9e442a5394fc3daff06f0251a53ddd81eb6a964d980",
-    "ROOT_CAUSE.md": "2d070412a50c79b88ae3287e34d8f1777db5a1380959bf8c4feb7a1b3c306b31",
-    "cell_receipts.json": "2a6b1913bdefa9d9722f084fda33e048cc270f2d507a713512f1968172f2e3a0",
-    "comparison.json": "0984fa5b59834c1ac2877e1a414ba3257fe5475da517b81cf44e4703a9a8eaa4",
-    "final_summary.json": "964a84bdb05f5cb1263fd4c53b8d72b926b0a13a694bf56e849f67d9883e6b94",
+    "READER_RECOVERY.md": "727c7515eb434cec3e397bf4d06756467ec0813021804340f5feea10d6374ccf",
+    "REPORT.md": "251eeb31d00d9b7b7b06d2c9466a68fc1c1726a62513a7ad1eab1395441689df",
+    "RESULTS.md": "564b5104fe6bb539f18f9a26eef8f52b807b87d2a9e1503357251e31672fe6b9",
+    "ROOT_CAUSE.md": "92107647bbacd54d7c72c653f22caaeb7c5e9920f02b607b2f209f130e9471c1",
+    "cell_receipts.json": "55afe72ffbdf860227caae79b0d83a9f116653cc575cf37669bbee363ecaab6f",
+    "comparison.json": "ce1d389315462924e48ccecd02b0dea2f5056375ef7b99f4df7b293a0287a5e1",
+    "final_summary.json": "c9a6207f2dec3a1649b99e79bd4556ad3b6092fe3c0c0c53eb3493294c44b18c",
     "preflight.json": "29254acee74497cd496b79dc3aabb21521d7d68609a0094938074986f6b13fdc",
-    "raw_artifact_manifest.json": "2832a44c4ffe5615a18205940fb83261cdf4af5766193fc14f0922839bdc8ed2",
-    "setup_incidents.json": "f3956f92a7aac939a26c967e3ed2389c66b63e1066fc2139210389f253a8669e",
-    "validation.json": "4e1c7c5c654747fb5a04d70d5b3cc28217d44b43ff112547fd2e2dc84c394893"
+    "raw_artifact_manifest.json": "b16c5bbf52b204e5c55be2f33f7e40f0fd632bfc0191cf16f2a7b410e8eb8db2",
+    "reader_recovery_preflight.json": "341da4f4ed4f7d9737b57c163919081a9d5cd43c17a6ec14961a120ea81702fa",
+    "setup_incidents.json": "e13d777297ad847e71b24adba0707d4adf6bf473e51a1139998ad5fa91346937",
+    "validation.json": "25b5cbeb0f1710d3c6069cc8b7746c1252e9aa921b07cd0018d359585a05f133"
+  },
+  "final_evidence_secret_scan": {
+    "bytes_scanned": 5479898,
+    "files_scanned": 13,
+    "injected_secret_values_found": 0,
+    "secret_values_persisted": false
   },
   "paid_terminal": {
     "outcome": "/Users/ryanbrown/.bb/thread-storage/thr_dgzrszp3tc/terminal-jobs/job_ee6c3d6e-12bc-4e39-81e5-cb5721ffabd3/outcome.json",
@@ -18,10 +26,19 @@
     "output_log_sha256": "dab193d62417d959a350b9115332edaddd7b31643544a209ec85525351a4e125"
   },
   "preservation": {
+    "original_reader_failure_receipts_preserved": 4,
+    "query_attempt_002_count": 0,
     "query_cells_rerun": 0,
-    "raw_manifest_sha256": "2832a44c4ffe5615a18205940fb83261cdf4af5766193fc14f0922839bdc8ed2",
+    "raw_manifest_sha256": "b16c5bbf52b204e5c55be2f33f7e40f0fd632bfc0191cf16f2a7b410e8eb8db2",
     "raw_run_root": ".benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/",
+    "reader_transport_ledgers_preserved": 4,
     "setup_failures_preserved": true
+  },
+  "reader_recovery_terminal": {
+    "outcome": "/Users/ryanbrown/.bb/thread-storage/thr_dgzrszp3tc/terminal-jobs/job_dc9c110b-8d24-4199-901c-d68cf29d7cff/outcome.json",
+    "outcome_sha256": "f0a2419702e0de2e6e7bbc4cc627afa941a516ff66322812f006ec7bf7e71c92",
+    "output_log": "/Users/ryanbrown/.bb/thread-storage/thr_dgzrszp3tc/terminal-jobs/job_dc9c110b-8d24-4199-901c-d68cf29d7cff/output.log",
+    "output_log_sha256": "51fc28892c72e9f0e69826278ca3fe478d5a2b4d7fe5b196900cd861f314f681"
   },
   "schema_version": 1
 }

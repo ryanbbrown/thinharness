@@ -1,21 +1,21 @@
 # LongMemEval clean paired comparison
 
-Scored outcomes: native 8/8; ThinHarness 6/8. Unscored reader failures: native 2; ThinHarness 2.
-Only 6 pairs received scores on both sides; both harnesses were correct on all 6. The four unscored reader outcomes prevent a full ten-pair accuracy comparison.
+Scored outcomes: native 9/10; ThinHarness 8/10. Unscored reader failures: native 0; ThinHarness 0.
+All 10 pairs received scores: native 9/10; ThinHarness 8/10; mean paired difference -0.100.
 Fresh query API-equivalent cost: native 0.21919964 USD; ThinHarness 0.25249354 USD; ratio 1.152x (paired bootstrap 95% interval 0.758x to 1.786x).
 
 | Question | Type | Native score | Thin score | Native query cost | Thin query cost | Native / Thin input | Native / Thin tools |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 10466872 | static-environment | 1.0 | 1.0 | 0.00729780 USD | 0.02853454 USD | 104,361 / 391,325 | 7 / 14 |
 | 634973c3 | static-environment | 1.0 | 1.0 | 0.01918440 USD | 0.00965874 USD | 343,263 / 114,021 | 10 / 9 |
-| eaba5c44 | static-environment-abs | None | 0.0 | 0.02095474 USD | 0.05891048 USD | 364,508 / 1,090,405 | 13 / 26 |
+| eaba5c44 | static-environment-abs | 1.0 | 0.0 | 0.02095474 USD | 0.05891048 USD | 364,508 / 1,090,405 | 13 / 26 |
 | dea446d0 | dynamic-environment | 1.0 | 1.0 | 0.00858866 USD | 0.00695162 USD | 133,057 / 51,517 | 8 / 9 |
-| b54161f8 | dynamic-environment | 1.0 | None | 0.01950130 USD | 0.03462456 USD | 343,133 / 391,077 | 11 / 18 |
-| 11cc7ac2 | dynamic-environment-abs | None | 0.0 | 0.03399876 USD | 0.03939102 USD | 735,801 / 799,926 | 14 / 14 |
+| b54161f8 | dynamic-environment | 1.0 | 1.0 | 0.01950130 USD | 0.03462456 USD | 343,133 / 391,077 | 11 / 18 |
+| 11cc7ac2 | dynamic-environment-abs | 0.0 | 0.0 | 0.03399876 USD | 0.03939102 USD | 735,801 / 799,926 | 14 / 14 |
 | 07b49858 | procedure | 1.0 | 1.0 | 0.05924146 USD | 0.03603366 USD | 1,234,949 / 459,900 | 15 / 15 |
 | 7df9e2ff | procedure-abs | 1.0 | 1.0 | 0.01884622 USD | 0.01357512 USD | 251,174 / 160,593 | 7 / 12 |
 | 77258cda | errors-gotchas | 1.0 | 1.0 | 0.01087284 USD | 0.00833970 USD | 165,246 / 65,418 | 8 / 8 |
-| af2ebaed | errors-gotchas | 1.0 | None | 0.02071346 USD | 0.01647410 USD | 342,628 / 236,746 | 9 / 14 |
+| af2ebaed | errors-gotchas | 1.0 | 1.0 | 0.02071346 USD | 0.01647410 USD | 342,628 / 236,746 | 9 / 14 |
 
 ## Aggregate telemetry
 
@@ -41,7 +41,7 @@ Fresh query API-equivalent cost: native 0.21919964 USD; ThinHarness 0.25249354 U
 
 - Native query: 0.21919964 USD; ThinHarness query: 0.25249354 USD API-equivalent.
 - Combined query: 0.47169318 USD API-equivalent.
-- Reader: 0.02450550 USD API-equivalent; 0.02450550 USD provider-reported.
-- Evaluator: 0.01711850 USD API-equivalent.
-- Total: 0.51331718 USD API-equivalent, below the 2 USD cap.
+- Reader: 0.03045725 USD API-equivalent; 0.03045725 USD provider-reported.
+- Evaluator: 0.02284100 USD API-equivalent.
+- Total: 0.52499143 USD API-equivalent, below the 2 USD cap.
 - OpenAI responses report tokens rather than billed dollars; query and evaluator costs use the frozen rates.

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "validated_at_utc": "2026-09-02T20:45:07.849161+00:00",
+  "validated_at_utc": "2026-09-02T21:37:53.153902+00:00",
   "status": "passed",
   "coverage": {
     "questions": 10,
@@ -31,15 +31,31 @@
     "official_harness": "be6b832e0380241c33ac4683e2ab278a93d2bc5867488c747049704340db3bc4",
     "official_evaluator": "1b009a18b76e7e927f2806954249acdaaf568b60233d9e0d78cc29441fd09c5f"
   },
-  "artifact_files": 30984,
-  "artifact_bytes": 5899939504,
-  "run_manifest_files": 31151,
-  "cost_usd": 0.51331718,
+  "artifact_files": 31015,
+  "artifact_bytes": 5901371939,
+  "run_manifest_files": 31185,
+  "cost_usd": 0.52499143,
   "hard_cap_usd": 2.0,
   "secret_boundary": {
-    "files_scanned": 5651,
-    "bytes_scanned": 3352836578,
+    "files_scanned": 5691,
+    "bytes_scanned": 3354340942,
     "injected_secret_values_found": 0,
     "secret_values_persisted": false
+  },
+  "reader_recovery": {
+    "cells": [
+      "03-eaba5c44-native",
+      "05-b54161f8-thinharness",
+      "06-11cc7ac2-native",
+      "10-af2ebaed-thinharness"
+    ],
+    "query_cells_rerun": 0,
+    "all_twenty_query_summaries_still_attempt_001": true
+  },
+  "scoring_recomputed": {
+    "status": "passed",
+    "deterministic_cells": 10,
+    "llm_judged_cells": 10,
+    "official_evaluator_receipts_parsed": 10
   }
 }

@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "completed_at_utc": "2026-09-02T20:42:57.109299+00:00",
+  "completed_at_utc": "2026-09-02T21:37:39.215078+00:00",
   "experiment_id": "luna-xhigh-clean-pair-v1",
-  "status": "completed_with_unscored_outcomes",
+  "status": "completed_after_reader_recovery",
   "completed_cells": 20,
   "target_cells": 20,
   "native_cells": 10,
   "thinharness_cells": 10,
-  "scored_cells": 16,
-  "unscored_reader_transport_failures": 4,
+  "query_cells_rerun": 0,
+  "reader_cells_recovered": 4,
   "cost_totals_usd": {
     "query_api_equivalent": 0.47169318000000005,
-    "reader_provider_reported": 0.0245055,
-    "reader_api_equivalent": 0.0245055,
-    "evaluator_api_equivalent": 0.017118500000000002,
-    "total_api_equivalent": 0.51331718
+    "reader_provider_reported": 0.03045725,
+    "reader_api_equivalent": 0.03045725,
+    "evaluator_api_equivalent": 0.022841,
+    "total_api_equivalent": 0.52499143
   },
   "pairs": [
     {
@@ -40,9 +40,9 @@
       "domain": "web",
       "question_type": "static-environment-abs",
       "scoring_path": "llm_judged",
-      "native_score": null,
+      "native_score": 1.0,
       "thinharness_score": 0.0,
-      "paired_difference": null
+      "paired_difference": -1.0
     },
     {
       "question_id": "dea446d0",
@@ -59,17 +59,17 @@
       "question_type": "dynamic-environment",
       "scoring_path": "deterministic",
       "native_score": 1.0,
-      "thinharness_score": null,
-      "paired_difference": null
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
     },
     {
       "question_id": "11cc7ac2",
       "domain": "enterprise",
       "question_type": "dynamic-environment-abs",
       "scoring_path": "llm_judged",
-      "native_score": null,
+      "native_score": 0.0,
       "thinharness_score": 0.0,
-      "paired_difference": null
+      "paired_difference": 0.0
     },
     {
       "question_id": "07b49858",
@@ -104,34 +104,34 @@
       "question_type": "errors-gotchas",
       "scoring_path": "llm_judged",
       "native_score": 1.0,
-      "thinharness_score": null,
-      "paired_difference": null
+      "thinharness_score": 1.0,
+      "paired_difference": 0.0
     }
   ],
   "summaries": {
     "all": {
-      "pair_count": 6,
-      "native_correct": 6.0,
-      "thinharness_correct": 6.0,
-      "mean_paired_difference": 0.0,
+      "pair_count": 10,
+      "native_correct": 9.0,
+      "thinharness_correct": 8.0,
+      "mean_paired_difference": -0.1,
       "thin_win_native_loss": 0,
-      "native_win_thin_loss": 0
+      "native_win_thin_loss": 1
     },
     "deterministic": {
-      "pair_count": 4,
-      "native_correct": 4.0,
-      "thinharness_correct": 4.0,
+      "pair_count": 5,
+      "native_correct": 5.0,
+      "thinharness_correct": 5.0,
       "mean_paired_difference": 0.0,
       "thin_win_native_loss": 0,
       "native_win_thin_loss": 0
     },
     "llm_judged": {
-      "pair_count": 2,
-      "native_correct": 2.0,
-      "thinharness_correct": 2.0,
-      "mean_paired_difference": 0.0,
+      "pair_count": 5,
+      "native_correct": 4.0,
+      "thinharness_correct": 3.0,
+      "mean_paired_difference": -0.2,
       "thin_win_native_loss": 0,
-      "native_win_thin_loss": 0
+      "native_win_thin_loss": 1
     }
   }
 }

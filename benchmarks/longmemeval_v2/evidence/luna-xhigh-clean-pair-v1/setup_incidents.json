@@ -14,12 +14,12 @@
     {
       "stage": "paid paired run reader phase",
       "cause": "OpenRouter reported a temporary Parasail upstream shared-pool rate limit after the configured reader transport retries.",
-      "effect": "Four completed query cells have no reader answer or score: eaba5c44 native, b54161f8 ThinHarness, 11cc7ac2 native, and af2ebaed ThinHarness.",
+      "effect": "Four completed query cells initially had no reader answer or score: eaba5c44 native, b54161f8 ThinHarness, 11cc7ac2 native, and af2ebaed ThinHarness.",
       "paid_query_cells_completed": 20,
       "reader_failures": 4,
       "query_cells_rerun": 0,
-      "reader_calls_rerun": 0,
-      "handling": "The four outcomes remain unscored. No query, reader, evaluator, failed answer, or low score was rerun."
+      "reader_recovery_cells": 4,
+      "handling": "The reader and required evaluator stages later resumed from preserved prompt rows with the same model, settings, and Parasail-only route. All transport attempts and original failure receipts remain visible. No query cell was rerun."
     },
     {
       "stage": "artifact validation",

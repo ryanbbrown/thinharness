@@ -4,7 +4,7 @@
 
 The fresh query-cost ratio is 1.152 times: 0.25249354 USD API-equivalent for ThinHarness versus 0.21919964 USD for native. The paired bootstrap 95% interval is 0.758 to 1.786 times. This run rejects the old 2.47-times figure as a description of the aligned, working-ripgrep setup, but ten questions do not establish a stable cost difference.
 
-The run does not provide a complete ten-pair accuracy comparison. Temporary Parasail reader rate limits left two native and two ThinHarness query cells unscored. Six pairs received scores on both sides, and both harnesses were correct on all six. Across independently scored cells, native was correct on 8 of 8 and ThinHarness on 6 of 8, but the unmatched missing scores mean those rates are not a paired quality estimate.
+The resumed reader and scoring stages provide a complete ten-pair accuracy comparison without rerunning any query. Native was correct on 9 of 10 questions and ThinHarness on 8 of 10, a paired difference of -0.10 for ThinHarness. Both were 5 of 5 on deterministic scoring. On LLM-judged questions, native was 4 of 5 and ThinHarness was 3 of 5. The only discordant pair was `eaba5c44`, which native passed and ThinHarness failed; both failed `11cc7ac2`. One discordant pair is not enough to establish a stable accuracy difference.
 
 ## Frozen selection
 
@@ -47,12 +47,12 @@ ThinHarness produced 11 valid spans covering 18 states; native produced 11 valid
 
 ## Cost and incidents
 
-Combined query cost was 0.47169318 USD API-equivalent. Successful reader calls reported 0.02450550 USD. Evaluator cost was 0.01711850 USD API-equivalent. The preserved final-cell total was 0.51331718 USD, well below the 2 USD cap and the conservative 1.86048304 USD estimate. OpenAI did not report billed query or evaluator dollars, and failed rate-limited reader calls have no provider cost receipt, so exact account spend is unavailable.
+Combined query cost was 0.47169318 USD API-equivalent. All reader calls reported 0.03045725 USD. Evaluator cost was 0.02284100 USD API-equivalent. The final total was 0.52499143 USD, well below the 2 USD cap and the conservative 1.86048304 USD estimate. OpenAI did not report billed query or evaluator dollars, so exact account spend is unavailable.
 
-All 20 paid query cells completed exactly one attempt. No query was rerun. Four reader calls ended with a Parasail upstream 429 after the configured transport retries: native `eaba5c44`, ThinHarness `b54161f8`, native `11cc7ac2`, and ThinHarness `af2ebaed`. They remain unscored. The earlier missing-dependency setup launch made zero model requests and is preserved separately.
+All 20 paid query cells completed exactly one attempt. No query was rerun. The four previously failed reader and scoring stages resumed from their preserved prompt rows. Native `eaba5c44` needed four new temporary 429 responses before success; ThinHarness `b54161f8` and native `11cc7ac2` succeeded on their first recovery request; ThinHarness `af2ebaed` needed one temporary 429 before success. The recovery used the same qwen/qwen3.5-9b model and Parasail-only route, honored response delays, ran with concurrency one, and preserved every transport attempt and original failure receipt. Details are in `READER_RECOVERY.md`.
 
 ## Cost cause and next step
 
 Extra uncached context caused the small remaining cost gap. ThinHarness's extra 199,143 ordinary input tokens added 0.03982860 USD. Its 456,335 fewer cached tokens saved 0.00912670 USD, and extra output added 0.00259200 USD. ThinHarness stopped in fewer requests and returned less raw result text, but used more typed tool and search calls and ended with 35.1% larger final request contexts. The detailed artifact-only analysis is in `ROOT_CAUSE.md`.
 
-Do not selectively rerun the four missing reader outcomes. The smallest no-paid improvement is request-component telemetry that separates fixed prompt, serialized tool schemas, assistant output, each tool result, image input, and accumulated history. The smallest supported tool-guidance correction is to make the jsonl_search span example match the accepted in-filter schema and state clearly that procedure_notes can be absent. Any new paid accuracy run needs new approval.
+The smallest no-paid improvement is request-component telemetry that separates fixed prompt, serialized tool schemas, assistant output, each tool result, image input, and accumulated history. The smallest supported tool-guidance correction is to make the jsonl_search span example match the accepted in-filter schema and state clearly that procedure_notes can be absent. Any new paid run needs new approval.

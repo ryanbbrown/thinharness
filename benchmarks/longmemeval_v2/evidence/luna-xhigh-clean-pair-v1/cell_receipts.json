@@ -337,7 +337,7 @@
   },
   {
     "schema_version": 1,
-    "completed_at_utc": "2026-09-02T20:22:52.240802+00:00",
+    "completed_at_utc": "2026-09-02T21:36:55.336403+00:00",
     "harness": "native",
     "question_id": "eaba5c44",
     "domain": "web",
@@ -345,17 +345,17 @@
     "has_question_image": false,
     "eval_name": "llm_abstention_checker",
     "scoring_path": "llm_judged",
-    "process_returncode": 1,
-    "final_outcome": "infrastructure_error",
-    "answer_gold": null,
-    "response_parsed_boxed": null,
-    "score": null,
-    "score_bool": null,
-    "is_unknown": null,
-    "memory_query_duration_seconds": null,
-    "memory_post_query_duration_seconds": null,
-    "memory_context_original_token_count": null,
-    "memory_context_token_count": null,
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "There is no second reporting-granularity control next to `Show By` there.",
+    "response_parsed_boxed": "The question's premise is flawed because the provided memory context explicitly states that only the `Show By` control changes reporting granularity (Day/Month/Year), while the `Export to:` control changes the export format. Therefore, there is no second control that changes reporting granularity.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 54.22118679200139,
+    "memory_post_query_duration_seconds": 9.169998520519584e-07,
+    "memory_context_original_token_count": 3173,
+    "memory_context_token_count": 3173,
     "query_usage": {
       "requests": 14,
       "input_tokens": 364508,
@@ -366,22 +366,93 @@
       "reasoning_output_tokens": 2928,
       "tool_calls": 13
     },
-    "reader_usage": {},
-    "reader_metadata": null,
-    "evaluator_receipts": [],
+    "reader_usage": {
+      "prompt_tokens": 3362,
+      "completion_tokens": 6764,
+      "total_tokens": 10126,
+      "details": {
+        "completion_tokens": 6764,
+        "prompt_tokens": 3362,
+        "total_tokens": 10126,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 7263,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0020272,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0020272,
+          "upstream_inference_prompt_cost": 0.0003362,
+          "upstream_inference_completions_cost": 0.001691
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1788384961-WhQKwz8TVehyAlRx1w6b",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail",
+      "recovery_transport_attempt": 5
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-09-02T21:36:55.333122+00:00",
+        "response_id": "chatcmpl-EJmvV5XOGjcFygivYWXqcrOsS3uHM",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 75,
+          "prompt_tokens": 627,
+          "total_tokens": 702,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 20,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "dc50d5fcf3f327aed0f7a7abc547dcc069f6bf09c6bd0802e4f102092f4278c5",
+        "judgement": "{\"label\":1,\"reason\":\"The model explicitly rejects the premise, explaining that only `Show By` changes reporting granularity and concluding there is no second granularity control next to it\u2014equivalent to the reference answer.\"}"
+      }
+    ],
     "costs_usd": {
       "query_api_equivalent": 0.020954740000000003,
-      "reader_provider_reported": null,
-      "reader_api_equivalent": 0.0,
-      "evaluator_api_equivalent": 0.0,
-      "total_api_equivalent": 0.020954740000000003
+      "reader_provider_reported": 0.0020272,
+      "reader_api_equivalent": 0.0020272,
+      "evaluator_api_equivalent": 0.00214725,
+      "total_api_equivalent": 0.025129190000000003
     },
     "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/03-eaba5c44-native.log",
-    "artifact_manifest_sha256": "6c207a62a3ba3739dae763ee866e4b97c8716678c4fcf5d9f3ca7dd0e46e2f6a",
+    "artifact_manifest_sha256": "11814e273e936edb4e87721de672e5c7e66020ad00f5fbfef0d6231a24bcd719",
     "cell_name": "03-eaba5c44-native",
     "experiment_id": "luna-xhigh-clean-pair-v1",
     "query_attempt_limit": 1,
-    "output_retry_limit": 0
+    "output_retry_limit": 0,
+    "reader_recovery": {
+      "original_failure_receipt": "reader_recovery/original_failure_receipt.json",
+      "original_failure_receipt_sha256": "0d4aa66125184877315c4ec07642e5541f780bea8416beb5051c92c8238f10b5",
+      "transport_attempts": "reader_recovery/transport_attempts.jsonl",
+      "transport_attempt_count": 5,
+      "query_rerun": false
+    }
   },
   {
     "schema_version": 1,
@@ -748,7 +819,7 @@
   },
   {
     "schema_version": 1,
-    "completed_at_utc": "2026-09-02T20:28:24.256287+00:00",
+    "completed_at_utc": "2026-09-02T21:37:06.889139+00:00",
     "harness": "thinharness",
     "question_id": "b54161f8",
     "domain": "enterprise",
@@ -756,17 +827,17 @@
     "has_question_image": false,
     "eval_name": "norm_phrase_set_match",
     "scoring_path": "deterministic",
-    "process_returncode": 1,
-    "final_outcome": "infrastructure_error",
-    "answer_gold": null,
-    "response_parsed_boxed": null,
-    "score": null,
-    "score_bool": null,
-    "is_unknown": null,
-    "memory_query_duration_seconds": null,
-    "memory_post_query_duration_seconds": null,
-    "memory_context_original_token_count": null,
-    "memory_context_token_count": null,
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Microsoft Powerpoint; Siebel Client",
+    "response_parsed_boxed": "Microsoft Powerpoint; Siebel Client",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 33.876466875000915,
+    "memory_post_query_duration_seconds": 2.750002749962732e-06,
+    "memory_context_original_token_count": 13461,
+    "memory_context_token_count": 13461,
     "query_usage": {
       "requests": 10,
       "input_tokens": 391077,
@@ -777,26 +848,70 @@
       "reasoning_output_tokens": 1137,
       "tool_calls": 18
     },
-    "reader_usage": {},
-    "reader_metadata": null,
+    "reader_usage": {
+      "prompt_tokens": 13625,
+      "completion_tokens": 649,
+      "total_tokens": 14274,
+      "details": {
+        "completion_tokens": 649,
+        "prompt_tokens": 13625,
+        "total_tokens": 14274,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 526,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.00152475,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.00152475,
+          "upstream_inference_prompt_cost": 0.0013625,
+          "upstream_inference_completions_cost": 0.00016225
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1788385021-j7ERflVicY3jrIZpUrqk",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail",
+      "recovery_transport_attempt": 1
+    },
     "evaluator_receipts": [],
     "costs_usd": {
       "query_api_equivalent": 0.034624560000000006,
-      "reader_provider_reported": null,
-      "reader_api_equivalent": 0.0,
+      "reader_provider_reported": 0.00152475,
+      "reader_api_equivalent": 0.00152475,
       "evaluator_api_equivalent": 0.0,
-      "total_api_equivalent": 0.034624560000000006
+      "total_api_equivalent": 0.036149310000000004
     },
     "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/05-b54161f8-thinharness.log",
-    "artifact_manifest_sha256": "2a73974d381e91ae35b14a28c4c05c795bee5e6dcd2ff77666044ec1627f1648",
+    "artifact_manifest_sha256": "725cd7f3f50d0cb8d933f90a75304e878081cca8218fbe824f52c4c48a89fbdc",
     "cell_name": "05-b54161f8-thinharness",
     "experiment_id": "luna-xhigh-clean-pair-v1",
     "query_attempt_limit": 1,
-    "output_retry_limit": 0
+    "output_retry_limit": 0,
+    "reader_recovery": {
+      "original_failure_receipt": "reader_recovery/original_failure_receipt.json",
+      "original_failure_receipt_sha256": "c6a5bf966fa5a0a1c4f7f9c37b0dae9c75a3832acf8e1bd46d7fb3ff981ad952",
+      "transport_attempts": "reader_recovery/transport_attempts.jsonl",
+      "transport_attempt_count": 1,
+      "query_rerun": false
+    }
   },
   {
     "schema_version": 1,
-    "completed_at_utc": "2026-09-02T20:30:05.977916+00:00",
+    "completed_at_utc": "2026-09-02T21:37:21.878459+00:00",
     "harness": "native",
     "question_id": "11cc7ac2",
     "domain": "enterprise",
@@ -804,17 +919,17 @@
     "has_question_image": false,
     "eval_name": "llm_abstention_checker",
     "scoring_path": "llm_judged",
-    "process_returncode": 1,
-    "final_outcome": "infrastructure_error",
-    "answer_gold": null,
-    "response_parsed_boxed": null,
-    "score": null,
-    "score_bool": null,
-    "is_unknown": null,
-    "memory_query_duration_seconds": null,
-    "memory_post_query_duration_seconds": null,
-    "memory_context_original_token_count": null,
-    "memory_context_token_count": null,
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "Only one new field appears on the successful completion page, not two.",
+    "response_parsed_boxed": "Completion code, Success; Message, Finish processing request: DM0001009",
+    "score": 0.0,
+    "score_bool": false,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 44.1334980419997,
+    "memory_post_query_duration_seconds": 1.45800004247576e-06,
+    "memory_context_original_token_count": 6300,
+    "memory_context_token_count": 6300,
     "query_usage": {
       "requests": 15,
       "input_tokens": 735801,
@@ -825,22 +940,93 @@
       "reasoning_output_tokens": 1634,
       "tool_calls": 14
     },
-    "reader_usage": {},
-    "reader_metadata": null,
-    "evaluator_receipts": [],
+    "reader_usage": {
+      "prompt_tokens": 6467,
+      "completion_tokens": 1040,
+      "total_tokens": 7507,
+      "details": {
+        "completion_tokens": 1040,
+        "prompt_tokens": 6467,
+        "total_tokens": 7507,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 967,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0009067,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0009067,
+          "upstream_inference_prompt_cost": 0.0006467,
+          "upstream_inference_completions_cost": 0.00026
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1788385032-HaDdPgNQ9f4672JIMijy",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail",
+      "recovery_transport_attempt": 1
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-09-02T21:37:21.875137+00:00",
+        "response_id": "chatcmpl-EJmvwcBNXIFqYWA7WCdF0RDGauOGW",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 73,
+          "prompt_tokens": 499,
+          "total_tokens": 572,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 18,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "1ae823202f330a7f2eeec4c0f1121bf3f9db73fb80f557ae29a83e2fda0db98e",
+        "judgement": "{\"label\":0,\"reason\":\"The reference says the premise is flawed because only one new field appears, not two. The model instead followed the premise and provided two fields with values, so it did not identify the flaw.\"}"
+      }
+    ],
     "costs_usd": {
       "query_api_equivalent": 0.03399876,
-      "reader_provider_reported": null,
-      "reader_api_equivalent": 0.0,
-      "evaluator_api_equivalent": 0.0,
-      "total_api_equivalent": 0.03399876
+      "reader_provider_reported": 0.0009067,
+      "reader_api_equivalent": 0.0009067000000000001,
+      "evaluator_api_equivalent": 0.00189525,
+      "total_api_equivalent": 0.03680071000000001
     },
     "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/06-11cc7ac2-native.log",
-    "artifact_manifest_sha256": "bbe794515907ef6b118e3220dfb0bdbc867c886ad5d8dd7027074331cfdf7021",
+    "artifact_manifest_sha256": "2e424e8dd6f01ba2b0a9f0a7d98bc8165275b3b838464bfeb36c1c43fbb44e94",
     "cell_name": "06-11cc7ac2-native",
     "experiment_id": "luna-xhigh-clean-pair-v1",
     "query_attempt_limit": 1,
-    "output_retry_limit": 0
+    "output_retry_limit": 0,
+    "reader_recovery": {
+      "original_failure_receipt": "reader_recovery/original_failure_receipt.json",
+      "original_failure_receipt_sha256": "d0ead8d2a9e3ee191fe7a60a7814fd675c134808ed6cf283fcad6cfabf38f572",
+      "transport_attempts": "reader_recovery/transport_attempts.jsonl",
+      "transport_attempt_count": 1,
+      "query_rerun": false
+    }
   },
   {
     "schema_version": 1,
@@ -1678,7 +1864,7 @@
   },
   {
     "schema_version": 1,
-    "completed_at_utc": "2026-09-02T20:40:36.890270+00:00",
+    "completed_at_utc": "2026-09-02T21:37:38.887939+00:00",
     "harness": "thinharness",
     "question_id": "af2ebaed",
     "domain": "enterprise",
@@ -1686,17 +1872,17 @@
     "has_question_image": true,
     "eval_name": "llm_gotchas_checker",
     "scoring_path": "llm_judged",
-    "process_returncode": 1,
-    "final_outcome": "infrastructure_error",
-    "answer_gold": null,
-    "response_parsed_boxed": null,
-    "score": null,
-    "score_bool": null,
-    "is_unknown": null,
-    "memory_query_duration_seconds": null,
-    "memory_post_query_duration_seconds": null,
-    "memory_context_original_token_count": null,
-    "memory_context_token_count": null,
+    "process_returncode": 0,
+    "final_outcome": "scored",
+    "answer_gold": "reports",
+    "response_parsed_boxed": "The correct module to use is **Reports > View / Run**.",
+    "score": 1.0,
+    "score_bool": true,
+    "is_unknown": false,
+    "memory_query_duration_seconds": 32.21464791700055,
+    "memory_post_query_duration_seconds": 1.6669982869643718e-06,
+    "memory_context_original_token_count": 13044,
+    "memory_context_token_count": 13044,
     "query_usage": {
       "requests": 9,
       "input_tokens": 236746,
@@ -1707,21 +1893,92 @@
       "reasoning_output_tokens": 1360,
       "tool_calls": 14
     },
-    "reader_usage": {},
-    "reader_metadata": null,
-    "evaluator_receipts": [],
+    "reader_usage": {
+      "prompt_tokens": 14121,
+      "completion_tokens": 324,
+      "total_tokens": 14445,
+      "details": {
+        "completion_tokens": 324,
+        "prompt_tokens": 14121,
+        "total_tokens": 14445,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": null,
+          "audio_tokens": 0,
+          "reasoning_tokens": 283,
+          "rejected_prediction_tokens": null,
+          "text_tokens": null,
+          "image_tokens": 0
+        },
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "image_tokens": null,
+          "text_tokens": null,
+          "video_tokens": 0
+        },
+        "cost": 0.0014931,
+        "is_byok": false,
+        "cost_details": {
+          "upstream_inference_cost": 0.0014931,
+          "upstream_inference_prompt_cost": 0.0014121,
+          "upstream_inference_completions_cost": 8.1e-05
+        }
+      }
+    },
+    "reader_metadata": {
+      "response_id": "gen-1788385053-JEnz5H064Y9o3l9z8Aly",
+      "response_model": "qwen/qwen3.5-9b",
+      "provider": "Parasail",
+      "recovery_transport_attempt": 2
+    },
+    "evaluator_receipts": [
+      {
+        "completed_at_utc": "2026-09-02T21:37:38.883609+00:00",
+        "response_id": "chatcmpl-EJmwDXK3AR6t6Nce9drC3QWKxaZrQ",
+        "response_model": "gpt-5.2-2025-12-11",
+        "usage": {
+          "completion_tokens": 72,
+          "prompt_tokens": 384,
+          "total_tokens": 456,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": 0,
+            "audio_tokens": 0,
+            "reasoning_tokens": 26,
+            "rejected_prediction_tokens": 0,
+            "text_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "judgement_sha256": "57d6a750dfdd26b78e0f133c9ffd00279bb3acb010bda22930898b231a7e9a72",
+        "judgement": "{\"label\":1,\"reason\":\"Reference insight is to use the Reports module; the model answer directs to Reports > View / Run, which aligns and does not contradict the reference.\"}"
+      }
+    ],
     "costs_usd": {
       "query_api_equivalent": 0.016474100000000002,
-      "reader_provider_reported": null,
-      "reader_api_equivalent": 0.0,
-      "evaluator_api_equivalent": 0.0,
-      "total_api_equivalent": 0.016474100000000002
+      "reader_provider_reported": 0.0014931,
+      "reader_api_equivalent": 0.0014931000000000002,
+      "evaluator_api_equivalent": 0.00168,
+      "total_api_equivalent": 0.019647200000000004
     },
     "process_log": "/Users/ryanbrown/code/thinharness/.benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/logs/10-af2ebaed-thinharness.log",
-    "artifact_manifest_sha256": "fa9b1bfd658ec989669d9d0770989aa32c53509e602a4f5a3ff87cb6177e16a2",
+    "artifact_manifest_sha256": "8f27593614a3956171908a17390449effb02913084a7bbe1d4a422303cd70675",
     "cell_name": "10-af2ebaed-thinharness",
     "experiment_id": "luna-xhigh-clean-pair-v1",
     "query_attempt_limit": 1,
-    "output_retry_limit": 0
+    "output_retry_limit": 0,
+    "reader_recovery": {
+      "original_failure_receipt": "reader_recovery/original_failure_receipt.json",
+      "original_failure_receipt_sha256": "cf977092fbe204125acdfefb3ebdda32fa7a290ce6b89ccaf1fcd5309683f3ad",
+      "transport_attempts": "reader_recovery/transport_attempts.jsonl",
+      "transport_attempt_count": 2,
+      "query_rerun": false
+    }
   }
 ]
