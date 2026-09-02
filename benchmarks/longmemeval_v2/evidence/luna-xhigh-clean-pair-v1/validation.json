@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "validated_at_utc": "2026-09-02T20:45:07.849161+00:00",
+  "status": "passed",
+  "coverage": {
+    "questions": 10,
+    "cells": 20,
+    "native": 10,
+    "thinharness": 10,
+    "deterministic": 10,
+    "llm_judged": 10
+  },
+  "attempts": {
+    "query_summaries": 20,
+    "all_attempt_001": true,
+    "second_attempts": 0
+  },
+  "prompt_checks": 20,
+  "preflight_hash": "29254acee74497cd496b79dc3aabb21521d7d68609a0094938074986f6b13fdc",
+  "source_hashes": {
+    "thinharness_memory": "e9e068f5e9fafdb5b79c825c2e1dbb1653a592961e93c61db18c9fd91026b512",
+    "thinharness_corpus": "6ba44739f0cfedae19b449dee5bfb0fadd4db83b13afc32e32c586dd8e80f8be",
+    "thinharness_prompt_alignment": "24faffefb7d6474ffb0266fad9ad3657f36086ebfd9320f4fa836d4d423703f6",
+    "thinharness_filesystem_tools": "637d69b86bee021b04fbf3bb110f1afc9e789655013f9c03975e4865ff334dce",
+    "thinharness_openai_provider": "644070b35b03b98a4cf421468d57ba4bb2960baf433cf3cbfe44e7a78b1a4698",
+    "official_agentrunbook": "18b30338c847f246734d116d6830967894867598b7b0b73c71070db3ad5dcea3",
+    "official_agentrunbook_v2": "1bea5dc2b80f9589d68e2b0c8c1c11d161df433383c4bbfd57b8d52420442922",
+    "official_openai_agents_runner": "170baea7903f32f7f5aad33520e7e918bf90e2e49a1123d8ba57b254d9f3887a",
+    "official_instruction": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
+    "official_inspector": "9d7df382c6ae3bf04155b62cfd6fdfd91b20568987620f1888c61b03882a830f",
+    "official_harness": "be6b832e0380241c33ac4683e2ab278a93d2bc5867488c747049704340db3bc4",
+    "official_evaluator": "1b009a18b76e7e927f2806954249acdaaf568b60233d9e0d78cc29441fd09c5f"
+  },
+  "artifact_files": 30984,
+  "artifact_bytes": 5899939504,
+  "run_manifest_files": 31151,
+  "cost_usd": 0.51331718,
+  "hard_cap_usd": 2.0,
+  "secret_boundary": {
+    "files_scanned": 5651,
+    "bytes_scanned": 3352836578,
+    "injected_secret_values_found": 0,
+    "secret_values_persisted": false
+  }
+}

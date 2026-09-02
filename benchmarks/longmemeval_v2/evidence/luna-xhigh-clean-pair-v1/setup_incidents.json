@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "experiment_id": "luna-xhigh-clean-pair-v1",
+  "incidents": [
+    {
+      "stage": "initial no-model launch",
+      "cause": "The recreated official environment did not contain the openai package.",
+      "effect": "The runner wrote 20 zero-usage infrastructure receipts before report formatting failed.",
+      "paid_model_requests": 0,
+      "api_equivalent_cost_usd": 0.0,
+      "preserved_at": ".benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/setup_failures/001-missing-openai-runtime/",
+      "resolution": "The official uv runtime and torch scoring extra were locked and imported during fail-fast preflight before paid execution. The zero-usage receipts do not count as query cells."
+    },
+    {
+      "stage": "paid paired run reader phase",
+      "cause": "OpenRouter reported a temporary Parasail upstream shared-pool rate limit after the configured reader transport retries.",
+      "effect": "Four completed query cells have no reader answer or score: eaba5c44 native, b54161f8 ThinHarness, 11cc7ac2 native, and af2ebaed ThinHarness.",
+      "paid_query_cells_completed": 20,
+      "reader_failures": 4,
+      "query_cells_rerun": 0,
+      "reader_calls_rerun": 0,
+      "handling": "The four outcomes remain unscored. No query, reader, evaluator, failed answer, or low score was rerun."
+    },
+    {
+      "stage": "artifact validation",
+      "cause": "The first offline validator did not extract text from image-question objects and stopped after all paid work had finished.",
+      "effect": "No model call or score changed.",
+      "paid_model_requests": 0,
+      "resolution": "Validation now uses the existing text extractor. It verified all 20 frozen prompts and query attempts."
+    }
+  ]
+}

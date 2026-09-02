@@ -1,0 +1,27 @@
+{
+  "evidence_files": {
+    "REPORT.md": "4a4e76a5f6a8c988f79b1cde338a50ed2c0a5a6897dacdae318183fa7a0ba968",
+    "RESULTS.md": "004f1cc584c18766a4b4b9e442a5394fc3daff06f0251a53ddd81eb6a964d980",
+    "ROOT_CAUSE.md": "2d070412a50c79b88ae3287e34d8f1777db5a1380959bf8c4feb7a1b3c306b31",
+    "cell_receipts.json": "2a6b1913bdefa9d9722f084fda33e048cc270f2d507a713512f1968172f2e3a0",
+    "comparison.json": "0984fa5b59834c1ac2877e1a414ba3257fe5475da517b81cf44e4703a9a8eaa4",
+    "final_summary.json": "964a84bdb05f5cb1263fd4c53b8d72b926b0a13a694bf56e849f67d9883e6b94",
+    "preflight.json": "29254acee74497cd496b79dc3aabb21521d7d68609a0094938074986f6b13fdc",
+    "raw_artifact_manifest.json": "2832a44c4ffe5615a18205940fb83261cdf4af5766193fc14f0922839bdc8ed2",
+    "setup_incidents.json": "f3956f92a7aac939a26c967e3ed2389c66b63e1066fc2139210389f253a8669e",
+    "validation.json": "4e1c7c5c654747fb5a04d70d5b3cc28217d44b43ff112547fd2e2dc84c394893"
+  },
+  "paid_terminal": {
+    "outcome": "/Users/ryanbrown/.bb/thread-storage/thr_dgzrszp3tc/terminal-jobs/job_ee6c3d6e-12bc-4e39-81e5-cb5721ffabd3/outcome.json",
+    "outcome_sha256": "e41169cad553626298f6893edaff1df5b10918d6eb5de4f40f335ec5568ad3f5",
+    "output_log": "/Users/ryanbrown/.bb/thread-storage/thr_dgzrszp3tc/terminal-jobs/job_ee6c3d6e-12bc-4e39-81e5-cb5721ffabd3/output.log",
+    "output_log_sha256": "dab193d62417d959a350b9115332edaddd7b31643544a209ec85525351a4e125"
+  },
+  "preservation": {
+    "query_cells_rerun": 0,
+    "raw_manifest_sha256": "2832a44c4ffe5615a18205940fb83261cdf4af5766193fc14f0922839bdc8ed2",
+    "raw_run_root": ".benchmark-runs/longmemeval-v2-luna-xhigh-clean-pair-v1/",
+    "setup_failures_preserved": true
+  },
+  "schema_version": 1
+}

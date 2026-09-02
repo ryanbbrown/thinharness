@@ -416,6 +416,12 @@ def compile_results(
                 continue
             name = receipt["cell_name"]
             trace = trace_metrics(run_root, name, harness)
+            prompt_rows_path = run_root / "cells" / name / "prompt_rows.jsonl"
+            prompt_row = (
+                json.loads(prompt_rows_path.read_text(encoding="utf-8").splitlines()[0])
+                if prompt_rows_path.exists()
+                else {}
+            )
             row[harness] = {
                 "score": receipt["score"],
                 "outcome": receipt["final_outcome"],
@@ -424,8 +430,10 @@ def compile_results(
                 "reader_cost_usd": receipt["costs_usd"]["reader_api_equivalent"],
                 "evaluator_cost_usd": receipt["costs_usd"]["evaluator_api_equivalent"],
                 "total_cost_usd": receipt["costs_usd"]["total_api_equivalent"],
-                "latency_seconds": receipt["memory_query_duration_seconds"],
-                "evidence_context_tokens": receipt["memory_context_token_count"],
+                "latency_seconds": receipt["memory_query_duration_seconds"]
+                or prompt_row.get("memory_query_duration_seconds"),
+                "evidence_context_tokens": receipt["memory_context_token_count"]
+                or prompt_row.get("memory_context_token_count"),
                 **trace,
             }
         if native is not None and thin is not None:
@@ -579,12 +587,15 @@ def write_results(path: Path, results: dict[str, Any], final: dict[str, Any]) ->
             f"ratio {ratio['ratio']:.3f}x "
             f"(paired bootstrap 95% interval {ratio['interval_95'][0]:.3f}x to {ratio['interval_95'][1]:.3f}x)"
         )
+    paired_scored = results["paired_scores"]["summaries"]["all"]
     lines = [
         "# LongMemEval clean paired comparison",
         "",
         f"Scored outcomes: native {native['correct']:.0f}/{native['scored_cells']}; "
         f"ThinHarness {thin['correct']:.0f}/{thin['scored_cells']}. "
         f"Unscored reader failures: native {native['unscored_cells']}; ThinHarness {thin['unscored_cells']}.",
+        f"Only {paired_scored['pair_count']} pairs received scores on both sides; both harnesses were correct on all "
+        f"{paired_scored['pair_count']}. The four unscored reader outcomes prevent a full ten-pair accuracy comparison.",
         f"Fresh query API-equivalent cost: native {native['query_cost_usd']:.8f} USD; "
         f"ThinHarness {thin['query_cost_usd']:.8f} USD; {ratio_text}.",
         "",
@@ -635,7 +646,9 @@ def write_results(path: Path, results: dict[str, Any], final: dict[str, Any]) ->
             "",
             "## Cost",
             "",
-            f"- Query: {final['cost_totals_usd']['query_api_equivalent']:.8f} USD API-equivalent.",
+            f"- Native query: {native['query_cost_usd']:.8f} USD; ThinHarness query: "
+            f"{thin['query_cost_usd']:.8f} USD API-equivalent.",
+            f"- Combined query: {final['cost_totals_usd']['query_api_equivalent']:.8f} USD API-equivalent.",
             f"- Reader: {final['cost_totals_usd']['reader_api_equivalent']:.8f} USD API-equivalent; "
             f"{final['cost_totals_usd']['reader_provider_reported']:.8f} USD provider-reported.",
             f"- Evaluator: {final['cost_totals_usd']['evaluator_api_equivalent']:.8f} USD API-equivalent.",
