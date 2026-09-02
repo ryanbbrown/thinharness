@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -146,6 +147,22 @@ def preflight(
         raise RuntimeError("Frozen config prompt-diff hash differs")
     if config["cost"]["estimate_sha256"] != sha256_file(args.cost_estimate):
         raise RuntimeError("Frozen config cost-estimate hash differs")
+    runtime_modules = (
+        "openai",
+        "agents",
+        "PIL",
+        "transformers",
+        "evaluation.harness",
+        "evaluation.run_eval",
+        "memory_modules.agentrunbook_c_v2",
+    )
+    if str(args.official_root) not in sys.path:
+        sys.path.insert(0, str(args.official_root))
+    runtime_imports = {}
+    for module_name in runtime_modules:
+        module = importlib.import_module(module_name)
+        runtime_imports[module_name] = str(getattr(module, "__version__", "imported"))
+
     if config["query"] != {
         "model": "gpt-5.6-luna",
         "reasoning_effort": "xhigh",
@@ -176,6 +193,8 @@ def preflight(
         raise RuntimeError("Official instrumentation differs from the frozen patch")
     if config["harnesses"]["official_patch_sha256"] != hashlib.sha256(patch_bytes).hexdigest():
         raise RuntimeError("Frozen official patch hash differs")
+    if sha256_file(args.official_root / "uv.lock") != config["official_runtime"]["uv_lock_sha256"]:
+        raise RuntimeError("Frozen official runtime lock differs")
 
     current_sources = {
         relative: sha256_file(args.repo_root / relative) for relative in config["source_hashes"]
@@ -232,6 +251,7 @@ def preflight(
         "official_revision": official_revision,
         "official_patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
         "source_hashes": source_hashes(args.repo_root, args.official_root),
+        "runtime_imports": runtime_imports,
         "prompt_equivalence": generated_diff,
         "ripgrep": {"native": native_rg, "thinharness": thin_rg},
         "cost": {
@@ -540,13 +560,19 @@ def write_results(path: Path, results: dict[str, Any], final: dict[str, Any]) ->
     native = totals["native"]
     thin = totals["thinharness"]
     ratio = results["query_cost_ratio"]
+    if ratio["ratio"] is None:
+        ratio_text = "ratio unavailable because no query usage was recorded"
+    else:
+        ratio_text = (
+            f"ratio {ratio['ratio']:.3f}x "
+            f"(paired bootstrap 95% interval {ratio['interval_95'][0]:.3f}x to {ratio['interval_95'][1]:.3f}x)"
+        )
     lines = [
         "# LongMemEval clean paired comparison",
         "",
         f"Fresh paired accuracy: native {native['correct']:.0f}/10; ThinHarness {thin['correct']:.0f}/10.",
         f"Fresh query API-equivalent cost: native {native['query_cost_usd']:.8f} USD; "
-        f"ThinHarness {thin['query_cost_usd']:.8f} USD; ratio {ratio['ratio']:.3f}x "
-        f"(paired bootstrap 95% interval {ratio['interval_95'][0]:.3f}x to {ratio['interval_95'][1]:.3f}x).",
+        f"ThinHarness {thin['query_cost_usd']:.8f} USD; {ratio_text}.",
         "",
         "| Question | Type | Native score | Thin score | Native query cost | Thin query cost | Native / Thin input | Native / Thin tools |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -738,6 +764,8 @@ def main() -> None:
             f"cost={receipt['costs_usd']['total_api_equivalent']:.8f}",
             flush=True,
         )
+        if receipt["final_outcome"] == "infrastructure_error" and receipt["query_usage"]["requests"] == 0:
+            raise RuntimeError(f"Pre-query infrastructure failure: {cell_name}; see {process_log}")
         if detect_credit_exhaustion(output, receipt):
             status = "credit_exhausted"
             print(f"CREDIT_EXHAUSTED after {cell_name}", flush=True)

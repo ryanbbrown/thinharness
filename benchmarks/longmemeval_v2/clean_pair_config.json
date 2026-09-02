@@ -121,5 +121,10 @@
     "memory_modules/oai_agents_sdk.py": "170baea7903f32f7f5aad33520e7e918bf90e2e49a1123d8ba57b254d9f3887a",
     "memory_modules/assets/agentrunbook_c/INSTRUCTION.md": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
     "memory_modules/assets/agentrunbook_c/scripts/inspect_trajectory.py": "9d7df382c6ae3bf04155b62cfd6fdfd91b20568987620f1888c61b03882a830f"
+  },
+  "official_runtime": {
+    "python": "3.12.11",
+    "uv_lock_sha256": "513c0c4953f84cba9a12bff8f29a41c78de82ced946ccd79b2cf922b9b1c64dc",
+    "dependency_source": "official pyproject.toml and generated uv.lock; ThinHarness is installed as the frozen local editable source"
   }
 }
