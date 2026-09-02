@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "experiment_id": "luna-xhigh-clean-pair-v1",
+  "seed": "thinharness-lmev2-luna-xhigh-clean-pair-v1",
+  "selection_algorithm": "minimum SHA-256(seed + ':' + question_id) in each predeclared question-type/domain/environment slot",
+  "selection_basis": "Ten fixed slots cover all seven question types, five questions per domain, all three web environments, five deterministic and five LLM-judged questions, and both image paths. Prior costs, scores, traces, and outcomes are not inputs.",
+  "dataset_revision": "f152293e235517d504809563c833d7190b8c713b",
+  "tier": "small",
+  "source_hashes": {
+    "questions.jsonl": "0a3ae5ebea938c24d7800e1e0b0828e08ae1646f939a53853b2b8cdc08e292b7",
+    "haystacks/lme_v2_small.json": "9b5301defb23a088a5f06e45ff8d5f35e569d78305a66d492046a9fff9b46593"
+  },
+  "ordered_slots": [
+    {
+      "question_type": "static-environment",
+      "domain": "web",
+      "environment": "webarena-reddit"
+    },
+    {
+      "question_type": "static-environment",
+      "domain": "enterprise",
+      "environment": "workarena"
+    },
+    {
+      "question_type": "static-environment-abs",
+      "domain": "web",
+      "environment": "webarena-cms"
+    },
+    {
+      "question_type": "dynamic-environment",
+      "domain": "web",
+      "environment": "webarena-onestopshop"
+    },
+    {
+      "question_type": "dynamic-environment",
+      "domain": "enterprise",
+      "environment": "workarena"
+    },
+    {
+      "question_type": "dynamic-environment-abs",
+      "domain": "enterprise",
+      "environment": "workarena"
+    },
+    {
+      "question_type": "procedure",
+      "domain": "web",
+      "environment": "webarena-cms"
+    },
+    {
+      "question_type": "procedure-abs",
+      "domain": "enterprise",
+      "environment": "workarena"
+    },
+    {
+      "question_type": "errors-gotchas",
+      "domain": "web",
+      "environment": "webarena-reddit"
+    },
+    {
+      "question_type": "errors-gotchas",
+      "domain": "enterprise",
+      "environment": "workarena"
+    }
+  ],
+  "questions": [
+    {
+      "order": 1,
+      "question_id": "10466872",
+      "domain": "web",
+      "question_type": "static-environment",
+      "environment": "webarena-reddit",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "0581f4119e0b127544dd810e25109c66d10082f0d7ef4c03acd36197cb4c878f"
+    },
+    {
+      "order": 2,
+      "question_id": "634973c3",
+      "domain": "enterprise",
+      "question_type": "static-environment",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match_ordered",
+      "selection_rank_sha256": "00650582cd187d6e1dc01b985151c3f694558378b6224303097360ba54f9f7e8"
+    },
+    {
+      "order": 3,
+      "question_id": "eaba5c44",
+      "domain": "web",
+      "question_type": "static-environment-abs",
+      "environment": "webarena-cms",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "13ff4ad23193937b5287bd7894e689dbac71f394803dd1b890ac70de1cbb982c"
+    },
+    {
+      "order": 4,
+      "question_id": "dea446d0",
+      "domain": "web",
+      "question_type": "dynamic-environment",
+      "environment": "webarena-onestopshop",
+      "has_question_image": false,
+      "eval_name": "mc_choice_match",
+      "selection_rank_sha256": "171f8e651ba3000d1973411245c349c8619280bdcaeb0049ba30f7d670137c63"
+    },
+    {
+      "order": 5,
+      "question_id": "b54161f8",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match",
+      "selection_rank_sha256": "0730de89265458d634161ac44933d906ee7130a699011ddec983790ed93d3361"
+    },
+    {
+      "order": 6,
+      "question_id": "11cc7ac2",
+      "domain": "enterprise",
+      "question_type": "dynamic-environment-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "1a1dd75cc86c74be35cd8bcce165c59a9a7f1a99eb47b5f2c7a297d17dc37a21"
+    },
+    {
+      "order": 7,
+      "question_id": "07b49858",
+      "domain": "web",
+      "question_type": "procedure",
+      "environment": "webarena-cms",
+      "has_question_image": false,
+      "eval_name": "norm_phrase_set_match_ordered",
+      "selection_rank_sha256": "3270bbfa7f5c6e48857b07d6e35235fd12d1d3d76d75253c7e321120b38d5469"
+    },
+    {
+      "order": 8,
+      "question_id": "7df9e2ff",
+      "domain": "enterprise",
+      "question_type": "procedure-abs",
+      "environment": "workarena",
+      "has_question_image": false,
+      "eval_name": "llm_abstention_checker",
+      "selection_rank_sha256": "01de958e8254e423d1d12b186de40add7cb0189be05cfabcd6926ba663a9c11e"
+    },
+    {
+      "order": 9,
+      "question_id": "77258cda",
+      "domain": "web",
+      "question_type": "errors-gotchas",
+      "environment": "webarena-reddit",
+      "has_question_image": true,
+      "eval_name": "llm_gotchas_checker",
+      "selection_rank_sha256": "218106dc7f21036d9ee09ae225906a45dec696e9646a55177b37f933712ca5c0"
+    },
+    {
+      "order": 10,
+      "question_id": "af2ebaed",
+      "domain": "enterprise",
+      "question_type": "errors-gotchas",
+      "environment": "workarena",
+      "has_question_image": true,
+      "eval_name": "llm_gotchas_checker",
+      "selection_rank_sha256": "007e0db15cac8bbcdcc8e82a973bae42a49bf7292554c0b863a8ff4c477e7cd4"
+    }
+  ]
+}

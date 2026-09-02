@@ -26,11 +26,18 @@ def test_thinharness_cell_has_explicit_runtime_paths_when_official_injection_ign
     output_dir = tmp_path / "cell"
     data_root = tmp_path / "data"
 
-    params = thinharness_memory_params(output_dir, data_root)
+    params = thinharness_memory_params(
+        output_dir,
+        data_root,
+        query_attempts=1,
+        output_retries=0,
+    )
 
     assert params["workspace_dir"] == str((output_dir / "memory_workspace" / "shared").resolve())
     assert params["trajectories_root_dir"] == str(data_root.resolve())
     assert params["query_trace_dir"] == str((output_dir / "query_traces").resolve())
+    assert params["max_retries"] == 1
+    assert params["output_retries"] == 0
 
 
 def test_normalized_query_usage_preserves_cache_reasoning_requests_and_tools() -> None:

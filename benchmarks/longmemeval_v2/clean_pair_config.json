@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "experiment_id": "luna-xhigh-clean-pair-v1",
+  "frozen_before_paid_execution": true,
+  "selection": {
+    "path": "benchmarks/longmemeval_v2/clean_pair_selection.json",
+    "sha256": "12c07df9023c6df543335405763c08f47512fcb7cc07143d4f7bc80d073fb1af",
+    "ids": [
+      "10466872",
+      "634973c3",
+      "eaba5c44",
+      "dea446d0",
+      "b54161f8",
+      "11cc7ac2",
+      "07b49858",
+      "7df9e2ff",
+      "77258cda",
+      "af2ebaed"
+    ]
+  },
+  "dataset": {
+    "revision": "f152293e235517d504809563c833d7190b8c713b",
+    "tier": "small",
+    "questions_sha256": "0a3ae5ebea938c24d7800e1e0b0828e08ae1646f939a53853b2b8cdc08e292b7",
+    "haystack_sha256": "9b5301defb23a088a5f06e45ff8d5f35e569d78305a66d492046a9fff9b46593",
+    "prepared_domain_corpus_sha256": {
+      "web": "36983115b2c16958b963abe71b687431bb01876ddee177ec8e2be94859b7cde3",
+      "enterprise": "698ab838bb69d1a2a8d488e9b2ecf9a43ec2ef612d0178a12412fa3434616a98"
+    }
+  },
+  "harnesses": {
+    "official_revision": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+    "official_patch_sha256": "574d881e78e71fbebcda1143fc9dd5e3bb710e76a9f60ab394efcf01c7e73fc2",
+    "thinharness_revision": "recorded from clean committed HEAD during preflight"
+  },
+  "query": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "xhigh",
+    "api": "https://api.openai.com/v1",
+    "online_learning": false,
+    "attempts_per_harness_question": 1,
+    "http_retries": 0,
+    "output_retries": 0,
+    "max_model_requests_or_turns": 30,
+    "execution_order": "native then thinharness for each selected question"
+  },
+  "reader": {
+    "model": "qwen/qwen3.5-9b",
+    "api": "https://openrouter.ai/api/v1",
+    "provider": "Parasail",
+    "allow_fallbacks": false,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "thinking": true,
+    "memory_context_max_tokens": 200000,
+    "max_output_tokens": 20000
+  },
+  "evaluator": {
+    "model": "gpt-5.2",
+    "api": "https://api.openai.com/v1",
+    "reasoning_effort": "medium",
+    "max_output_tokens": 4096,
+    "policy": "official evaluator selected by each frozen eval_name"
+  },
+  "prompt": {
+    "diff_path": "benchmarks/longmemeval_v2/clean_pair_prompt_diff.json",
+    "diff_sha256": "cc752640858f3a2840fdfaf41d630b52acdced35f2db3595a0cabe80e495b74c",
+    "native_query_sha256": "a0a70c0fb9df19ebe6861812bfb3bed647e403299aaeee870e2e198773ee7adb",
+    "native_instruction_sha256": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
+    "aligned_query_sha256": "066d8ee76fa9aedcaf3c8d2418eb21dfc1c0f5b80c21235808307a83344faef1",
+    "aligned_instruction_sha256": "193d4caab44765e51ede0cf515d750f13f1ace3a6471f220c7bd8dd49fe2e089",
+    "native_query_bytes": 582,
+    "native_instruction_bytes": 7575,
+    "aligned_query_bytes": 611,
+    "aligned_instruction_bytes": 7751
+  },
+  "tools": {
+    "native": [
+      "shell",
+      "apply_patch"
+    ],
+    "thinharness": [
+      "read",
+      "search",
+      "jsonl_search",
+      "list",
+      "glob"
+    ],
+    "rg_required_in_both": true,
+    "thinharness_max_tool_calls": 128
+  },
+  "source_hashes": {
+    "benchmarks/longmemeval_v2/memory.py": "e9e068f5e9fafdb5b79c825c2e1dbb1653a592961e93c61db18c9fd91026b512",
+    "benchmarks/longmemeval_v2/corpus.py": "6ba44739f0cfedae19b449dee5bfb0fadd4db83b13afc32e32c586dd8e80f8be",
+    "benchmarks/longmemeval_v2/prompt_alignment.py": "24faffefb7d6474ffb0266fad9ad3657f36086ebfd9320f4fa836d4d423703f6",
+    "benchmarks/longmemeval_v2/run_cell.py": "f02de8f789a5b25001a7fa34beec583b1dc3e5d5940a17aea630cdb1355db700",
+    "thinharness/tools/filesystem.py": "637d69b86bee021b04fbf3bb110f1afc9e789655013f9c03975e4865ff334dce",
+    "thinharness/providers/openai.py": "644070b35b03b98a4cf421468d57ba4bb2960baf433cf3cbfe44e7a78b1a4698",
+    "thinharness/tools/jsonl.py": "c09bbe2995419772abaebb3fed94f80c3d7a21e7d0a67f44d55aa9720d9f444f"
+  },
+  "cost": {
+    "estimate_path": "benchmarks/longmemeval_v2/clean_pair_cost_estimate.json",
+    "estimate_sha256": "724957781c453aeac0f289ebf67dd791ad4cf9a9e8008bcb1f98c60d38fd7701",
+    "hard_cap_usd": 2.0
+  },
+  "intended_remaining_differences": [
+    "native Agents SDK runner with shell and inspect_trajectory.py versus ThinHarness structured tool runner",
+    "native trajectory directory and raw trajectory JSON versus ThinHarness normalized JSONL corpus transformation",
+    "native output file write versus ThinHarness structured output",
+    "native question and instruction files versus semantically aligned ThinHarness inline prompt",
+    "native screenshots available to query shell versus ThinHarness query receives only the question image; selected evidence screenshots reach the shared reader"
+  ],
+  "secret_boundary": [
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY"
+  ],
+  "official_source_hashes": {
+    "memory_modules/agentrunbook_c.py": "18b30338c847f246734d116d6830967894867598b7b0b73c71070db3ad5dcea3",
+    "memory_modules/agentrunbook_c_v2.py": "1bea5dc2b80f9589d68e2b0c8c1c11d161df433383c4bbfd57b8d52420442922",
+    "memory_modules/oai_agents_sdk.py": "170baea7903f32f7f5aad33520e7e918bf90e2e49a1123d8ba57b254d9f3887a",
+    "memory_modules/assets/agentrunbook_c/INSTRUCTION.md": "6add63451d46ab786296963aef4cc36fcc63a83d9eba9b330d1ce6fd7b139a6c",
+    "memory_modules/assets/agentrunbook_c/scripts/inspect_trajectory.py": "9d7df382c6ae3bf04155b62cfd6fdfd91b20568987620f1888c61b03882a830f"
+  }
+}

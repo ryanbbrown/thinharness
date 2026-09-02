@@ -89,7 +89,7 @@ def common_harness_argv(
 
 
 def run_native(args: argparse.Namespace) -> None:
-    from evaluation.run_eval import main as run_eval_main
+    from evaluation.run_eval import main as run_eval_main  # pyright: ignore[reportMissingImports]
 
     old_argv = sys.argv
     try:
@@ -122,7 +122,7 @@ def run_native(args: argparse.Namespace) -> None:
             "--openai-sdk-reasoning-effort",
             "xhigh",
             "--openai-sdk-max-retries",
-            "3",
+            str(args.query_attempts),
             "--openai-sdk-api-key-env",
             "OPENAI_API_KEY",
             "--openai-sdk-max-turns",
@@ -142,16 +142,22 @@ def run_native(args: argparse.Namespace) -> None:
         sys.argv = old_argv
 
 
-def thinharness_memory_params(output_dir: Path, data_root: Path) -> dict[str, Any]:
+def thinharness_memory_params(
+    output_dir: Path,
+    data_root: Path,
+    *,
+    query_attempts: int = 3,
+    output_retries: int = 1,
+) -> dict[str, Any]:
     return {
         "model": "openai:gpt-5.6-luna",
         "base_url": None,
         "api_key_env": "OPENAI_API_KEY",
         "timeout_seconds": 1200.0,
-        "max_retries": 3,
+        "max_retries": query_attempts,
         "max_model_requests": 30,
         "max_tool_calls": 128,
-        "output_retries": 1,
+        "output_retries": output_retries,
         "builtin_tools": ["read", "search", "jsonl_search", "list", "glob"],
         "output_mode": "native",
         "reasoning_effort": "xhigh",
@@ -163,8 +169,11 @@ def thinharness_memory_params(output_dir: Path, data_root: Path) -> dict[str, An
 
 
 def run_thinharness(args: argparse.Namespace) -> None:
-    from data.public_data import materialize_runtime_haystack, materialize_runtime_questions
-    from evaluation.harness import main as harness_main
+    from data.public_data import (  # pyright: ignore[reportMissingImports]
+        materialize_runtime_haystack,
+        materialize_runtime_questions,
+    )
+    from evaluation.harness import main as harness_main  # pyright: ignore[reportMissingImports]
 
     from benchmarks.longmemeval_v2 import memory as _memory_registration  # noqa: F401
 
@@ -188,7 +197,12 @@ def run_thinharness(args: argparse.Namespace) -> None:
         memory_config_path,
         {
             "memory_type": "thinharness",
-            "memory_params": thinharness_memory_params(args.output_dir, args.data_root),
+            "memory_params": thinharness_memory_params(
+                args.output_dir,
+                args.data_root,
+                query_attempts=args.query_attempts,
+                output_retries=args.output_retries,
+            ),
         },
     )
     old_argv = sys.argv
@@ -213,10 +227,16 @@ def main() -> None:
     parser.add_argument("--harness", choices=("native", "thinharness"), required=True)
     parser.add_argument("--question-id", required=True)
     parser.add_argument("--domain", choices=("web", "enterprise"), required=True)
+    parser.add_argument("--query-attempts", type=int, default=3)
+    parser.add_argument("--output-retries", type=int, default=1)
     args = parser.parse_args()
     args.official_root = args.official_root.resolve()
     args.data_root = args.data_root.resolve()
     args.output_dir = args.output_dir.resolve()
+    if args.query_attempts < 1:
+        raise RuntimeError("query-attempts must be at least 1")
+    if args.output_retries < 0:
+        raise RuntimeError("output-retries must be non-negative")
     if str(args.official_root) not in sys.path:
         sys.path.insert(0, str(args.official_root))
     ripgrep_runtime = None

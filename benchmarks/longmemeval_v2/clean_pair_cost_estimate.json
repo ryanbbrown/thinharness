@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "experiment_id": "luna-xhigh-clean-pair-v1",
+  "created_before_paid_execution": true,
+  "hard_cap_usd": 2.0,
+  "method": "For each side, use the maximum comparable preserved query cost; add the maximum preserved valid reader and single evaluator costs; then add 30% contingency to every cell reserve.",
+  "source_artifacts": {
+    "paired_wave_receipts": {
+      "path": "benchmarks/longmemeval_v2/evidence/luna-xhigh-wave1/cell_receipts.json",
+      "sha256": "0987e4bc034d3147e77a0b23ca971945c8db761bf0718ccfc816600fdd2e343e"
+    },
+    "aligned_receipts": {
+      "path": "benchmarks/longmemeval_v2/evidence/luna-xhigh-native-prompt-alignment-diagnostic-v1/cell_receipts.json",
+      "sha256": "3db862325c87e18ef24c0c2f2ba0f9257d410cc780b80b15efeba3c2d570f104"
+    },
+    "aligned_variance_receipts": {
+      "path": "benchmarks/longmemeval_v2/evidence/luna-xhigh-native-prompt-alignment-variance-check-v1/cell_receipts.json",
+      "sha256": "e399a93d478e5b85a7de8601296127c5d13ded0f019005256fe8b4fb989a680f"
+    }
+  },
+  "maxima_usd": {
+    "native_query": 0.04945982,
+    "aligned_thinharness_query": 0.06178646,
+    "reader": 0.01272615,
+    "single_evaluator": 0.00320775
+  },
+  "contingency_multiplier": 1.3,
+  "per_cell_reserve_usd": {
+    "native": 0.08501183600000001,
+    "thinharness": 0.101036468
+  },
+  "cell_counts": {
+    "native": 10,
+    "thinharness": 10
+  },
+  "estimated_hard_cap_usage_usd": 1.86048304,
+  "headroom_usd": 0.1395169599999999,
+  "decision": "Estimate is below 2 USD; execution is permitted only while the dynamic remaining-reserve projection stays at or below the hard cap."
+}
