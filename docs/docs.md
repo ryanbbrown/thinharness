@@ -620,11 +620,12 @@ Budgets span the pause. The paused batch counts against `usage.tool_calls` exact
 
 Built-in provider resume details:
 
-- `resume_state["kind"] == "transcript"` and `version == 4`. Older transcript versions must be regenerated; approval envelopes with version 3 nested provider state also fail.
-- The transcript is provider-agnostic and no longer depends on OpenAI server-side response retention. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead. Exact structured-output retry wire text is also stored and replayed byte-for-byte when it differs from the canonical tool result.
+- `resume_state["kind"] == "transcript"` and `version == 5`. Older transcript versions, including version 4, must be regenerated. Approval envelopes also fail when their nested provider state uses an older transcript version.
+- The `entries` list is provider-agnostic. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead. Exact structured-output retry wire text is also stored and replayed byte-for-byte when it differs from the canonical tool result.
+- OpenAI Responses uses client-managed replay by default. Every request sends `store: false` and the full ordered item history. Replay state adds `openai_items`, which contains exact user inputs, tool outputs, reasoning items, assistant messages, and function calls. Raw item ids, call ids, status, phase, and encrypted reasoning stay unchanged.
 - Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
-- Cross-provider resume is supported by the built-in renderers, but real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
-- `OpenAIResponsesSession.start(prompt, constants, previous_response_id=...)` remains available as a low-level escape hatch, but later resume state captures only the new prompt onward, not the externally seeded prior turns.
+- Cross-provider resume uses `entries` and ignores `openai_items`. Real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
+- To use server-managed OpenAI state, construct `OpenAIResponsesModel(..., state_mode="continuation")` and pass it to `Harness`. Continuation mode uses `previous_response_id`, omits `store`, and omits `openai_items` from resume state.
 
 The same `resume_state` can be reused for sequential branching:
 
