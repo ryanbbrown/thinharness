@@ -95,7 +95,7 @@ config = HarnessConfig(
 Important groups:
 
 - `root` defines the run root. `FilesystemPlugin` owns filesystem paths, limits, search settings, and output location.
-- `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings.
+- `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `effort`, `extra_body`, `request_timeout`, `request_retries`, and `request_retry_backoff` define provider settings. OpenAI replay mode rejects `input`, `previous_response_id`, and `store` in `extra_body` at construction. To use continuation mode, construct `OpenAIResponsesModel(..., state_mode="continuation")` directly and pass it to `Harness`.
 - The `Harness` constructor's ordered `plugins=` and direct `tools=` inputs define the complete model-callable surface. ThinHarness has no implicit or selected built-in tool path. Filesystem, Bash, MCP, skills, parallel LLM, and subagent delegation use explicit plugins.
 - `max_model_requests`, `max_tool_calls`, `output_retries`, and `tool_retries` bound the run.
 - `output_type` and `output_mode` define structured output.
@@ -624,7 +624,7 @@ Built-in provider resume details:
 - The `entries` list is provider-agnostic. Ordered image bytes are self-contained as base64, which adds about 33% encoding overhead. Exact structured-output retry wire text is also stored and replayed byte-for-byte when it differs from the canonical tool result.
 - OpenAI Responses uses client-managed replay by default. Every request sends `store: false` and the full ordered item history. Replay state adds `openai_items`, which contains exact user inputs, tool outputs, reasoning items, assistant messages, and function calls. Raw item ids, call ids, status, phase, and encrypted reasoning stay unchanged.
 - Provider-specific reasoning chains are preserved on same-provider resume (Anthropic thinking signatures, OpenAI `encrypted_content`, OpenRouter `reasoning_details`) and degraded to a leading `<thinking>`-tagged text block on cross-provider resume. Anthropic native re-emit also requires extended thinking to be enabled in the resuming run. For reasoning-capable OpenAI models the harness adds `include=["reasoning.encrypted_content"]`, so `resume_state` can contain encrypted reasoning blobs — treat it as sensitive.
-- Cross-provider resume uses `entries` and ignores `openai_items`. Real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
+- Every built-in provider validates `openai_items`. Cross-provider resume renders from `entries` and does not render `openai_items`. Real providers may reject foreign-format tool-call ids or malformed tool-call argument JSON.
 - To use server-managed OpenAI state, construct `OpenAIResponsesModel(..., state_mode="continuation")` and pass it to `Harness`. Continuation mode uses `previous_response_id`, omits `store`, and omits `openai_items` from resume state.
 
 The same `resume_state` can be reused for sequential branching:

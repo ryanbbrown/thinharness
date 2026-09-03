@@ -291,12 +291,12 @@ class OpenAIResponsesSession:
         response = await self.model.provider.create_response(payload)
         if self.model.state_mode == "replay":
             output_items = copy.deepcopy(response.get("output", []) or [])
-            self.item_history.extend(output_items)
-            if any(item.get("type") == "reasoning" and "encrypted_content" not in item for item in output_items):
+            if any(item.get("type") == "reasoning" and not item.get("encrypted_content") for item in output_items):
                 raise ProviderError(
                     "OpenAI reasoning response omitted encrypted_content; add the model family to "
                     "_openai_supports_encrypted_reasoning or use state_mode=\"continuation\""
                 )
+            self.item_history.extend(output_items)
         else:
             self.previous_response_id = response.get("id") or self.previous_response_id
         turn = ModelTurn(

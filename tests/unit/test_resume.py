@@ -128,6 +128,22 @@ async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path
     assert first.resume_state["origin_provider"] == "openai"
     assert first.resume_state["origin_model"] == "gpt-test"
     assert [entry["role"] for entry in first.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
+    assert first.resume_state["openai_items"][1] == {
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "status": "completed",
+        "name": "read",
+        "arguments": '{"path":"hello.txt"}',
+    }
+    assert first.resume_state["openai_items"][3] == {
+        "type": "message",
+        "id": "msg_2",
+        "status": "completed",
+        "phase": "final_answer",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
     assert second.text == "done"
     assert "previous_response_id" not in client.payloads[1]
     assert client.payloads[1]["store"] is False

@@ -85,9 +85,16 @@ def _validate_openai_items(items: list[Any]) -> None:
     for index, item in enumerate(items):
         item_type = item["type"]
         if item_type == "function_call":
-            unanswered.append(item.get("call_id"))
+            call_id = item.get("call_id")
+            if not isinstance(call_id, str):
+                raise HarnessError("resume_from openai_items function_call call_id must be a string")
+            if call_id in unanswered:
+                raise HarnessError("resume_from openai_items has duplicate unanswered function_call call_id")
+            unanswered.append(call_id)
         elif item_type == "function_call_output":
             call_id = item.get("call_id")
+            if not isinstance(call_id, str):
+                raise HarnessError("resume_from openai_items function_call_output call_id must be a string")
             if call_id not in unanswered:
                 raise HarnessError("resume_from openai_items function_call_output has no unanswered function_call")
             unanswered.remove(call_id)

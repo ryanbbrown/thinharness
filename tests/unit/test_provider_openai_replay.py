@@ -193,17 +193,26 @@ async def test_only_function_call_items_are_extracted_as_tools() -> None:
     assert turn.tool_calls == []
 
 
-async def test_missing_encrypted_reasoning_fails_without_retry() -> None:
+@pytest.mark.parametrize(
+    "encrypted_content",
+    [{}, {"encrypted_content": None}, {"encrypted_content": ""}],
+    ids=["missing", "null", "empty"],
+)
+async def test_missing_encrypted_reasoning_fails_without_retry(encrypted_content: dict[str, Any]) -> None:
     provider = ReplayOpenAIProvider(responses=[{
         "id": "resp_1",
-        "output": [{"type": "reasoning", "id": "rs_1", "summary": []}],
+        "output": [{"type": "reasoning", "id": "rs_1", "summary": [], **encrypted_content}],
     }])
     session = OpenAIResponsesModel("future-reasoning-model", provider=provider).new_session()
 
     with pytest.raises(ProviderError, match="_openai_supports_encrypted_reasoning.*state_mode=\"continuation\""):
         await session.start("hi", _constants())
 
+    state = session.dump_state()
     assert len(provider.payloads) == 1
+    assert [entry["role"] for entry in state["entries"]] == ["user"]
+    assert [item["type"] for item in state["openai_items"]] == ["message"]
+    assert all(item["type"] != "reasoning" for item in state["openai_items"])
 
 
 async def test_failed_request_keeps_transcript_and_raw_inputs_aligned() -> None:
@@ -293,6 +302,10 @@ async def test_resume_forks_do_not_share_or_mutate_item_history() -> None:
     "items",
     [
         [{"type": "function_call_output", "call_id": "call_1", "output": "x"}],
+        [{"type": "function_call"}, {"type": "function_call_output", "output": "x"}],
+        [{"type": "function_call", "call_id": 1}],
+        [{"type": "function_call", "call_id": "call_1"}, {"type": "function_call_output", "call_id": 1, "output": "x"}],
+        [{"type": "function_call", "call_id": "call_1"}, {"type": "function_call", "call_id": "call_1"}],
         [{"type": "function_call", "call_id": "call_1"}, {"type": "function_call_output", "call_id": "call_2", "output": "x"}],
         [
             {"type": "function_call", "call_id": "call_1"},
@@ -319,6 +332,10 @@ async def test_resume_forks_do_not_share_or_mutate_item_history() -> None:
     ],
     ids=[
         "output-before-call",
+        "missing-call-ids",
+        "non-string-function-call-id",
+        "non-string-function-output-id",
+        "duplicate-unanswered-call-id",
         "dropped-call",
         "duplicate-output",
         "unanswered-before-reasoning",
