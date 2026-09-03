@@ -201,8 +201,9 @@ async def test_provider_retry_does_not_duplicate_tool_continuation_state(monkeyp
 
     assert result.text == "done"
     assert payloads[1] == payloads[2]
-    assert payloads[1]["previous_response_id"] == "resp_1"
-    assert [item["type"] for item in payloads[1]["input"]] == ["function_call_output"]
+    assert "previous_response_id" not in payloads[1]
+    assert payloads[1]["store"] is False
+    assert [item["type"] for item in payloads[1]["input"]] == ["message", "function_call", "function_call_output"]
     assert result.resume_state is not None
     assert [entry["role"] for entry in result.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
 

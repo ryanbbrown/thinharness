@@ -21,6 +21,10 @@ from thinharness import (
 from thinharness.tools.filesystem import FileTools
 
 
+def _tool_outputs(client: MultiCallClient) -> list[dict]:
+    return [item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output"]
+
+
 def test_tool_spec_sequential_default_and_not_in_schema() -> None:
     spec = ToolSpec("echo", "Echo", {"type": "object", "properties": {}}, lambda args: "ok")
     assert spec.sequential is False
@@ -55,7 +59,7 @@ def test_parallel_safe_batch_runs_concurrently(tmp_path: Path) -> None:
     assert result.text == "done"
     assert elapsed < delay * 1.8, f"expected concurrent execution, elapsed={elapsed:.3f}s"
     assert len(client.payloads) == 2
-    continuation_inputs = client.payloads[1]["input"]
+    continuation_inputs = _tool_outputs(client)
     assert [item["call_id"] for item in continuation_inputs] == ["call_1", "call_2"]
     assert [tool_output(item["output"])["content"] for item in continuation_inputs] == ["slow_a", "slow_b"]
 
@@ -74,7 +78,7 @@ def test_sequential_tool_forces_serial_batch(tmp_path: Path) -> None:
 
     assert result.text == "done"
     assert elapsed >= delay * 1.9, f"expected serial execution, elapsed={elapsed:.3f}s"
-    continuation_inputs = client.payloads[1]["input"]
+    continuation_inputs = _tool_outputs(client)
     assert [item["call_id"] for item in continuation_inputs] == ["call_1", "call_2"]
 
 def test_tool_execution_sequential_forces_serial_even_for_safe_tools(tmp_path: Path) -> None:
@@ -102,7 +106,7 @@ def test_parallel_batch_preserves_model_call_order(tmp_path: Path) -> None:
 
     harness.run_sync("go")
 
-    continuation_inputs = client.payloads[1]["input"]
+    continuation_inputs = _tool_outputs(client)
     assert [item["call_id"] for item in continuation_inputs] == ["call_1", "call_2"]
     assert [tool_output(item["output"])["content"] for item in continuation_inputs] == ["slow_first", "fast_second"]
 
@@ -123,7 +127,7 @@ def test_parallel_batch_continues_when_one_tool_errors(tmp_path: Path) -> None:
     result = harness.run_sync("go")
 
     assert result.text == "done"
-    continuation_inputs = client.payloads[1]["input"]
+    continuation_inputs = _tool_outputs(client)
     assert continuation_inputs[0]["call_id"] == "call_1"
     assert "RuntimeError" in continuation_inputs[0]["output"]
     assert continuation_inputs[1]["call_id"] == "call_2"
@@ -140,7 +144,7 @@ def test_parallel_batch_makes_one_provider_continuation(tmp_path: Path) -> None:
     harness.run_sync("go")
 
     assert client.invocations == 2
-    assert len(client.payloads[1]["input"]) == 3
+    assert len(_tool_outputs(client)) == 3
 
 def test_truncate_spill_files_do_not_collide_under_parallel_reads(tmp_path: Path) -> None:
     big = "x" * 200 + "\n" + "y" * 200 + "\n"
@@ -156,7 +160,7 @@ def test_truncate_spill_files_do_not_collide_under_parallel_reads(tmp_path: Path
     harness.run_sync("go")
 
     saved_paths = []
-    for item in client.payloads[1]["input"]:
+    for item in _tool_outputs(client):
         body = json.loads(item["output"])
         assert body["metadata"]["truncated"] is True
         saved_paths.append(body["metadata"]["saved_to"])
@@ -197,7 +201,7 @@ def test_parallel_batch_with_more_calls_than_worker_cap(tmp_path: Path) -> None:
 
     harness.run_sync("go")
 
-    continuation_inputs = client.payloads[1]["input"]
+    continuation_inputs = _tool_outputs(client)
     assert [item["call_id"] for item in continuation_inputs] == [f"call_{i+1}" for i in range(20)]
     assert [tool_output(item["output"])["content"] for item in continuation_inputs] == [name for name, _ in batch]
 

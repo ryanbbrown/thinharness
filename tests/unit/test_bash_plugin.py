@@ -1305,7 +1305,8 @@ def test_mixed_batch_containing_bash_runs_sequentially(tmp_path: Path) -> None:
     harness.run_sync("go")
 
     assert time.monotonic() - started >= 0.38
-    assert [item["call_id"] for item in client.payloads[1]["input"]] == ["call_1", "call_2"]
+    outputs = [item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output"]
+    assert [item["call_id"] for item in outputs] == ["call_1", "call_2"]
 
 
 async def test_bash_uses_normal_hooks_records_and_tracing(tmp_path: Path) -> None:

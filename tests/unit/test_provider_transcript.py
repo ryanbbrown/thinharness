@@ -34,6 +34,24 @@ async def test_model_sessions_advance_independently() -> None:
     assert provider.payloads[3]["messages"][-1]["content"][0]["content"] == '{"ok": true, "content": "second result", "metadata": {}}'
 
 
+async def test_non_replay_envelopes_omit_openai_items() -> None:
+    constants = _constants(ECHO_TOOLS)
+
+    anthropic = AnthropicMessagesModel("claude-test", provider=FakeAnthropicProvider()).new_session()
+    await anthropic.start("hi", constants)
+    openrouter = OpenRouterModel("openai/test", provider=FakeOpenRouterProvider()).new_session()
+    await openrouter.start("hi", constants)
+    continuation = OpenAIResponsesModel(
+        "gpt-test",
+        provider=FakeClient(),
+        state_mode="continuation",
+    ).new_session()
+    await continuation.start("hi", constants)
+
+    states = [anthropic.dump_state(), openrouter.dump_state(), continuation.dump_state()]
+    assert all(state is not None and "openai_items" not in state for state in states)
+
+
 async def test_resume_replays_preserved_tool_notices() -> None:
     constants = _constants(ECHO_TOOLS)
     notice = _notice()

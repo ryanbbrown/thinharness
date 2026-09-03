@@ -41,22 +41,122 @@ class FakeClient(OpenAIProvider):
 
     async def create_response(self, payload):
         self.calls += 1
-        self.payloads.append(payload)
+        self.payloads.append(copy.deepcopy(payload))
         if self.calls == 1:
             return {
                 "id": "resp_1",
                 "output": [{
                     "type": "function_call",
+                    "id": "fc_1",
                     "call_id": "call_1",
+                    "status": "completed",
                     "name": "read",
                     "arguments": '{"path":"hello.txt"}',
                 }],
             }
-        return {"id": "resp_2", "output_text": "done"}
+        return {
+            "id": "resp_2",
+            "output": [{
+                "type": "message",
+                "id": "msg_2",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 def _fake_openai(client: FakeClient) -> OpenAIResponsesModel:
     """Build a Model that routes Responses calls through a fake OpenAIProvider."""
     return OpenAIResponsesModel("test-model", provider=client)
+
+
+class ReplayOpenAIProvider(OpenAIProvider):
+    """Responses fake with exact raw items across two tool rounds."""
+
+    responses = [
+        {
+            "id": "resp_1",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "first thought"}],
+                    "encrypted_content": "encrypted-1",
+                },
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "status": "completed",
+                    "phase": "commentary",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Reading now."}],
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "status": "completed",
+                    "name": "read",
+                    "arguments": '{"path":"one.txt"}',
+                },
+            ],
+        },
+        {
+            "id": "resp_2",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_2",
+                    "summary": [{"type": "summary_text", "text": "second thought"}],
+                    "encrypted_content": "encrypted-2",
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_2",
+                    "call_id": "call_2",
+                    "status": "completed",
+                    "name": "read",
+                    "arguments": '{"path":"two.txt"}',
+                },
+            ],
+        },
+        {
+            "id": "resp_3",
+            "output": [{
+                "type": "message",
+                "id": "msg_3",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        },
+        {
+            "id": "resp_4",
+            "output": [{
+                "type": "message",
+                "id": "msg_4",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "followed up"}],
+            }],
+        },
+    ]
+
+    def __init__(self, responses=None, *, fail_at: int | None = None) -> None:
+        super().__init__(api_key="fake")
+        self.script = copy.deepcopy(responses if responses is not None else self.responses)
+        self.fail_at = fail_at
+        self.payloads: list[dict[str, Any]] = []
+
+    async def create_response(self, payload):
+        self.payloads.append(copy.deepcopy(payload))
+        if self.fail_at == len(self.payloads):
+            raise ProviderError("scripted failure")
+        return copy.deepcopy(self.script[len(self.payloads) - 1])
+
 
 class FakeSpan:
     def __init__(self, name, attributes, parent=None) -> None:
@@ -304,16 +404,33 @@ class MultiCallClient(OpenAIProvider):
 
     async def create_response(self, payload):
         self.invocations += 1
-        self.payloads.append(payload)
+        self.payloads.append(copy.deepcopy(payload))
         if self.invocations == 1:
             return {
                 "id": "resp_1",
                 "output": [
-                    {"type": "function_call", "call_id": f"call_{i}", "name": name, "arguments": args}
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{i}",
+                        "call_id": f"call_{i}",
+                        "status": "completed",
+                        "name": name,
+                        "arguments": args,
+                    }
                     for i, (name, args) in enumerate(self.calls_to_emit, start=1)
                 ],
             }
-        return {"id": "resp_2", "output_text": "done"}
+        return {
+            "id": "resp_2",
+            "output": [{
+                "type": "message",
+                "id": "msg_2",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 def slow_tool(name: str, delay: float, *, sequential: bool = False) -> ToolSpec:
     """Create a tool that sleeps for delay seconds and echoes its name."""

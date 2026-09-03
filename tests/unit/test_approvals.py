@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -540,7 +541,7 @@ async def test_openai_approval_pause_round_trips_provider_state(tmp_path: Path) 
     assert result.text == "done"
     assert called == [{"path": "hello.txt"}]
     assert paused.resume_state["provider_state"]["kind"] == "transcript"
-    assert paused.resume_state["provider_state"]["version"] == 4
+    assert paused.resume_state["provider_state"]["version"] == 5
     assert [entry["role"] for entry in paused.resume_state["provider_state"]["entries"]] == ["user", "assistant"]
     assert "previous_response_id" not in client.payloads[1]
     assert [item["type"] for item in client.payloads[1]["input"]] == ["message", "function_call", "function_call_output"]
@@ -697,9 +698,14 @@ async def test_approval_resume_labels_builtin_provider_state_errors(tmp_path: Pa
     )
     paused = await harness.run("read")
     state = json.loads(json.dumps(paused.resume_state))
-    state["provider_state"]["version"] = 1
+    bad_version = copy.deepcopy(state)
+    bad_version["provider_state"]["version"] = 1
 
     with pytest.raises(HarnessError, match="approval state provider_state version 1 is not supported"):
+        await harness.resume_approvals(bad_version, [ApprovalDecision(call_id="call_1", approved=True)])
+
+    state["provider_state"]["openai_items"] = [None]
+    with pytest.raises(HarnessError, match="approval state provider_state openai_items"):
         await harness.resume_approvals(state, [ApprovalDecision(call_id="call_1", approved=True)])
 
 

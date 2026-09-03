@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -39,7 +39,7 @@ from .transcript import (
     _transcript_state,
     _validate_resume_state,
 )
-from .transport import Provider
+from .transport import Provider, ProviderError
 
 
 class OpenAIProvider(Provider):
@@ -95,10 +95,24 @@ class OpenAIResponsesModel:
     capabilities = ModelCapabilities(supports_json_schema_output=True, default_structured_output_mode="native")
     resume_kind = "openai"
 
-    def __init__(self, model: str, *, provider: OpenAIProvider | None = None, settings: ModelSettings | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        provider: OpenAIProvider | None = None,
+        settings: ModelSettings | None = None,
+        state_mode: Literal["replay", "continuation"] = "replay",
+    ) -> None:
+        if state_mode not in {"replay", "continuation"}:
+            raise ValueError("state_mode must be 'replay' or 'continuation'")
+        resolved_settings = settings or ModelSettings()
+        reserved = {"input", "previous_response_id", "store"} & resolved_settings.extra_body.keys()
+        if state_mode == "replay" and reserved:
+            raise ValueError(f"OpenAI replay mode reserves extra_body keys: {sorted(reserved)!r}")
         self.model = model
         self.provider = provider or OpenAIProvider()
-        self.settings = settings or ModelSettings()
+        self.settings = resolved_settings
+        self.state_mode = state_mode
 
     @property
     def api_key(self) -> str | None:
@@ -114,7 +128,21 @@ class OpenAIResponsesModel:
         entries = _validate_resume_state(state)
         session = OpenAIResponsesSession(self)
         session.transcript = copy.deepcopy(entries)
-        session._pending_replay = copy.deepcopy(entries)
+        if self.state_mode == "continuation":
+            session._pending_replay = copy.deepcopy(entries)
+        else:
+            raw_items = state.get("openai_items")
+            can_use_raw = isinstance(raw_items, list) and (
+                not any(item.get("type") == "reasoning" for item in raw_items)
+                or _openai_supports_encrypted_reasoning(self.model)
+            )
+            if can_use_raw and isinstance(raw_items, list):
+                session.item_history = copy.deepcopy(raw_items)
+            else:
+                session.item_history = _render_openai_transcript(
+                    copy.deepcopy(entries),
+                    encrypted_reasoning_ok=_openai_supports_encrypted_reasoning(self.model),
+                )
         return session
 
     def build_payload(
@@ -125,6 +153,7 @@ class OpenAIResponsesModel:
         instructions: str | None = None,
         metadata: Json | None = None,
         structured_output: StructuredOutputRequest | None = None,
+        store: bool | None = None,
     ) -> Json:
         """Build a Responses API payload.
 
@@ -132,6 +161,8 @@ class OpenAIResponsesModel:
         provider request knobs while native structured output remains enforced.
         """
         payload: Json = {"model": self.model, "input": input_payload, "tools": tools}
+        if store is not None:
+            payload["store"] = store
         if _openai_supports_encrypted_reasoning(self.model):
             payload["include"] = ["reasoning.encrypted_content"]
         if instructions:
@@ -157,6 +188,7 @@ class OpenAIResponsesSession:
         self.model = model
         self.previous_response_id: str | None = None
         self.transcript: list[TranscriptEntry] = []
+        self.item_history: list[Json] = []
         self._pending_replay: list[TranscriptEntry] | None = None
 
     async def start(
@@ -168,19 +200,18 @@ class OpenAIResponsesSession:
         notices: list[ModelNotice] | None = None,
     ) -> ModelTurn:
         """Start a Responses API run."""
+        if self.model.state_mode == "replay" and previous_response_id is not None:
+            raise ProviderError("previous_response_id requires state_mode=\"continuation\"")
         self.previous_response_id = previous_response_id
         content = append_notices_to_content(normalize_content(prompt, label="prompt"), notices)
         self.transcript = [UserEntry(content=content)]
-        input_payload = _openai_user_input(content)
-        payload = self.model.build_payload(
-            input_payload=input_payload,
-            instructions=constants.instructions,
-            tools=constants.tools,
-            metadata=constants.metadata,
-            structured_output=constants.structured_output,
-        )
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
+        input_payload: str | list[Json]
+        if self.model.state_mode == "replay":
+            self.item_history = [_openai_user_item(content)]
+            input_payload = copy.deepcopy(self.item_history)
+        else:
+            input_payload = _openai_user_input(content)
+        payload = self._build_payload(input_payload, constants)
         return await self._complete(payload)
 
     async def continue_with_tools(
@@ -207,17 +238,12 @@ class OpenAIResponsesSession:
                 "content": [{"type": "input_text", "text": notice_text}],
             })
         _append_tool_results(self.transcript, outputs, notice_text)
-        replay_input = self._prepend_replay(input_payload)
-        payload = self.model.build_payload(
-            input_payload=replay_input,
-            instructions=constants.instructions,
-            tools=constants.tools,
-            metadata=constants.metadata,
-            structured_output=constants.structured_output,
-        )
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
-        return await self._complete(payload)
+        if self.model.state_mode == "replay":
+            self.item_history.extend(copy.deepcopy(input_payload))
+            request_input: str | list[Json] = copy.deepcopy(self.item_history)
+        else:
+            request_input = self._prepend_replay(input_payload)
+        return await self._complete(self._build_payload(request_input, constants))
 
     async def continue_with_user_content(
         self,
@@ -229,17 +255,12 @@ class OpenAIResponsesSession:
         """Continue a Responses API run with user content."""
         normalized = append_notices_to_content(normalize_content(content), notices)
         self.transcript.append(UserEntry(content=normalized))
-        input_payload = _openai_user_input(normalized)
-        payload = self.model.build_payload(
-            input_payload=self._prepend_replay(input_payload),
-            instructions=constants.instructions,
-            tools=constants.tools,
-            metadata=constants.metadata,
-            structured_output=constants.structured_output,
-        )
-        if self.previous_response_id:
-            payload["previous_response_id"] = self.previous_response_id
-        return await self._complete(payload)
+        if self.model.state_mode == "replay":
+            self.item_history.append(_openai_user_item(normalized))
+            input_payload: str | list[Json] = copy.deepcopy(self.item_history)
+        else:
+            input_payload = self._prepend_replay(_openai_user_input(normalized))
+        return await self._complete(self._build_payload(input_payload, constants))
 
     def dump_state(self) -> dict[str, Any] | None:
         """Serialize the neutral transcript for resume."""
@@ -249,12 +270,35 @@ class OpenAIResponsesSession:
             model=self.model,
             origin_provider=provider_prefix(self.model.provider.name),
             entries=self.transcript,
+            openai_items=self.item_history if self.model.state_mode == "replay" else None,
         )
+
+    def _build_payload(self, input_payload: str | list[Json], constants: RequestConstants) -> Json:
+        payload = self.model.build_payload(
+            input_payload=input_payload,
+            instructions=constants.instructions,
+            tools=constants.tools,
+            metadata=constants.metadata,
+            structured_output=constants.structured_output,
+            store=False if self.model.state_mode == "replay" else None,
+        )
+        if self.model.state_mode == "continuation" and self.previous_response_id:
+            payload["previous_response_id"] = self.previous_response_id
+        return payload
 
     async def _complete(self, payload: Json) -> ModelTurn:
         """Send a Responses API payload and normalize the response."""
         response = await self.model.provider.create_response(payload)
-        self.previous_response_id = response.get("id") or self.previous_response_id
+        if self.model.state_mode == "replay":
+            output_items = copy.deepcopy(response.get("output", []) or [])
+            self.item_history.extend(output_items)
+            if any(item.get("type") == "reasoning" and "encrypted_content" not in item for item in output_items):
+                raise ProviderError(
+                    "OpenAI reasoning response omitted encrypted_content; add the model family to "
+                    "_openai_supports_encrypted_reasoning or use state_mode=\"continuation\""
+                )
+        else:
+            self.previous_response_id = response.get("id") or self.previous_response_id
         turn = ModelTurn(
             text=_extract_responses_text(response),
             tool_calls=_extract_responses_tool_calls(response),
@@ -349,8 +393,8 @@ def _extract_responses_tool_calls(response: Json) -> list[ModelToolCall]:
     """Extract normalized tool calls from a Responses API response."""
     calls = []
     for item in response.get("output", []) or []:
-        if item.get("type") in {"function_call", "tool_call"}:
-            calls.append(ModelToolCall(id=str(item.get("call_id") or item.get("id")), name=str(item.get("name")), arguments=item.get("arguments") or "{}"))
+        if item.get("type") == "function_call":
+            calls.append(ModelToolCall(id=str(item.get("call_id")), name=str(item.get("name")), arguments=item.get("arguments") or "{}"))
     return calls
 
 

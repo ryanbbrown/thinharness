@@ -23,7 +23,7 @@ from thinharness.providers import (
 
 async def test_openai_previous_response_id_is_session_scoped() -> None:
     client = FakeClient()
-    model = OpenAIResponsesModel("gpt-test", provider=client)
+    model = OpenAIResponsesModel("gpt-test", provider=client, state_mode="continuation")
     constants = _constants(ECHO_TOOLS)
     first = model.new_session()
     second = model.new_session()
@@ -54,21 +54,27 @@ async def test_openai_appends_notices_to_string_and_tool_inputs() -> None:
     await session.continue_with_user_content("fix this", constants, notices=[notice])
     resumed = model.resume_session({
         "kind": "transcript",
-        "version": 4,
+        "version": 5,
         "origin_provider": "openai",
         "origin_model": "gpt-test",
         "entries": [{"role": "user", "content": [{"type": "text", "text": "prior"}], "notice": False}],
     })
     await resumed.continue_with_user_content("follow-up", constants, notices=[notice])
 
-    assert client.payloads[0]["input"].endswith("<harness_notice kind=\"limit_warning\">\nFinal request.\n</harness_notice>")
-    assert [item["type"] for item in client.payloads[1]["input"][:-1]] == ["function_call_output", "function_call_output"]
+    assert client.payloads[0]["input"][0]["content"][0]["text"].endswith(
+        "<harness_notice kind=\"limit_warning\">\nFinal request.\n</harness_notice>"
+    )
+    assert [item["type"] for item in client.payloads[1]["input"][-3:]] == [
+        "function_call_output",
+        "function_call_output",
+        "message",
+    ]
     assert client.payloads[1]["input"][-1] == {
         "type": "message",
         "role": "user",
         "content": [{"type": "input_text", "text": _notice_text()}],
     }
-    assert client.payloads[2]["input"] == f"fix this\n\n{_notice_text()}"
+    assert client.payloads[2]["input"][-1]["content"][0]["text"] == f"fix this\n\n{_notice_text()}"
     assert client.payloads[1]["instructions"] == "system"
     assert client.payloads[2]["instructions"] == "system"
     assert client.payloads[3]["input"] == [
@@ -95,12 +101,18 @@ async def test_openai_no_notice_payloads_are_unchanged() -> None:
     await session.start("hi", constants)
     await session.continue_with_tools([_tool_output("call_1", "ok")], constants)
 
-    assert client.payloads[0]["input"] == "hi"
-    assert client.payloads[1]["input"] == [{
+    assert client.payloads[0]["input"] == [{
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "hi"}],
+    }]
+    assert client.payloads[1]["input"][-1] == {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": '{"ok": true, "content": "ok", "metadata": {}}',
-    }]
+    }
+    assert client.payloads[0]["store"] is False
+    assert client.payloads[1]["store"] is False
 
 
 def test_openai_native_structured_output_overrides_extra_body_text() -> None:

@@ -324,7 +324,11 @@ def test_tool_hooks_filter_cancel_mutate_and_preserve_tool_index(tmp_path: Path)
 
     result = harness.run_sync("go")
 
-    outputs = [tool_output(item["output"]) for item in client.payloads[1]["input"]]
+    outputs = [
+        tool_output(item["output"])
+        for item in client.payloads[1]["input"]
+        if item.get("type") == "function_call_output"
+    ]
     assert [name_index for name_index in indexes] == [("block", 0), ("ok", 1)]
     assert outputs[0]["metadata"]["error_type"] == "ToolCallCancelled"
     assert outputs[1]["content"] == "rewritten"
@@ -402,7 +406,8 @@ def test_after_tool_hook_in_place_envelope_mutation_updates_output(tmp_path: Pat
 
     harness.run_sync("go")
 
-    assert tool_output(client.payloads[1]["input"][0]["output"]) == {
+    output = next(item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output")
+    assert tool_output(output["output"]) == {
         "ok": True,
         "content": "changed",
         "metadata": {"stage": 1},

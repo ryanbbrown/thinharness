@@ -168,6 +168,7 @@ async def test_public_initial_image_payloads_are_literal(tmp_path: Path) -> None
             ],
         }],
         "tools": [],
+        "store": False,
         "instructions": "sys",
     }]
 
@@ -219,7 +220,7 @@ async def test_openai_image_tool_result_payload_is_literal(tmp_path: Path) -> No
 
     result = await Harness(_config(tmp_path), model=OpenAIResponsesModel("gpt-test", provider=provider), tools=[tool]).run("go")  # type: ignore[arg-type]
 
-    assert provider.payloads[1]["input"] == [{
+    assert provider.payloads[1]["input"][-1] == {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": [
@@ -227,8 +228,8 @@ async def test_openai_image_tool_result_payload_is_literal(tmp_path: Path) -> No
             {"type": "input_text", "text": "caption"},
             {"type": "input_image", "image_url": PNG_URL},
         ],
-    }]
-    assert result.resume_state["version"] == 4
+    }
+    assert result.resume_state["version"] == 5
     tool_entry = next(entry for entry in result.resume_state["entries"] if entry["role"] == "tool")
     assert tool_entry == {
         "role": "tool",
@@ -371,7 +372,7 @@ def _resume_state(
     entries.append({"role": "assistant", "text": "prior done", "tool_calls": [], "reasoning": []})
     return {
         "kind": "transcript",
-        "version": 4,
+        "version": 5,
         "origin_provider": origin,
         "origin_model": "source-model",
         "entries": entries,
@@ -413,7 +414,7 @@ async def test_every_provider_pair_replays_user_and_tool_images(tmp_path: Path, 
 async def test_same_provider_openai_resume_combines_native_reasoning_and_image(tmp_path: Path) -> None:
     state = {
         "kind": "transcript",
-        "version": 4,
+        "version": 5,
         "origin_provider": "openai",
         "origin_model": "o3-source",
         "entries": [
@@ -883,7 +884,7 @@ async def test_after_tool_hook_mutates_image_through_both_fields(tmp_path: Path,
         hooks=[Hook("after_tool_call", mutate)],
     ).run("go")
 
-    output = provider.payloads[1]["input"][0]["output"]
+    output = next(item["output"] for item in provider.payloads[1]["input"] if item.get("type") == "function_call_output")
     assert output[0] == {"type": "input_text", "text": f'{{"ok":true,"metadata":{{"hook":"{field}"}}}}'}
     assert output[1] == {"type": "input_text", "text": "mutated"}
     assert output[2]["image_url"].endswith(base64.b64encode(PNG + b"m").decode("ascii"))
@@ -1050,7 +1051,7 @@ async def test_structured_output_retry_keeps_plain_wire_text(tmp_path: Path, pro
     assert result.output == _Answer(value="ok")
 
     if provider_name == "openai":
-        wire = provider.payloads[1]["input"][0]["output"]
+        wire = next(item["output"] for item in provider.payloads[1]["input"] if item.get("type") == "function_call_output")
     elif provider_name == "anthropic":
         wire = provider.payloads[1]["messages"][-1]["content"][0]["content"]
     else:

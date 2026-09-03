@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from datetime import datetime
 from pathlib import Path
@@ -38,8 +39,18 @@ class _TerminalOpenAIProvider(OpenAIProvider):
         self.payloads = []
 
     async def create_response(self, payload):
-        self.payloads.append(payload)
-        return {"id": f"resp_{len(self.payloads)}", "output_text": "done"}
+        self.payloads.append(copy.deepcopy(payload))
+        return {
+            "id": f"resp_{len(self.payloads)}",
+            "output": [{
+                "type": "message",
+                "id": f"msg_{len(self.payloads)}",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 
 class _MultiToolAnthropicProvider(FakeAnthropicProvider):
@@ -113,14 +124,16 @@ async def test_openai_resume_full_replays_transcript_for_followup(tmp_path: Path
     second = await harness.run("follow-up", resume_from=state)
 
     assert first.resume_state["kind"] == "transcript"
-    assert first.resume_state["version"] == 4
+    assert first.resume_state["version"] == 5
     assert first.resume_state["origin_provider"] == "openai"
     assert first.resume_state["origin_model"] == "gpt-test"
     assert [entry["role"] for entry in first.resume_state["entries"]] == ["user", "assistant", "tool", "assistant"]
     assert second.text == "done"
-    assert client.payloads[1]["previous_response_id"] == "resp_1"
+    assert "previous_response_id" not in client.payloads[1]
+    assert client.payloads[1]["store"] is False
     assert client.payloads[1]["instructions"] == harness.system_instructions()
     assert "previous_response_id" not in client.payloads[2]
+    assert client.payloads[2]["store"] is False
     assert [item["type"] for item in client.payloads[2]["input"]] == [
         "message",
         "function_call",
@@ -280,7 +293,17 @@ def test_resume_allows_provider_model_mismatches_and_rejects_bad_versions_and_ke
             super().__init__(api_key="fake")
 
         async def create_response(self, payload):
-            return {"id": "resp_text", "output_text": "done"}
+            return {
+                "id": "resp_text",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_text",
+                    "status": "completed",
+                    "phase": "final_answer",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }],
+            }
 
     def openai_harness(model_name: str = "gpt-test") -> Harness:
         """Create a fresh OpenAI resume harness."""
@@ -295,6 +318,9 @@ def test_resume_allows_provider_model_mismatches_and_rejects_bad_versions_and_ke
     wrong_version = {**state, "version": 1}
     with pytest.raises(HarnessError, match="resume_from version 1 is not supported"):
         openai_harness().run_sync("follow-up", resume_from=wrong_version)
+
+    with pytest.raises(HarnessError, match="resume_from version 4 is not supported; regenerate resume_state"):
+        openai_harness().run_sync("follow-up", resume_from={**state, "version": 4})
 
     missing_version = {key: value for key, value in state.items() if key != "version"}
     with pytest.raises(HarnessError, match="resume_from version None is not supported"):
@@ -324,7 +350,7 @@ def test_resume_rejects_malformed_shapes_before_hooks_fire(tmp_path: Path) -> No
 
     with pytest.raises(HarnessError, match="resume_from must be a dict"):
         harness().run_sync("follow-up", resume_from="resp_abc")  # type: ignore[arg-type]
-    base_state = {"kind": "transcript", "version": 4, "origin_provider": "anthropic", "origin_model": "claude-test"}
+    base_state = {"kind": "transcript", "version": 5, "origin_provider": "anthropic", "origin_model": "claude-test"}
     with pytest.raises(HarnessError, match="resume_from kind None is not supported"):
         harness().run_sync("follow-up", resume_from={"version": 2, "origin_provider": "anthropic", "origin_model": "claude-test", "entries": []})
     with pytest.raises(HarnessError, match="missing required field: 'entries'"):
@@ -354,7 +380,7 @@ def test_anthropic_resume_rejects_non_json_tool_arguments() -> None:
     with pytest.raises(HarnessError, match="resume_from assistant tool call arguments must be JSON"):
         model.resume_session({
             "kind": "transcript",
-            "version": 4,
+            "version": 5,
             "origin_provider": "openrouter",
             "origin_model": "openai/test",
             "entries": [{
@@ -469,8 +495,17 @@ def test_no_openai_response_id_still_produces_resume_state(tmp_path: Path) -> No
             self.payloads = []
 
         async def create_response(self, payload):
-            self.payloads.append(payload)
-            return {"output_text": "done"}
+            self.payloads.append(copy.deepcopy(payload))
+            return {
+                "output": [{
+                    "type": "message",
+                    "id": "msg_done",
+                    "status": "completed",
+                    "phase": "final_answer",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }],
+            }
 
     provider = NoIdProvider()
     harness = Harness(HarnessConfig(root=tmp_path), model=OpenAIResponsesModel("gpt-test", provider=provider))

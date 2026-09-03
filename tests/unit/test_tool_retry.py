@@ -25,6 +25,10 @@ from thinharness import (
 from thinharness.providers import ModelToolCall, ModelTurn
 
 
+def _openai_tool_outputs(client: MultiCallClient) -> list[dict]:
+    return [item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output"]
+
+
 class SequenceSession:
     """Script a start turn followed by each tool continuation turn."""
 
@@ -127,7 +131,7 @@ def test_handler_internal_validation_error_is_not_retry(tmp_path: Path) -> None:
     ])
 
     result = harness.run_sync("go")
-    envelope = tool_output(client.payloads[1]["input"][0]["output"])
+    envelope = tool_output(_openai_tool_outputs(client)[0]["output"])
 
     assert envelope["metadata"]["error_type"] == "ValidationError"
     assert envelope["metadata"].get("retry") is None
@@ -304,7 +308,7 @@ def test_parallel_retry_and_success_outputs_preserve_model_order(tmp_path: Path)
     )
 
     result = harness.run_sync("go")
-    outputs = client.payloads[1]["input"]
+    outputs = _openai_tool_outputs(client)
 
     assert result.usage.tool_retries == {"retry": 1}
     assert [item["call_id"] for item in outputs] == ["call_1", "call_2"]
@@ -323,7 +327,7 @@ async def test_async_handler_model_retry_is_captured(tmp_path: Path) -> None:
     ])
 
     result = await harness.run("go")
-    envelope = tool_output(client.payloads[1]["input"][0]["output"])
+    envelope = tool_output(_openai_tool_outputs(client)[0]["output"])
 
     assert result.usage.tool_retries == {"async_retry": 1}
     assert envelope["metadata"]["error_type"] == "ModelRetry"
@@ -344,7 +348,7 @@ async def test_async_handler_internal_validation_error_is_not_retry(tmp_path: Pa
     ])
 
     result = await harness.run("go")
-    envelope = tool_output(client.payloads[1]["input"][0]["output"])
+    envelope = tool_output(_openai_tool_outputs(client)[0]["output"])
 
     assert envelope["metadata"]["error_type"] == "ValidationError"
     assert envelope["metadata"].get("retry") is None
@@ -419,7 +423,7 @@ def test_after_tool_hook_cannot_create_retry_control_flow(tmp_path: Path) -> Non
 
     assert len(client.payloads) == 2
     assert result.usage.tool_retries == {}
-    assert tool_output(client.payloads[1]["input"][0]["output"])["metadata"] == {
+    assert tool_output(_openai_tool_outputs(client)[0]["output"])["metadata"] == {
         "error_type": "HookRetry",
         "retry": True,
     }
@@ -464,7 +468,7 @@ def test_tracing_and_control_flow_use_pre_hook_retry_kind(tmp_path: Path) -> Non
 
     span = next(span for span in tracer.spans if span.name == "execute_tool flaky")
     assert span.attributes["error.type"] == "ModelRetry"
-    assert tool_output(client.payloads[1]["input"][0]["output"])["metadata"]["error_type"] == "Rewritten"
+    assert tool_output(_openai_tool_outputs(client)[0]["output"])["metadata"]["error_type"] == "Rewritten"
 
 
 def test_subagent_tool_retry_budget_recipes(tmp_path: Path) -> None:

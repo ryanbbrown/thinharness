@@ -52,10 +52,27 @@ class ReasoningOpenAIProvider(OpenAIProvider):
                 "id": "resp_1",
                 "output": [
                     {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "thinking about it"}], "encrypted_content": "enc-blob-1"},
-                    {"type": "function_call", "call_id": "call_1", "name": "echo", "arguments": '{"value":"hi"}'},
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "status": "completed",
+                        "name": "echo",
+                        "arguments": '{"value":"hi"}',
+                    },
                 ],
             }
-        return {"id": "resp_2", "output_text": "done"}
+        return {
+            "id": "resp_2",
+            "output": [{
+                "type": "message",
+                "id": "msg_2",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 
 class TerminalOpenAIProvider(OpenAIProvider):
@@ -67,7 +84,17 @@ class TerminalOpenAIProvider(OpenAIProvider):
 
     async def create_response(self, payload):
         self.payloads.append(copy.deepcopy(payload))
-        return {"id": f"resp_{len(self.payloads)}", "output_text": "done"}
+        return {
+            "id": f"resp_{len(self.payloads)}",
+            "output": [{
+                "type": "message",
+                "id": f"msg_{len(self.payloads)}",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 
 class ReasoningTextOpenAIProvider(OpenAIProvider):
@@ -86,11 +113,35 @@ class ReasoningTextOpenAIProvider(OpenAIProvider):
                 "id": "resp_1",
                 "output": [
                     {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "considering"}], "encrypted_content": "enc-blob-1"},
-                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "let me call echo"}]},
-                    {"type": "function_call", "call_id": "call_1", "name": "echo", "arguments": '{"value":"hi"}'},
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "status": "completed",
+                        "phase": "commentary",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "let me call echo"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "status": "completed",
+                        "name": "echo",
+                        "arguments": '{"value":"hi"}',
+                    },
                 ],
             }
-        return {"id": "resp_2", "output_text": "done"}
+        return {
+            "id": "resp_2",
+            "output": [{
+                "type": "message",
+                "id": "msg_2",
+                "status": "completed",
+                "phase": "final_answer",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }],
+        }
 
 
 class ReasoningAnthropicProvider(AnthropicProvider):
@@ -200,7 +251,12 @@ async def test_openai_same_provider_reemits_reasoning_item(tmp_path: Path) -> No
     items = provider.payloads[0]["input"]
     # Trailing "message" pair = the source run's "done" assistant turn + the new follow-up prompt.
     assert [item["type"] for item in items] == ["message", "reasoning", "function_call", "function_call_output", "message", "message"]
-    assert items[1] == {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc-blob-1", "summary": []}
+    assert items[1] == {
+        "type": "reasoning",
+        "id": "rs_1",
+        "encrypted_content": "enc-blob-1",
+        "summary": [{"type": "summary_text", "text": "thinking about it"}],
+    }
     assert "previous_response_id" not in provider.payloads[0]
 
 
@@ -421,7 +477,7 @@ async def test_multi_part_reasoning_renders_in_order(tmp_path: Path) -> None:
 async def test_reasoning_state_round_trips(tmp_path: Path) -> None:
     state = (await _harness(tmp_path, OpenAIResponsesModel(REASONING_OPENAI_MODEL, provider=ReasoningOpenAIProvider())).run("first")).resume_state
 
-    assert state["version"] == 4
+    assert state["version"] == 5
     assert json.loads(json.dumps(state)) == state
     assert _assistant_reasoning(state)[0]["signature"] == "enc-blob-1"
 

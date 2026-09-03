@@ -60,9 +60,10 @@ def test_harness_tool_loop_with_custom_client(tmp_path: Path) -> None:
     assert result.text == "done"
     assert client.payloads[0]["tools"]
     assert client.payloads[0]["metadata"] == {"case": "test"}
-    assert client.payloads[1]["previous_response_id"] == "resp_1"
-    assert client.payloads[1]["input"][0]["type"] == "function_call_output"
-    assert "hello" in client.payloads[1]["input"][0]["output"]
+    assert "previous_response_id" not in client.payloads[1]
+    assert client.payloads[1]["store"] is False
+    output = next(item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output")
+    assert "hello" in output["output"]
 
 def test_session_receives_falsy_metadata_when_run_has_no_metadata(tmp_path: Path) -> None:
     captured = {}
@@ -518,7 +519,8 @@ async def test_async_run_supports_async_tool_handlers(tmp_path: Path) -> None:
     result = await harness.run("go")
 
     assert result.text == "done"
-    assert tool_output(client.payloads[1]["input"][0]["output"])["content"] == "ok"
+    output = next(item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output")
+    assert tool_output(output["output"])["content"] == "ok"
 
 async def test_async_tool_handlers_run_without_thread_hop_and_partial_works(tmp_path: Path) -> None:
     client = MultiCallClient([("async_partial", "{}")])
@@ -544,7 +546,8 @@ async def test_async_tool_handlers_run_without_thread_hop_and_partial_works(tmp_
 
     assert result.text == "done"
     assert handler_thread == loop_thread
-    assert tool_output(client.payloads[1]["input"][0]["output"])["content"] == "ok"
+    output = next(item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output")
+    assert tool_output(output["output"])["content"] == "ok"
 
 async def test_callable_object_async_handler_runs_directly(tmp_path: Path) -> None:
     client = MultiCallClient([("callable_async", "{}")])
@@ -565,7 +568,8 @@ async def test_callable_object_async_handler_runs_directly(tmp_path: Path) -> No
 
     assert (await harness.run("go")).text == "done"
     assert calls == 1
-    assert tool_output(client.payloads[1]["input"][0]["output"])["content"] == "ok"
+    output = next(item for item in client.payloads[1]["input"] if item.get("type") == "function_call_output")
+    assert tool_output(output["output"])["content"] == "ok"
 
 async def test_invoke_tool_calls_sync_handler_once() -> None:
     calls = 0
