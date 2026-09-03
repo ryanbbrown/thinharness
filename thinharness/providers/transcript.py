@@ -41,14 +41,14 @@ class ToolResultEntry:
 TranscriptEntry: TypeAlias = AssistantEntry | UserEntry | ToolResultEntry
 
 
-_TRANSCRIPT_RESUME_KEYS = frozenset({"kind", "version", "origin_provider", "origin_model", "entries"})
+_TRANSCRIPT_RESUME_KEYS = frozenset({"kind", "version", "origin_provider", "origin_model", "entries", "openai_items"})
 _TRANSCRIPT_ENTRY_KEYS = {
     "assistant": frozenset({"role", "text", "tool_calls", "reasoning"}),
     "user": frozenset({"role", "content", "notice"}),
     "tool": frozenset({"role", "call_id", "ok", "content", "metadata", "wire_output"}),
 }
 _REASONING_PART_KEYS = frozenset({"text", "signature", "id", "provider_name", "provider_details"})
-_TRANSCRIPT_VERSION = 4
+_TRANSCRIPT_VERSION = 5
 
 
 def _validate_resume_state(state: dict[str, Any]) -> list[TranscriptEntry]:
@@ -71,18 +71,55 @@ def _validate_resume_state(state: dict[str, Any]) -> list[TranscriptEntry]:
             raise HarnessError(f"resume_from missing required field: {field_name!r}")
         if not isinstance(state[field_name], expected_type):
             raise HarnessError(f"resume_from field {field_name!r} has wrong type")
+    if "openai_items" in state:
+        if not isinstance(state["openai_items"], list):
+            raise HarnessError("resume_from field 'openai_items' has wrong type")
+        _validate_openai_items(state["openai_items"])
     return [_transcript_entry_from_dict(entry) for entry in state["entries"]]
 
 
-def _transcript_state(*, model: Model, origin_provider: str, entries: list[TranscriptEntry]) -> dict[str, Any]:
+def _validate_openai_items(items: list[Any]) -> None:
+    if any(not isinstance(item, dict) or not isinstance(item.get("type"), str) for item in items):
+        raise HarnessError("resume_from openai_items entries must be dicts with a string 'type'")
+    unanswered: list[Any] = []
+    for index, item in enumerate(items):
+        item_type = item["type"]
+        if item_type == "function_call":
+            unanswered.append(item.get("call_id"))
+        elif item_type == "function_call_output":
+            call_id = item.get("call_id")
+            if call_id not in unanswered:
+                raise HarnessError("resume_from openai_items function_call_output has no unanswered function_call")
+            unanswered.remove(call_id)
+        elif item_type == "reasoning":
+            if unanswered:
+                raise HarnessError("resume_from openai_items has an unanswered function_call before reasoning")
+            if index == len(items) - 1 or items[index + 1].get("type") in {"function_call_output"} or (
+                items[index + 1].get("type") == "message" and items[index + 1].get("role") == "user"
+            ):
+                raise HarnessError("resume_from openai_items reasoning item has no valid following assistant item")
+        elif item_type == "message" and item.get("role") == "user" and unanswered:
+            raise HarnessError("resume_from openai_items has an unanswered function_call before a user message")
+
+
+def _transcript_state(
+    *,
+    model: Model,
+    origin_provider: str,
+    entries: list[TranscriptEntry],
+    openai_items: list[Json] | None = None,
+) -> dict[str, Any]:
     """Return the neutral transcript resume envelope."""
-    return {
+    state = {
         "kind": "transcript",
         "version": _TRANSCRIPT_VERSION,
         "origin_provider": origin_provider,
         "origin_model": model.model,
         "entries": [_transcript_entry_to_dict(entry) for entry in entries],
     }
+    if openai_items is not None:
+        state["openai_items"] = copy.deepcopy(openai_items)
+    return state
 
 
 def _transcript_entry_to_dict(entry: TranscriptEntry) -> Json:
