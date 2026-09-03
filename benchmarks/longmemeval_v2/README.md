@@ -1,5 +1,7 @@
 # LongMemEval-V2 Luna xhigh paired wave
 
+LongMemEval work is paused. See [`PAUSE_AND_PERSISTENCE.md`](PAUSE_AND_PERSISTENCE.md) for the durable artifact inventory and restart points.
+
 This benchmark compares the official AgentRunbook-C V2 query harness with native ThinHarness on the same frozen 14-question LongMemEval-V2-Small wave.
 
 ## Frozen design
