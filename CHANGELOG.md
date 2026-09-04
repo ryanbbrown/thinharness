@@ -1,10 +1,13 @@
 # Changelog
 
-## 0.7.0 - 2026-08-21
+## 0.8.0 - 2026-09-03
 
 - Changed OpenAI Responses state to replay the exact raw item history by default with `store: false`. Use `OpenAIResponsesModel(..., state_mode="continuation")` to opt into server-managed `previous_response_id` continuation.
 - **Breaking:** Built-in transcript resume state is now version 5. OpenAI replay state includes exact raw Responses items in `openai_items`; version 4 state must be regenerated.
-- Added ordered text and image prompts and tool results for OpenAI, Anthropic, and OpenRouter, with provider-neutral immutable content blocks, redacted observability projections, self-contained version 5 resume state, opt-in filesystem `read_image`, and preserved successful MCP images.
+
+## 0.7.0 - 2026-08-21
+
+- Added ordered text and image prompts and tool results for OpenAI, Anthropic, and OpenRouter, with provider-neutral immutable content blocks, redacted observability projections, self-contained version 4 resume state, opt-in filesystem `read_image`, and preserved successful MCP images.
 - **Breaking:** Renamed custom `ModelSession.continue_with_user_text(...)` to `continue_with_user_content(...)`; prompt hooks now receive normalized content-block tuples, and built-in transcript resume version 3 state must be regenerated.
 - **Breaking:** `ToolOutput` now requires `ToolOutput(call_id, ToolResult(...))`; direct string output construction is no longer accepted.
 - Added explicit plugin composition with static and connected contributions, atomic connection rollback, unique plugin names, generic tool origin, and plugin-provided hooks and instructions.

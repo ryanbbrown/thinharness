@@ -21,7 +21,6 @@ vendor/
 .gitmodules
 examples/*/outputs/
 examples/*/outputs_failed_*/
-.agent/learnings.jsonl
 .gstack/
 .pi-subagents/
 assets/.$*.drawio.bkp
